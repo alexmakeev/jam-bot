@@ -1,12 +1,12 @@
 # JAM-Bot — Product Requirements
 
-**Discussion draft — 2026-11-13.** Repository: [alexmakeev/jam-code](https://github.com/alexmakeev/jam-code). Terms: [GLOSSARY.md](GLOSSARY.md).
+**Discussion draft — 2026-11-14.** Repository: [alexmakeev/jam-bot](https://github.com/alexmakeev/jam-bot). Terms: [GLOSSARY.md](GLOSSARY.md).
 
 This is the single requirements source of truth, not an implementation kickoff. Confirmed requirements describe desired behavior, not delivered capabilities. A separate user command is required before task decomposition, worktree creation, implementation, or deployment. Critical open questions below block the affected implementation. IDs remain stable; retired IDs are not reused.
 
 ## 1. Intent and scope
 
-JAM-Bot coordinates development through GitHub on machines supplied by the user. The name evokes tasty jam and, secondarily, a crowd or traffic jam. The autonomous core is open source under the existing MIT license, operated through commands and configuration. A possible proprietary web UI belongs in a separate private repository and is outside the core/MVP.
+JAM-Bot coordinates development through GitHub on machines supplied by the user. The name evokes tasty jam and, secondarily, a crowd or traffic jam. The autonomous core is open source under the existing MIT license, operated through commands, configuration, and a small management API. A possible proprietary web UI belongs in a separate private repository and is outside the core/MVP.
 
 Keep the system extremely light: thin scripts and wrappers, minimal machinery. Every added component should justify its maintenance/resource cost and explain a simpler alternative. No performance or memory savings are promised.
 
@@ -22,8 +22,8 @@ Criteria are future checks, not claims of completed validation.
 | JB-02 | Discover all repositories already accessible to the App and newly granted access. When permissions suffice, create owner/repo directories and one Leo context/process per repository without duplicates. MVP identity is repository URI. | Repeated discovery produces one project per URI; two accessible repositories receive separate contexts. Rename/transfer requires manual update for MVP. |
 | JB-03 | Use one service system user per machine and only necessary administrative privileges. Every repository has its own directory/environment. | A second project creates no second service user; required privileges are documented. Running the entire agent runtime as root is not approved. |
 | JB-04 | Use minimal wrappers and harness-native agent management. | Each long-lived component has a necessity/cost explanation; no duplicate agent platform, universal framework, or DSL is introduced. |
-| JB-05 | Claude Code is the first default harness, with one default server profile in MVP. Launch command is configurable per repository with defaults; environment/template values may be supported. Preserve Leo, team, teammates, and short-lived subagents. | A repository can override the command without an account manager; the chosen execution path demonstrates the required team behavior. Feasibility remains an open gate. |
-| JB-06 | One issue has one feature branch/worktree and a responsible developer; Leo coordinates parallel work through harness capabilities. | Concurrent issues have distinct branches/worktrees and clear ownership; reconciliation avoids live duplicates. |
+| JB-05 | Claude Code is the first default harness, with one default subscription per server in MVP. Topics select concrete work profiles with configurable launch commands and defaults; environment/template values may be supported. Preserve Leo, team, teammates, and short-lived subagents. | A repository can override the command without an account manager; the chosen execution path demonstrates the required team behavior. Feasibility remains an open gate. |
+| JB-06 | One approved execution work card has one feature branch/worktree and a responsible developer; Leo coordinates parallel work through harness capabilities. | Concurrent execution work cards have distinct branches/worktrees and clear ownership; reconciliation avoids live duplicates. |
 | JB-07 | Developers may use short-lived subagents without a separate registry/control layer. | Delegation uses harness capabilities and does not require a new JAM-Bot management entity. |
 | JB-08 | Bound parallel execution to protect server resources. | The selected configurable limit is enforced; its values and waiting behavior remain to be decided. Up to 30 existing teammates is a capacity wish to investigate, not a verified limit or a requirement for 30 active workers. |
 | JB-16 | MVP is GitHub-only; revoked access stops repository service while preserving its data. | Revocation stops further service for that repository without deleting retained work. |
@@ -54,7 +54,7 @@ The supported simple policy is to hold dev-to-main promotion during RC acceptanc
 
 ```mermaid
 flowchart TD
-  I["Authorized issue"] --> A["Architect: attached specification"]
+  I["Human-approved execution work card"] --> A["Architect: attached specification"]
   A --> D["Developer: feature branch and worktree"]
   D --> U["Targeted tests, then full unit suite"]
   U --> B["Leo: logical group of ready tasks"]
@@ -74,7 +74,7 @@ flowchart TD
 
 | ID | Requirement | Acceptance criterion |
 | --- | --- | --- |
-| JB-22 | GitHub task cards, attached specs, and checkpoints are task truth; remote branches preserve code. A minimal local operational journal may help recovery but must not become a competing business-status database. | Restart reconciles local worktrees/processes with remote task records; it does not blindly launch every open issue, including waiting, dependency-blocked, or already-live work. |
+| JB-22 | The project source of truth includes remote cards, specifications, discussions, and code. Execution work cards, attached specs, and checkpoints are task truth; remote branches preserve code. A minimal local operational journal may help recovery but must not become a competing business-status database. | Restart reconciles local worktrees/processes with remote task records; it does not blindly launch every open issue, including waiting, dependency-blocked, or already-live work. |
 | JB-23 | Restore from compact specification, checkpoint, relevant project instructions, and dependencies, without requiring the whole conversation. | A resumed worker obtains sufficient context from those records. Uncommitted/unpushed progress is explicitly unrecoverable after disk loss. |
 | JB-24 | Protocol operations use semantic names, not agent-role names. Any agent level may communicate, and tools may be delegated to subagents. A skill teaches protocol; MCP tools validate and persist it. No free-text regex establishes authoritative statuses. | Operations identify caller, recipient/link, correlation/request identity, and waiting reason where needed; a request is acknowledged quickly and answered asynchronously. Replay/idempotency and expected-state checks survive restart. |
 | JB-25 | Do not claim atomicity across GitHub comments, labels, and notifications. Keep one compact protocol module, not a universal messenger/workflow engine. | Partial external-write failures are detectable and reconcilable without duplicate logical transitions or false success. |
@@ -99,19 +99,57 @@ sequenceDiagram
 
 This is a logical interaction, not an atomic transaction or a selected transport.
 
+### Intake, work profiles, management, and deployment
+
+| ID | Requirement | Acceptance criterion |
+| --- | --- | --- |
+| JB-26 | Separate intake reports from execution work cards. Public users may submit bug reports or feature requests subject to platform permissions. Preserve reports; create separate linked work cards with many-to-many relationships. A bot may propose/create a card, but only an authorized human approves execution through an approval label. | Ten duplicate reports can link to one card; one report can link to several cards. Unapproved cards never execute. Verify who approved; bot self-approval is rejected. Material scope/spec changes require reapproval. Approval is distinct from queue state and does not bypass dependencies or resource limits. |
+| JB-27 | A topic binds a concrete project source of truth (GitHub repository for MVP), work profile, and environment. A work profile specifies the orchestrating harness, launch command, instructions, hooks, MCP/tools, and settings. Different topics on one machine may use different concrete profiles/recipes. Deliver a ready developer recipe on Claude Code, not a compatibility framework. | Topic configuration resolves to a specific runnable recipe. The core does not attempt arbitrary interchangeability or duplicate orchestration performed inside the chosen harness. A consultant profile may use a different configured harness even with the same binary. |
+| JB-28 | Work profiles declare required/optional tools and access methods (subscription or API), settings, and references to separately stored credentials. | A missing required dependency fails clearly before startup; a configured optional dependency is available, while an unconfigured one is not required. Runtime consultant failures follow profile-defined behavior, whose exact fallback semantics remain open. Secrets are not embedded in profiles. |
+| JB-29 | Provide a small language-independent HTTP REST management API with an OpenAPI contract covering operations, inputs, outputs, and errors, with schema-derived/generated documentation. Thin CLI and MCP interfaces use the same application operations without duplicated business logic. | Contract and interfaces agree for the selected operations and errors. No GraphQL or Python in MVP. Management MCP is distinct from the agent communication protocol in JB-24/JB-25. Exact endpoints, schemas, and versioning remain open. |
+| JB-30 | MVP requires a public IP and externally reachable HTTPS endpoint. Webhooks are primary event delivery; authenticated remote MCP supplies management. Startup/periodic API reconciliation recovers dropped events, downtime, existing accessible repositories, and missed permission changes. | Verify external reachability, TLS, provider-specific webhook signatures/secrets/source checks, and management authentication/authorization. Replayed webhook/reconciliation data remains idempotent. A public IP alone does not satisfy readiness. Private/CGNAT machines are not the default supported MVP deployment. |
+| JB-31 | Each JAM-Bot instance exposes authenticated MCP management. An owner may connect multiple named server endpoints to an assistant/client and discover placement through topic inventories. Persist a source/project URI-to-server/topic routing map, verify the live server before mutation, and clarify ambiguity. | Routing survives conversational context loss; mutations verify the actual destination and permissions. Endpoint URL/ID is not authorization. Storage location is open; client/account support for connecting multiple remote MCP servers must be verified, not assumed. No central fleet service is required. |
+
+Label names are JAM-Bot's proposed cross-provider vocabulary, not standard GitHub labels: `kind:bug-report`, `kind:feature-request`, `kind:task`, `approval:approved`, and `status:queued/in-progress/blocked/in-validation` (individual status values). Exact names remain proposals; separation and human approval via a label are confirmed. Do not assume public/unprivileged reporters can apply labels, or rely on provider-specific mutually exclusive scoped-label behavior. Contributor access does not automatically confer approval authority; a small explicit configured approver list is the simplest candidate.
+
+```mermaid
+flowchart LR
+  R["Intake reports: bugs and requests"] -->|"many-to-many links; preserve originals"| T["Separate execution work cards"]
+  T --> H{"Authorized human approval"}
+  H -->|"not approved"| N["No execution"]
+  H -->|"approval label and provenance"| Q["Queue subject to dependencies and resources"]
+  Q --> E["Architect and developer workflow"]
+  E -->|"material spec or scope change"| H
+```
+
+```mermaid
+flowchart TD
+  G["GitHub"] -->|"verified HTTPS webhooks"| J["JAM-Bot public-IP instance"]
+  G -. "startup and periodic API reconciliation" .-> J
+  C["Owner assistant or client"] -->|"authenticated remote management MCP"| J
+  J --> T["Topic: source URI, profile, environment"]
+  T --> P["Concrete Claude Code developer recipe"]
+  P --> X["Optional external consultants through harness MCP"]
+```
+
+External harnesses/vendors/models may be called as consultants inside the orchestrating harness through MCP. Antigravity/Codex integration has not been verified; no new provider is selected or implemented. Additional consultants do not guarantee improvement: quality must be measured.
+
 ## 3. Proposals and unverified candidates
 
 | ID | Candidate | Complexity cost / simpler alternative |
 | --- | --- | --- |
 | P-01 | Docker per project or Linux sandbox/Landlock for isolation. | Define threats and test a minimal mechanism first. Arbitrary Docker daemon access does not preserve isolation automatically. |
 | P-02 | Copy node_modules or use shared links with proposed copy-on-write. | A symlink is not COW; shared mutable dependencies are unapproved and copying may not be faster. Measure independent installs first. |
-| P-03 | Poll repository access/events without a public webhook endpoint. | Candidate minimal transport; not a final decision. Define ordering, replay, rate limits, and recovery before adding infrastructure. |
+| P-03 | Retired: primary polling transport. | Superseded by JB-30; startup/periodic API reconciliation is recovery, not the primary event loop. |
 | P-04 | Persistent interactive Claude Code session plus Channels. | Experimental feasibility candidate only; Channels are MCP push in research preview. No claim of unattended/restart readiness. Noninteractive -p/Agent SDK does not create Agent Teams. |
 | P-05 | Existing GitHub MCP for repository operations. | Verify installation authentication/refresh, required operations, and attachment upload; do not create an account in MCP. |
 | P-06 | One service issue with concise instructions and @mention of the connecting person after real readiness. | User should be able to write tasks/messages immediately. Exact issue mechanism is open; no new issue on every restart. GitHub notification delivery depends on user settings. |
 | P-07 | Optional responsibility-to-handle/team config for architecture, DevOps, etc. | Keep compact and optional; no organization/Enterprise requirement. Track initial task creator, but allow other permitted people to answer. Mentions are not authority. |
 | P-08 | GitHub App manifest onboarding later. | Manual App creation is sufficient for MVP. |
 | P-09 | Reduced memory usage from team organization. | Hypothesis requiring measurement; memory/swap is no capacity guarantee. |
+| P-10 | Explicit configured human approvers. | Keep approval separate from contribution rights; precise audit/recovery remains Q-01/Q-08. |
+| P-11 | Management operations such as status, topic listing, connecting a project, changing config, and tracking long asynchronous operations. | Candidates only: no mandatory endpoint names or schemas selected. |
+| P-12 | Future optional paid/proprietary relay for private/home instances: outbound connection forwarding webhooks and MCP calls. | Outside MVP, with multi-tenant security and operational costs; one-click onboarding is a UX goal, not demonstrated capability. No central dependency now. |
 
 GitHub repository roles express access permissions, not expertise. Organization teams can receive @org/team mentions; users can receive @handle mentions. CODEOWNERS maps file paths to ownership/review requests, not a general directory of architects. Do not invent real handles.
 
@@ -119,21 +157,27 @@ GitHub repository roles express access permissions, not expertise. Organization 
 
 | ID | Decision or evidence needed | Blocked area |
 | --- | --- | --- |
-| Q-01 | Permission/approval policy, allowed identities, task authorization, secret access, and minimum App permissions. | Safe onboarding, execution, and protocol actions. |
+| Q-01 | Human approver configuration, approval provenance/audit and reapproval enforcement, allowed identities, secret access, and minimum App permissions. | Safe onboarding, execution, and protocol actions. |
 | Q-02 | Threat model and isolation mechanism with one system user, administrative capabilities, and safe container testing. | Multi-project execution. |
 | Q-03 | Demonstrate required Leo/team/teammate/subagent lifecycle with configurable harness launch, message delivery, restart/reconnection, resource limits, and measured capacity. | Agent runtime. Claude Code default is confirmed; a rigid harness binding is not. |
-| Q-04 | Event transport, deduplication, ordering, durable records, checkpoints, recovery, and partial-write reconciliation. | Reliable interaction and resumption. |
+| Q-04 | Webhook reachability/TLS setup, source/signature verification, deduplication, ordering, durable records, reconciliation intervals, recovery, and partial-write handling. | Reliable interaction and resumption. |
 | Q-05 | Exact dev/main/stable branch operations, integrator handoff, expected-base serialization, acceptance hold/release, tester complaints, and configured acceptance checks/duration. | Release workflow implementation. High-level workflow in JB-14/JB-21 is confirmed. |
-| Q-06 | Minimum first end-to-end delivery, supported server environment, and implementation language. | Implementation planning; language selection waits until scenarios are finished. |
+| Q-06 | Minimum first end-to-end delivery, supported public-IP server environment, and implementation language (Python excluded; FastAPI was an illustration, not a stack choice). | Implementation planning; language selection waits until scenarios are finished. |
 | Q-07 | Automatic .md attachment mechanism available to the App/API/MCP, access behavior, and retrieval on recovery. | Required specification/checkpoint attachment delivery. Browser upload support alone does not prove automation. |
-| Q-08 | Protocol schemas, phase vocabulary, addressing and responsibility routing, retry boundaries, and reconciliation rules. | Compact protocol implementation. |
+| Q-08 | Agent protocol schemas, approval/label state reconciliation, phase vocabulary, addressing and responsibility routing, retry boundaries, and recovery audit. | Compact protocol implementation. |
+| Q-09 | Management operation set, OpenAPI schemas/errors/versioning, authentication/authorization, asynchronous operation status, and routing-map storage. | Management API and multi-machine routing. |
+| Q-10 | Concrete profile configuration and runtime handling of unavailable optional consultants, credential references, and measured quality. | Work-profile execution details. |
 
 ## 5. Non-goals and deferred work
 
 - Paid hosting, billing, web UI, subscription management, automatic account rotation, or a general orchestration framework in MVP.
 - Stable provider-ID abstraction in MVP; URI identity is deliberately chosen. Rename/transfer automation is later.
 - GitLab/Gitea support now, or promises that adding them will require only a small refactor.
-- Consultant/reviewer roles as current primary delivery scenarios; developer is the current focus.
+- A standalone consultant/reviewer delivery recipe as the primary MVP scenario; developer is the current focus. Optional consultants inside a concrete harness recipe do not imply a universal compatibility layer.
+- A compatibility matrix, universal provider API/plugin DSL, or account/subscription purchasing/rotation manager.
+- Primary polling transport, private/CGNAT default deployment, or a central fleet/relay service in MVP.
+- A mandatory OpenAI Secure MCP Tunnel: it concerns MCP transport, not a generic webhook endpoint or automatic sharing of desktop MCP into ChatGPT web. Specific ChatGPT web/mobile account integration is unverified.
+- Relay implementation now. A future relay and proprietary UI may live in a closed repository; MIT does not prevent third parties from implementing alternatives.
 - A separate control plane/registry for short-lived subagents.
 - Production deployment implied by stable promotion.
 - Importing CDX16 architecture or code as a required foundation. It was only an example of remote worker control on Hetzner; design starts from scratch.
