@@ -19,6 +19,9 @@ services:
     environment:
       JAM_STATE_DIR: /var/lib/jam
       JAM_WEBHOOK_SECRET_FILE: /run/secrets/webhook
+      JAM_GITHUB_APP_ID: ${JAM_GITHUB_APP_ID:?Set the GitHub App ID}
+      JAM_GITHUB_APP_KEY_FILE: /run/secrets/app-key
+      JAM_ADDITIONAL_TOPICS: '${JAM_ADDITIONAL_TOPICS:-[]}'
       JAM_REPOSITORY_ID: ${JAM_REPOSITORY_ID:?Set the repository ID}
       JAM_REPOSITORY: ${JAM_REPOSITORY:?Set the owner/repository name}
       JAM_INSTALLATION_ID: ${JAM_INSTALLATION_ID:?Set the GitHub App installation ID}
@@ -38,6 +41,7 @@ services:
           create_host_path: false
     secrets:
       - webhook
+      - app-key
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:19739/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 10s
@@ -47,5 +51,7 @@ services:
 volumes:
   state:
 secrets:
+  app-key:
+    file: ${JAM_GITHUB_APP_KEY_PATH:?Set the absolute path to the App private key}
   webhook:
     file: ${JAM_WEBHOOK_SECRET_PATH:?Set the absolute path to the signing secret}

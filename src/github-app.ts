@@ -11,9 +11,8 @@ async function request(path: string, token: string, method = 'GET', body?: objec
   if (!response.ok) throw new Error('GitHub App request failed: HTTP ' + response.status);
   return response.json();
 }
-export async function appReader(repository: string): Promise<(path: string) => Promise<any>> {
+export async function appReader(repository: string, installation = process.env.JAM_INSTALLATION_ID): Promise<(path: string) => Promise<any>> {
   const app = process.env.JAM_GITHUB_APP_ID;
-  const installation = process.env.JAM_INSTALLATION_ID;
   const keyPath = process.env.JAM_GITHUB_APP_KEY_FILE;
   if (!app || !installation || !keyPath || !/^\d+$/.test(app) || !/^\d+$/.test(installation))
     throw new Error('GitHub App credentials must be configured');

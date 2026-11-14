@@ -1,6 +1,6 @@
 # Local service on the development Mac
 
-Design for the single-repository test installation. See [PRD](PRD.md) JB-01, JB-03, JB-27 and JB-30. The existing AM32 route supplies HTTPS for this test.
+Design for the test installation with one coordinator per configured repository. See [PRD](PRD.md) JB-01, JB-03, JB-27 and JB-30. The existing AM32 route supplies HTTPS for this test.
 
 ```mermaid
 flowchart LR
@@ -15,7 +15,7 @@ flowchart LR
 
 ## Container
 
-Keep the interactive Compose service for existing experiment commands. Add a dedicated service using the same Ubuntu 22.04 image, running as the existing jam user with an init process and a Docker restart policy. Run `node dist/src/webhook-service.js` as the foreground application. Publish port 19739 on host IPv4 loopback. Use the existing Claude subscription directory with read/write access for credential renewal. Persist SQLite WAL and checkpoints on a named Docker volume writable by UID 1000. Use Node.js 22.13 or later and keep the service working directory stable. An exclusive kernel lock on the state volume prevents two coordinators. Managed interactive Claude and the service additionally lock the same credential directory before starting so that refresh and session writes have one writer. Supply the webhook signing secret from a private host file and the allowed repository and installation from local configuration. The service shares the existing subscription directory and container home with the managed interactive command. The process runs with the restricted Claude configuration described in [signed intake](WEBHOOK-LEO.md). A third-party process that opens the same profile directly can bypass the advisory lock; use a separate profile for concurrent sessions. SSH credentials and the Docker socket stay on the host.
+Keep the interactive Compose service for existing experiment commands. Add a dedicated service using the same Ubuntu 22.04 image, running as the existing jam user with an init process and a Docker restart policy. Run `node dist/src/webhook-service.js` as the foreground application. Publish port 19739 on host IPv4 loopback. Use the existing Claude subscription directory with read/write access for credential renewal. Persist SQLite WAL and checkpoints on a named Docker volume writable by UID 1000. Use Node.js 22.13 or later and keep the service working directory stable. An exclusive kernel lock on the state volume prevents a second service from taking ownership of the configured topics. Managed interactive Claude and the service additionally lock the same credential directory before starting so that refresh and session writes have one writer. Supply the webhook signing secret from a private host file and mount the GitHub App private key read-only at its own path. Set the allowed repositories and installations in local configuration. The service shares the existing subscription directory and container home with the managed interactive command. The process runs with the restricted Claude configuration described in [signed intake](WEBHOOK-LEO.md). A third-party process that opens the same profile directly can bypass the advisory lock; use a separate profile for concurrent sessions. SSH credentials and the Docker socket stay on the host.
 
 `GET /health` reports receiver readiness. `POST /github` accepts signed deliveries for the configured installation. The receiver owns durable intake and the handoff to Leo. A successfully started container alone does not establish successful intake or handoff.
 
@@ -42,7 +42,14 @@ JAM_REPOSITORY=OWNER/REPO
 JAM_REPOSITORY_ID=REPOSITORY_NUMERIC_ID
 JAM_INSTALLATION_ID=APP_INSTALLATION_NUMERIC_ID
 JAM_WEBHOOK_SECRET_PATH=/absolute/private/path/to/webhook-secret
+JAM_GITHUB_APP_ID=APP_NUMERIC_ID
+JAM_GITHUB_APP_KEY_PATH=/absolute/private/path/to/app.pem
+JAM_ADDITIONAL_TOPICS='[{"repository":"OWNER/SECOND","repoId":12345,"installation":67890}]'
 ```
+
+Keep the private key outside the repository with mode 0600 and supply its path to Compose. Compose mounts it read-only at `/run/secrets/app-key`. The operator CLI selects a journal with `JAM_REVIEW_REPOSITORY=OWNER/SECOND` in the service container. Without a selector it inspects the primary topic.
+
+The additional topics list is optional. Each entry selects a repository already granted to the App installation. GitHub's repository access settings and the local allowlist must both contain it. Keep the existing primary repository in place when adding a topic so its stored journal and coordinator session remain bound to the same project. Each additional topic gets its own journal and working directory on the existing volume.
 
 Run `scripts/macos/install-service.sh /absolute/path/to/service.env` from the checkout. For this private Mac test, pass the executable local tunnel recipe as a second argument. The installer builds the Ubuntu image and installs the launch files under the user's Library. The Mac-specific hostname and SSH setup live in the Git-ignored local runbook. The service occupies the profile until stopped. Configure a separate subscription directory and home for concurrent interactive experiments.
 

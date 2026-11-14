@@ -1,18 +1,15 @@
-import { mkdir, readdir, readFile, readlink } from 'node:fs/promises';
+import { readdir, readFile, readlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { Journal, type Topic } from './intake-journal.js';
+import { Journal } from './intake-journal.js';
 import { notifyLeo } from './leo-intake.js';
+import { dispatchApprovedWorker } from './approved-worker.js';
+import { configuredTopics, openTopics, type TopicRuntime } from './topics.js';
 import { webhook } from './webhook.js';
 
 function required(name: string): string {
   const value = process.env[name];
   if (!value) throw new Error('Missing '+name);
-  return value;
-}
-function numericId(name: string) {
-  const value = Number(required(name));
-  if (!Number.isSafeInteger(value) || value<=0) throw new Error('Invalid '+name);
   return value;
 }
 async function requireOwnerLock(path: string) {
@@ -22,47 +19,65 @@ async function requireOwnerLock(path: string) {
   }
   throw new Error('Start the service under flock -n -F '+path);
 }
+async function consume({journal,topic,state}: TopicRuntime, signal: AbortSignal) {
+  while (!signal.aborted) {
+    const execution = journal.nextWorker();
+    if (execution) {
+      try {
+        await dispatchApprovedWorker(execution,topic,state,signal,journal.lead().id);
+        journal.finishWorker(execution.delivery);
+      } catch (err) {
+        journal.finishWorker(execution.delivery,err instanceof Error ? err.message : 'Worker dispatch failed');
+        console.error('Worker dispatch requires review',topic.repository,execution.issue);
+      }
+      continue;
+    }
+    const event = journal.next();
+    if (!event) { await delay(500); continue; }
+    try {
+      const ack = await notifyLeo(event,journal.lead(),topic.cwd,topic.repository,signal);
+      journal.complete(ack);
+      console.log('Leo acknowledged issue',topic.repository,event.issue);
+    } catch (err) {
+      journal.fail(event.delivery,err instanceof Error ? err.message : 'Dispatch failed');
+      console.error('Leo intake requires review',topic.repository,event.issue);
+    }
+  }
+}
 async function main() {
   const state = resolve(required('JAM_STATE_DIR'));
   const [cmd,action,id,decision,operator,session] = process.argv.slice(2);
   if (cmd === 'review') {
-    const journal = new Journal(join(state,'intake.sqlite'));
+    const selector = process.env.JAM_REVIEW_REPOSITORY || required('JAM_REPOSITORY');
+    const route = configuredTopics(state).find(route => route.topic.repository === selector);
+    if (!route) throw new Error('Unconfigured review repository');
+    const journal = new Journal(join(route.state,'intake.sqlite'));
     try {
-      if (action==='list') console.log(JSON.stringify({session:journal.lead(), deliveries:journal.list()},null,2));
+      if (action==='list') console.log(JSON.stringify({repository:selector, session:journal.lead(), deliveries:journal.list()},null,2));
       else if (action==='resolve' && id && decision && operator && session) journal.resolve(id,decision,operator,session);
-      else throw new Error('Expected review list or review resolve DELIVERY acked|abandon|requeue OPERATOR resume|unused');
+      else if (action==='resolve-worker' && id && decision && operator) journal.resolveWorker(id,decision,operator);
+      else throw new Error('Expected review list, review resolve DELIVERY acked|abandon|requeue OPERATOR resume|unused, or review resolve-worker DELIVERY complete|abandon OPERATOR');
     } finally { journal.db.close(); }
     return;
   }
   if (cmd) throw new Error('Unknown service command');
   await requireOwnerLock(join(state,'owner.lock'));
-  const cwd = join(state,'leo');
-  await mkdir(cwd,{recursive:true,mode:0o700});
-  const topic: Topic = { repoId:numericId('JAM_REPOSITORY_ID'), installation:numericId('JAM_INSTALLATION_ID'), repository:required('JAM_REPOSITORY'), cwd };
   const secret = (await readFile(required('JAM_WEBHOOK_SECRET_FILE'),'utf8')).trim();
   if (!secret) throw new Error('Missing signing secret');
-  const journal = new Journal(join(state,'intake.sqlite'));
-  journal.start(topic);
-  const server = webhook(topic,secret,journal);
+  const routes = await openTopics(state);
+  const server = webhook(routes,secret);
   await new Promise<void>((ok,fail) => { server.once('error',fail); server.listen(19739,'0.0.0.0',ok); });
   const stop = new AbortController();
   function shutdown() { stop.abort(); server.close(); server.closeAllConnections(); }
   process.once('SIGTERM',shutdown);
   process.once('SIGINT',shutdown);
-  console.log('Signed issue intake ready');
-  try {
-    while (!stop.signal.aborted) {
-      const event = journal.next();
-      if (!event) { await delay(500); continue; }
-      try {
-        const ack = await notifyLeo(event,journal.lead(),cwd,topic.repository,stop.signal);
-        journal.complete(ack);
-        console.log('Leo acknowledged issue', event.issue);
-      } catch (error) {
-        journal.fail(event.delivery,error instanceof Error ? error.message : 'Dispatch failed');
-        console.error('Leo intake requires review for issue',event.issue);
-      }
-    }
-  } finally { shutdown(); journal.db.close(); }
+  console.log('Signed issue intake ready for',routes.size,'repositories');
+  const tasks = [...routes.values()].map(route=>consume(route,stop.signal));
+  try { await Promise.all(tasks); }
+  finally {
+    shutdown();
+    await Promise.allSettled(tasks);
+    for (const route of routes.values()) route.journal.db.close();
+  }
 }
 main().catch(err => { console.error(err.message); process.exitCode=1; });
