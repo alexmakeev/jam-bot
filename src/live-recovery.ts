@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { checkpointAuthor } from './claude-evidence.js';
 import { readLockedIssue } from './locked-issue.js';
+import { github, authorizeGitHubIssue } from './github-authorization.js';
 import { atomicJson } from './storage.js';
 
 async function main(): Promise<void> {
@@ -15,13 +16,16 @@ async function main(): Promise<void> {
       || approval !== '--approve-experiment' || !process.stdin.isTTY) {
     throw new Error('Run in a terminal: node dist/src/live-recovery.js ISSUE_URL --approve-experiment');
   }
+  // The explicit experiment approval is attributable to the authenticated operator.
+  const approver = github('user');
+  authorizeGitHubIssue(url, approver);
   const issue = readLockedIssue(url);
   const root = await mkdtemp(join(tmpdir(), 'jam-live-'));
   const worktree = join(root, 'worktree');
   // Temporary clone keeps experimental branches and Claude writes out of the source checkout.
   execFileSync('git', ['clone', '--quiet', '--local', '--no-hardlinks', '.', worktree]);
   const session = randomUUID();
-  const assignment = { issue: url, title: issue.title, session, worktree };
+  const assignment = { issue: url, title: issue.title, approver, session, worktree };
   await atomicJson(join(root, 'assignment.json'), assignment);
   const nonce = randomUUID();
   await mkdir(join(worktree, 'evidence'));
@@ -43,6 +47,7 @@ async function main(): Promise<void> {
       'The developer must send a checkpoint acknowledgment containing exactly the token ' + expected + ' to its lead and then wait. Do not write the checkpoint as the lead.',
       'No other files, shell commands or network calls are needed.'
     ].join(' ');
+    authorizeGitHubIssue(issue.url, approver);
     const current = readLockedIssue(issue.url);
     if (current.body !== issue.body || current.title !== issue.title)
       throw new Error('The issue changed before dispatch');

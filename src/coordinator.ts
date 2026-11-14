@@ -6,6 +6,7 @@ import { assignmentPath, createJson, FixtureSource, key, readJson, checkpointPat
 import { inspect, startFixture } from './harness.js';
 import { git } from './git.js';
 export function admit(card: Card, config: Config): void {
+  if (!card.projectUri.startsWith('fixture:')) throw new Error('Fixture authorization cannot execute a real repository task');
   if (card.kind !== 'task' || !card.approval || !config.approvers.includes(card.approval.actor)
     || !card.approval.conversation || card.approval.scope !== card.scope) throw new Error('Unapproved task or invalid attribution/scope');
   if (card.locked !== true) throw new Error('Work card discussion must be confirmed locked');
