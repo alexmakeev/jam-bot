@@ -22,14 +22,23 @@ services:
       JAM_GITHUB_APP_ID: ${JAM_GITHUB_APP_ID:?Set the GitHub App ID}
       JAM_GITHUB_APP_KEY_FILE: /run/secrets/app-key
       JAM_ADDITIONAL_TOPICS: '${JAM_ADDITIONAL_TOPICS:-[]}'
+      JAM_SERVER_ID: ${JAM_SERVER_ID:?Install the management host}
+      JAM_MANAGEMENT_TOKEN_FILE: /run/secrets/management-verifier
+      JAM_MANAGEMENT_HOSTS: ${JAM_MANAGEMENT_HOSTS:-127.0.0.1:19739}
+      JAM_DEPLOY_EXCHANGE: /var/lib/jam-management-exchange
       JAM_DEFAULT_CLASS: ${JAM_DEFAULT_CLASS:-development}
-      JAM_REPOSITORY_ID: ${JAM_REPOSITORY_ID:?Set the repository ID}
-      JAM_REPOSITORY: ${JAM_REPOSITORY:?Set the owner/repository name}
-      JAM_INSTALLATION_ID: ${JAM_INSTALLATION_ID:?Set the GitHub App installation ID}
+      JAM_REPOSITORY_ID: ${JAM_REPOSITORY_ID:-}
+      JAM_REPOSITORY: ${JAM_REPOSITORY:-}
+      JAM_INSTALLATION_ID: ${JAM_INSTALLATION_ID:-}
     ports:
       - "127.0.0.1:${JAM_HOST_PORT:-19739}:19739"
     volumes:
       - state:/var/lib/jam
+      - type: bind
+        source: ${JAM_DEPLOY_EXCHANGE_SOURCE:-${HOME}/.jam-bot/management-exchange}
+        target: /var/lib/jam-management-exchange
+        bind:
+          create_host_path: false
       - type: bind
         source: ${JAM_PROFILE_EXCHANGE:-${HOME}/.jam-bot/profile-exchange}
         target: /var/lib/jam-profile-exchange
@@ -48,6 +57,7 @@ services:
     secrets:
       - webhook
       - app-key
+      - management-verifier
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:19739/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 10s
@@ -57,6 +67,8 @@ services:
 volumes:
   state:
 secrets:
+  management-verifier:
+    file: ${JAM_MANAGEMENT_VERIFIER_PATH:-${HOME}/.jam-bot/management/owner.sha256}
   app-key:
     file: ${JAM_GITHUB_APP_KEY_PATH:?Set the absolute path to the App private key}
   webhook:

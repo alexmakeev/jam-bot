@@ -18,12 +18,16 @@ if launchctl print "$domain/$label" >/dev/null 2>&1; then
   echo "Service already installed and loaded. Use the upgrade steps in docs/SERVICE.md." >&2
   exit 1
 fi
+"$root/scripts/macos/install-environment-host.sh"
+export JAM_SERVER_ID
+JAM_SERVER_ID=$(cat "$HOME/.jam-bot/management/server-id")
 mkdir -p "${JAM_PROFILE_EXCHANGE:-$HOME/.jam-bot/profile-exchange}"
 docker compose --env-file "$config" -f "$root/compose.service.yaml" config -q
 docker build -t jam-bot-local-service:latest "$root"
 mkdir -p "$base" "$HOME/Library/LaunchAgents" "$HOME/Library/Logs/JAM-Bot"
 install -m 600 "$root/compose.service.yaml" "$base/compose.service.yaml"
 if [[ ! "$config" -ef "$base/service.env" ]]; then install -m 600 "$config" "$base/service.env"; fi
+if ! grep -q '^JAM_SERVER_ID=' "$base/service.env"; then printf '\nJAM_SERVER_ID=%s\n' "$JAM_SERVER_ID" >> "$base/service.env"; fi
 install -m 700 "$root/scripts/macos/run-service.sh" "$base/run-service.sh"
 if [[ -n "$route" ]]; then
   if [[ ! "$route" -ef "$base/tunnel.sh" ]]; then install -m 700 "$route" "$base/tunnel.sh"; fi

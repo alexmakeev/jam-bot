@@ -35,6 +35,8 @@ The install operation prepares the image and validates configuration before swit
 
 ## Install and operate
 
+The management runner installer creates the private server identity, owner credential and deployment catalog. Set the allowed public authority in `JAM_MANAGEMENT_HOSTS`. For a fresh installation, omit the three repository/installation binding variables to start management with an empty list. Keep the GitHub App credentials and webhook signing secret configured. See [host deployment recipes](ENVIRONMENT-RUNNER.md).
+
 On the Mac, start Docker Desktop, prepare the writable Claude subscription and container home as described in the README, and provide a private Compose environment file. Use absolute paths outside Documents for files read by the running service. The signing secret file must contain the same secret already configured in the GitHub App. Keep the secret and environment file outside Git.
 
 ```dotenv
