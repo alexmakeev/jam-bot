@@ -1,10 +1,10 @@
 # JAM-Bot
 
-MIT-licensed project in active design. See [PRD](docs/PRD.md), [architecture](docs/ARCHITECTURE.md), and [glossary](docs/GLOSSARY.md). This repository currently contains a local TypeScript/Node.js recovery experiment for [issue #1](https://github.com/alexmakeev/jam-bot/issues/1), **not the production MVP**.
+MIT-licensed project in active design. See [PRD](docs/PRD.md), [architecture](docs/ARCHITECTURE.md), and [glossary](docs/GLOSSARY.md). The repository includes the [local recovery experiment](https://github.com/alexmakeev/jam-bot/issues/1) and an opt-in [single-repository webhook-to-Leo service](docs/SERVICE.md).
 
 ## Run the experiment
 
-Requires Node.js 20+ and Git. No runtime packages, GitHub credentials, or paid model calls are used by the fixture.
+Requires Node.js 22.13+ and Git. No runtime packages, GitHub credentials, or paid model calls are used by the fixture.
 
 ```sh
 npm ci
@@ -37,4 +37,6 @@ See [prototype validation](docs/PROTOTYPE.md) for executed checks and limitation
 
 With Docker Desktop running, use `docker compose run --rm jam` to build the image and open Claude Code. Claude Code uses the Mac's existing `~/.claude` directory mounted read/write at `/home/jam/.claude`. This directory mount allows atomic credential-file replacement. Set `JAM_CLAUDE_DIR` to select a different existing Claude directory. Other container home files persist separately under `~/.jam-bot/container-home` (override with `JAM_CONTAINER_HOME`). Check login inside the container: macOS Keychain credentials are separate from the mounted files.
 
-Use `docker compose run --rm jam node --test --test-concurrency=1 dist/test/recovery.test.js` to exercise the local worker fixture on Linux. This interactive environment is for development; the GitHub webhook service is a separate implementation milestone.
+Use `docker compose run --rm jam node --test --test-concurrency=1 dist/test/recovery.test.js` to exercise the local worker fixture on Linux. The interactive environment shares the Claude subscription with the local service. Stop the service before opening interactive Claude with the same directory, or supply a separate subscription directory and home.
+
+For the separately installed local webhook service, see [Mac service setup and operation](docs/SERVICE.md). The service runs in Ubuntu 22.04 under Docker Desktop and starts after the Mac user logs in.

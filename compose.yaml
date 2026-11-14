@@ -4,6 +4,7 @@ services:
     init: true
     stdin_open: true
     tty: true
+    command: ["flock", "-n", "-F", "/home/jam/.claude/.jam-bot-runtime.lock", "claude"]
     volumes:
       - ${JAM_CONTAINER_HOME:-${HOME}/.jam-bot/container-home}:/home/jam
       - type: bind

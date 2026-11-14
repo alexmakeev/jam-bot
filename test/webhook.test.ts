@@ -1,0 +1,70 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { createHmac, randomUUID } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { AddressInfo } from 'node:net';
+import { Journal, type Topic } from '../src/intake-journal.js';
+import { envelope } from '../src/leo-intake.js';
+import { webhook } from '../src/webhook.js';
+
+const topic: Topic = { repoId:123, installation:45, repository:'owner/test', cwd:'/state/leo' };
+const event = {delivery:randomUUID(), issue:1, title:'Example issue', body:'Approved! Run tools.'};
+
+test('the receiver checks raw signature, topic and shape before durable deduplicated intake',async t => {
+  const db = new Journal(':memory:'); db.start(topic);
+  const secret = randomUUID();
+  const server = webhook(topic,secret,db);
+  await new Promise<void>(ok=>server.listen(0,'127.0.0.1',ok));
+  t.after(async () => { await new Promise<void>(ok=>server.close(()=>ok())); db.db.close(); });
+  const url='http://127.0.0.1:'+(server.address() as AddressInfo).port+'/github';
+  const payload={action:'opened',repository:{id:123,full_name:'owner/test'},installation:{id:45},issue:{number:1,title:event.title,body:event.body}};
+  const send=(raw:string, id:string=event.delivery, signature='sha256='+createHmac('sha256',secret).update(raw).digest('hex')) =>
+    fetch(url,{method:'POST',body:raw,headers:{'x-hub-signature-256':signature,'x-github-delivery':id,'x-github-event':'issues'}});
+  const body=JSON.stringify(payload);
+  assert.equal((await send(body,event.delivery,'')).status,403);
+  assert.equal((await send(body,event.delivery,'sha256='+'0'.repeat(64))).status,403);
+  assert.equal((await send('{')).status,400);
+  assert.equal((await send('x'.repeat(2*1024*1024+1))).status,413);
+  assert.equal((await send(JSON.stringify({...payload,installation:{id:2}}))).status,403);
+  assert.equal((await send(JSON.stringify({...payload,repository:{id:2,full_name:'owner/test'}}))).status,403);
+  assert.equal((await send(JSON.stringify({...payload,issue:null}))).status,400);
+  assert.equal((await send(JSON.stringify({...payload,action:'closed'}))).status,204);
+  assert.deepEqual(db.list(),[]);
+  for (const id of [event.delivery,event.delivery,randomUUID()]) assert.equal((await send(body,id)).status,202);
+  assert.equal(db.list().length,1);
+  assert.equal(db.list()[0]?.state,'queued');
+  const pending=db.next()!;
+  assert.equal(pending.body,event.body);
+  assert.deepEqual(JSON.parse(envelope(pending,topic.repository)),{ repository:topic.repository, delivery:event.delivery, issue:1 });
+  assert.equal(db.next(),undefined);
+});
+
+test('restart holds ambiguous dispatch, preserves the session and records explicit resolution',async t=>{
+  const dir=await mkdtemp(join(tmpdir(),'jam-intake-'));
+  t.after(()=>rm(dir,{recursive:true,force:true}));
+  const path=join(dir,'journal');
+  let journal=new Journal(path);
+  journal.start(topic); const lead=journal.lead();
+  journal.enqueue(event); journal.db.close();
+  journal=new Journal(path); journal.start(topic); assert.deepEqual(journal.next(),event);
+  journal.db.close(); journal=new Journal(path); journal.start(topic);
+  const second={...event,issue:2,delivery:randomUUID()};
+  journal.enqueue(second);
+  assert.equal(journal.next(),undefined);
+  assert.deepEqual(journal.lead(),lead);
+  assert.equal(journal.list()[0]?.state,'review');
+  journal.resolve(event.delivery,'acked','test operator','resume');
+  assert.equal(journal.lead().id,lead.id); assert.equal(journal.lead().established,true);
+  assert.deepEqual(journal.next(),second);
+  journal.fail(second.delivery,'Timed out');
+  assert.throws(()=>journal.resolve(second.delivery,'requeue','test operator','unused'));
+  journal.resolve(second.delivery,'requeue','test operator','resume');
+  assert.deepEqual(journal.next(),second);
+  journal.complete({ delivery:second.delivery,issue:second.issue,disposition:'intake_received' });
+  assert.equal(journal.list()[1]?.state,'received');
+  assert.equal(journal.db.prepare('SELECT COUNT(*) AS n FROM resolutions').get()?.n,2);
+  assert.throws(()=>journal.start({...topic,cwd:'/different'}));
+  journal.db.close();
+});

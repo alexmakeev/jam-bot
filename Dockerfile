@@ -11,6 +11,7 @@ RUN npm ci
 COPY src src
 COPY test test
 RUN npm run build
+RUN install -d -o jam -g jam /var/lib/jam
 USER jam
 ENV HOME=/home/jam
 CMD ["claude"]

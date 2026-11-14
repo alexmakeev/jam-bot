@@ -1,0 +1,51 @@
+name: jam-bot-service
+services:
+  receiver:
+    image: jam-bot-local-service:latest
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    command:
+      - flock
+      - -n
+      - -F
+      - /home/jam/.claude/.jam-bot-runtime.lock
+      - flock
+      - -n
+      - -F
+      - /var/lib/jam/owner.lock
+      - node
+      - dist/src/webhook-service.js
+    environment:
+      JAM_STATE_DIR: /var/lib/jam
+      JAM_WEBHOOK_SECRET_FILE: /run/secrets/webhook
+      JAM_REPOSITORY_ID: ${JAM_REPOSITORY_ID:?Set the repository ID}
+      JAM_REPOSITORY: ${JAM_REPOSITORY:?Set the owner/repository name}
+      JAM_INSTALLATION_ID: ${JAM_INSTALLATION_ID:?Set the GitHub App installation ID}
+    ports:
+      - "127.0.0.1:${JAM_HOST_PORT:-19739}:19739"
+    volumes:
+      - state:/var/lib/jam
+      - type: bind
+        source: ${JAM_CONTAINER_HOME:-${HOME}/.jam-bot/container-home}
+        target: /home/jam
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${JAM_CLAUDE_DIR:-${HOME}/.claude}
+        target: /home/jam/.claude
+        bind:
+          create_host_path: false
+    secrets:
+      - webhook
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:19739/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 4s
+      retries: 3
+      start_period: 5s
+volumes:
+  state:
+secrets:
+  webhook:
+    file: ${JAM_WEBHOOK_SECRET_PATH:?Set the absolute path to the signing secret}
