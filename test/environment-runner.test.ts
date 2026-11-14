@@ -1,10 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {selectEnvironmentRecipe,signEnvironment,validEnvironmentSignature} from '../src/environment-wire.js';
-import {runEnvironment} from '../src/environment-runner.js';
+import {runEnvironment,withEnvironmentAuthority,withoutEnvironmentAuthority} from '../src/environment-runner.js';
 
 test('environment command requires management authority and signatures bind the full payload and direction',async()=>{
   await assert.rejects(runEnvironment({serverId:'example',repoId:1,environment:'staging',action:'deploy'}),/authenticated/);
+  await withEnvironmentAuthority('owner',()=>withoutEnvironmentAuthority(async()=>{
+    await Promise.resolve();
+    await assert.rejects(runEnvironment({serverId:'example',repoId:1,environment:'staging',action:'stop'}),/authenticated/);
+  }));
   const body=JSON.stringify({repoId:1,environment:'staging',action:'stop'});
   const signature=signEnvironment('operator','request',body);
   assert.ok(validEnvironmentSignature('operator','request',body,signature));

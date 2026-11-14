@@ -2,6 +2,7 @@ import { readdir, readFile, readlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Journal } from './intake-journal.js';
+import { withoutEnvironmentAuthority } from './environment-runner.js';
 import { TaskAdmission } from './task-admission.js';
 import { approvalFromEvent, validateTaskApproval } from './task-approval.js';
 import { notifyLeo } from './leo-intake.js';
@@ -92,7 +93,7 @@ async function main() {
   let failure:unknown;
   const start=(route:TopicRuntime)=>{
     if(stop.signal.aborted)return;
-    const task=consume(route,stop.signal).catch(err=>{failure=err;stop.abort();});
+    const task=withoutEnvironmentAuthority(()=>consume(route,stop.signal)).catch(err=>{failure=err;stop.abort();});
     consumers.add(task);
     void task.finally(()=>consumers.delete(task));
   };
