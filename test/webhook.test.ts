@@ -133,8 +133,8 @@ test('route before approval, verify actor and author, ignore locks, deduplicate 
   t.after(async()=>{ await new Promise<void>(ok=>router.close(()=>ok())); runtime.forEach(r=>r.journal.db.close()); });
   const url='http://127.0.0.1:'+(router.address() as AddressInfo).port+'/github';
   const actor={type:'User',id:10,login:'owner'};
-  const issue={user:actor,number:1,title:'Manual task',body:'Implement the requested change',locked:false,type:{id:9,name:'Task'},labels:[{name:'class:development'}]};
-  const payload={installation:{id:45},repository:{id:456,owner:actor,full_name:'owner/other'},issue,sender:{type:'User',login:'editor',id:12},action:'typed'};
+  const issue={user:actor,number:1,title:'Manual task',body:'Implement the requested change',locked:false,labels:[{name:'class:development'}]};
+  const payload={installation:{id:45},repository:{id:456,owner:actor,full_name:'owner/other'},type:{id:9,name:'Task'},issue,sender:{type:'User',login:'editor',id:12},action:'typed'};
   async function send(data:unknown,id=randomUUID()) {
     const raw=JSON.stringify(data);
     return (await fetch(url,{method:'POST',headers:{'x-github-delivery':id,'x-github-event':'issues',
@@ -145,14 +145,18 @@ test('route before approval, verify actor and author, ignore locks, deduplicate 
   assert.equal(await send({...payload,sender:{...actor,id:11}}),204);
   assert.equal(await send({...payload,issue:{...issue,user:{...actor,id:11}}}),204);
   assert.equal(await send({...payload,action:'locked',issue:{...issue,locked:true}}),204);
-  assert.equal(await send({...payload,issue:{...issue,type:{id:10,name:'Bug'}}}),204);
+  assert.equal(await send({...payload,type:{id:10,name:'Bug'}}),204);
+  // GitHub's actual opened delivery contains no type. A later typed delivery must be attributed to its own sender.
+  const {type:taskType,...withoutType}=payload;
+  assert.equal(await send({...withoutType,sender:actor,action:'opened'}),204);
+  assert.equal(await send({...withoutType,issue:{...issue,type:taskType}}),204);
   assert.equal(await send({...payload,issue:{...issue,labels:[{name:'class:development'},{name:'class:consultation'}]}}),422);
   assert.deepEqual(first!.journal.list(),[]); assert.deepEqual(second!.journal.list(),[]);
   const locked=randomUUID();
   assert.equal(await send(payload,locked),202);
   assert.equal(await send(payload),202);
-  assert.equal(await send({...payload,sender:actor,action:'opened'}),202);
-  assert.equal(await send({...payload,sender:actor,action:'opened',repository:{...payload.repository,id:123,full_name:'owner/test'}}),202);
+  assert.equal(await send({...withoutType,sender:actor,action:'opened'}),204);
+  assert.equal(await send({...payload,sender:actor,repository:{...payload.repository,id:123,full_name:'owner/test'}}),202);
   assert.notEqual(first!.journal.lead().id,second!.journal.lead().id);
   const a=first!.journal.next()!;
   assert.equal(a.action,'task'); assert.equal(first!.journal.nextWorker(),undefined);

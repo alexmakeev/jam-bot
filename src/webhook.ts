@@ -39,13 +39,16 @@ async function receive(req: IncomingMessage, res: ServerResponse, routes: Routes
   const delivery = req.headers['x-github-delivery'];
   const issue = data.issue;
   if (!issue || typeof issue !== 'object') return end(400);
-  if (issue.type?.name!=='Task' || issue.pull_request) return end(204);
+  // GitHub sends a separate typed delivery even when Task was selected during creation.
+  // An opened payload without its own type evidence cannot establish who set a later type.
+  const taskType=data.action==='typed' ? data.type : issue.type;
+  if (taskType?.name!=='Task' || issue.pull_request) return end(204);
   const actor = data.sender;
   if (actor?.type!=='User' || !Number.isSafeInteger(actor.id) || actor.id<=0 ||
       typeof actor.login!=='string' || !/^[A-Za-z0-9-]+$/.test(actor.login)) return end(204);
   if(data.action==='opened' && issue.user?.id!==actor.id)return end(204);
   if (typeof delivery !== 'string' || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(delivery) ||
-      !Number.isSafeInteger(issue.type.id) || issue.type.id<=0 || !Number.isSafeInteger(issue.number) || issue.number<=0 ||
+      !Number.isSafeInteger(taskType.id) || taskType.id<=0 || !Number.isSafeInteger(issue.number) || issue.number<=0 ||
       typeof issue.title!=='string' || !issue.title.trim() || !(issue.body==null || typeof issue.body==='string')) return end(400);
   if(issue.title.length>512 || (issue.body?.length ?? 0)>65536)return end(413);
   const author=issue.user;
@@ -54,7 +57,7 @@ async function receive(req: IncomingMessage, res: ServerResponse, routes: Routes
   let kind;
   try { kind=taskClass(issue.labels); } catch { return end(422); }
   if(!await canApprove(route.topic,actor) || (author.id!==actor.id && !await canApprove(route.topic,author)))return end(204);
-  journal.enqueue({delivery,issue:issue.number,action:'task',approvalSource:data.action,typeId:issue.type.id,
+  journal.enqueue({delivery,issue:issue.number,action:'task',approvalSource:data.action,typeId:taskType.id,
     actorId:actor.id,actorLogin:actor.login,authorId:author.id,authorLogin:author.login,kind,title:issue.title,body:issue.body ?? ''});
   return end(202);
 }
