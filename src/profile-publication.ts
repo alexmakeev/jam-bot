@@ -4,7 +4,6 @@ import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { GitHubRequestError, issueClient } from './github-app.js';
 import type { Topic } from './intake-journal.js';
-import type { ProfileCard } from './profile-card.js';
 
 const stages = ['queued','planning','in progress','in validation','blocked'] as const;
 type Stage = typeof stages[number];
@@ -25,8 +24,19 @@ export async function setCardProgress(topic: Topic, issue: number, status: Stage
   }
 }
 
-export async function markApproved(topic: Topic, issue: number, kind: ProfileCard['kind']) {
-  await setCardProgress(topic,issue,'queued',['kind:task','approval:approved','class:'+kind]);
+export async function markApproved(topic: Topic, issue: number) {
+  await setCardProgress(topic,issue,'queued');
+}
+
+export async function requestFileScope(topic:Topic,issue:number,plan:string) {
+  const api=await issueClient(topic.repository,topic.installation);
+  const marker='<!-- jam-bot:needs-files -->';
+  const comments:{body:string}[]=await api('/issues/'+issue+'/comments?per_page=100');
+  if(!comments.some(c=>c.body?.endsWith(marker))){
+    await api('/issues/'+issue+'/comments','POST',{body:plan.replace(/\s+/g,' ').slice(0,600)+
+      ' Please create a linked follow-up Task with a Files: line naming the repository-relative paths authorized for editing. '+marker});
+  }
+  await setCardProgress(topic,issue,'blocked');
 }
 
 export async function completeCard(topic: Topic, issue: number, summary: string) {

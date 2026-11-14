@@ -2,6 +2,7 @@ import { readdir, readFile, readlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Journal } from './intake-journal.js';
+import { approvalFromEvent, validateTaskApproval } from './task-approval.js';
 import { notifyLeo } from './leo-intake.js';
 import { dispatchApprovedWorker } from './approved-worker.js';
 import { configuredTopics, openTopics, type TopicRuntime } from './topics.js';
@@ -46,6 +47,7 @@ async function consume({journal,topic,state}: TopicRuntime, signal: AbortSignal)
       const event = journal.next();
       if (!event) { await delay(500); continue; }
       try {
+        if(event.action==='task')await validateTaskApproval(topic,event.issue,approvalFromEvent(event),true);
         const ack = await notifyLeo(event,journal.lead(),topic.cwd,topic.repository,signal);
         journal.complete(ack);
         console.log('Leo acknowledged issue',topic.repository,event.issue);

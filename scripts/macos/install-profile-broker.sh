@@ -14,6 +14,11 @@ exchange="$HOME/.jam-bot/profile-exchange"
 label=local.jam-bot.profile-broker
 plist="$HOME/Library/LaunchAgents/$label.plist"
 mkdir -p "$dir" "$exchange" "$HOME/Library/LaunchAgents" "$HOME/Library/Logs/JAM-Bot"
+src=$(cd "$(dirname "$0")/../.." && pwd)
+(cd "$src" && npm run build)
+mkdir -p "$dir/runtime"
+printf '%s\n' '{"type":"module"}' > "$dir/runtime/package.json"
+install -m 600 "$src/dist/src/profile-card.js" "$src/dist/src/broker-approval.js" "$dir/runtime/"
 install -m 700 "$(dirname "$0")/profile-broker.mjs" "$dir/profile-broker.mjs"
 node -e "require('fs').writeFileSync(process.argv[1],JSON.stringify({repositories:[process.argv[2]],image:process.argv[3]}))" "$dir/config.json" "$repo" "$image"
 launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true

@@ -1,10 +1,10 @@
 # Leo Developer work profile
 
-A trusted maintainer creates and locks a self-contained English work card. The GitHub App verifies the lock, immutable author identity, current repository role and approved scope. The local test installation supports personal repositories. Labels show progress; authorization comes from the work card and the live access check.
+Create an open issue with native type **Task**, or assign that type to a finished draft. The service checks the signed actor's current repository write access and locks the conversation. A draft without the Task type can be edited before approval.
 
 ## Work cards
 
-The body starts with `I approve this Leo Developer work card.`, a blank line, a `Class: assignment`, `Class: consultation` or `Class: development` line, and a `Files: ...` line. A blank line separates those fields from the task. List editable repository-relative files separated by a comma and a space. Use `Files: none` for a direct assignment or consultation.
+Use the title and description to explain the work. The repository's Leo Developer profile defaults to development. List the approved editable paths in a leading `Files: src/example.ts, tests/example.test.ts` line before the task description. An explicit `Class: assignment` or `Class: consultation` line can select another route. Ordinary tasks require no class label or approval phrase.
 
 | Class | Work and completion |
 | --- | --- |
@@ -12,7 +12,7 @@ The body starts with `I approve this Leo Developer work card.`, a blank line, a 
 | Consultation | A named consultant answers the approved question. The issue closes with the recommendation. |
 | Development | The architect prepares a specification. The developer receives the scope and accepted specification, edits the authorized files in a separate worktree, and submits a tested revision for review. Leo groups ready revisions for the integrator. The service closes the cards after the tested candidate reaches dev. |
 
-The labels `kind:task`, `approval:approved` and `class:<class>` persist. The active phase appears as one of `status:queued`, `status:planning`, `status:in-progress`, `status:in-validation` or `status:blocked`. The provider's closed state records completion. See [PRD JB-20](PRD.md) for the batching policy.
+The native Task type and local approval record identify the work. The service adds only the current phase label. The active phase appears as one of `status:queued`, `status:planning`, `status:in-progress`, `status:in-validation` or `status:blocked`. The provider's closed state records completion. See [PRD JB-20](PRD.md) for the batching policy.
 
 ## Specification handoff on GitHub
 

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { DatabaseSync } from 'node:sqlite';
-import { WORKER_ACCEPTANCE_BODY } from '../src/approved-worker.js';
+import { approvalFromEvent, hasTaskWriteAccess, validateTaskApproval } from '../src/task-approval.js';
 import { configuredTopics, topicKey } from '../src/topics.js';
 import { Journal, type Topic } from '../src/intake-journal.js';
 import { envelope } from '../src/leo-intake.js';
@@ -18,12 +18,12 @@ const event = {action:'opened' as const, delivery:randomUUID(), issue:1, title:'
 test('the receiver checks raw signature, topic and shape before durable deduplicated intake',async t => {
   const db = new Journal(':memory:'); db.start(topic);
   const secret = randomUUID();
-  const server = webhook(new Map([[topicKey(topic.installation,topic.repoId),{topic,state:'/state',journal:db}]]),secret);
+  const server = webhook(new Map([[topicKey(topic.installation,topic.repoId),{topic,state:'/state',journal:db}]]),secret,async(_topic,actor)=>actor.id===10 || actor.id===12);
   await new Promise<void>(ok=>server.listen(0,'127.0.0.1',ok));
   t.after(async () => { await new Promise<void>(ok=>server.close(()=>ok())); db.db.close(); });
   const url='http://127.0.0.1:'+(server.address() as AddressInfo).port+'/github';
-  const owner={type:'User',id:10};
-  const payload={action:'opened',sender:owner,repository:{id:123,full_name:'owner/test',owner},installation:{id:45},issue:{user:owner,number:1,title:event.title,body:event.body}};
+  const owner={type:'User',id:10,login:'owner'};
+  const payload={action:'opened',sender:owner,repository:{id:123,full_name:'owner/test',owner},installation:{id:45},issue:{user:owner,number:1,title:event.title,body:event.body,type:{name:'Task',id:9},labels:[]}};
   const send=(raw:string, id:string=event.delivery, signature='sha256='+createHmac('sha256',secret).update(raw).digest('hex')) =>
     fetch(url,{method:'POST',body:raw,headers:{'x-hub-signature-256':signature,'x-github-delivery':id,'x-github-event':'issues'}});
   const body=JSON.stringify(payload);
@@ -35,7 +35,7 @@ test('the receiver checks raw signature, topic and shape before durable deduplic
   assert.equal((await send(JSON.stringify({...payload,repository:{id:2,full_name:'owner/test'}}))).status,403);
   assert.equal((await send(JSON.stringify({...payload,issue:null}))).status,400);
   assert.equal((await send(JSON.stringify({...payload,action:'closed'}))).status,204);
-  const outsider={type:'User',id:11};
+  const outsider={type:'User',id:11,login:'outsider'};
   assert.equal((await send(JSON.stringify({...payload,sender:outsider,issue:{...payload.issue,user:outsider}}))).status,204);
   assert.equal((await send(JSON.stringify({...payload,issue:{...payload.issue,user:outsider}}))).status,204);
   assert.deepEqual(db.list(),[]);
@@ -101,7 +101,7 @@ test('legacy receipts survive schema migration and interrupted worker starts req
   assert.equal(db.lead().id,session);
   assert.equal(db.list()[0]?.receipt,receipt);
   assert.equal(db.nextWorker(),undefined);
-  const locked={...event,action:'locked' as const,delivery:randomUUID(),actorId:11,actorLogin:'owner'};
+  const locked={...event,action:'task' as const,typeId:9,approvalSource:'typed' as const,delivery:randomUUID(),actorId:11,actorLogin:'owner',authorId:11,authorLogin:'owner'};
   db.enqueue(locked);
   assert.deepEqual(db.next(),locked);
   assert.equal(db.nextWorker(),undefined);
@@ -120,7 +120,7 @@ test('legacy receipts survive schema migration and interrupted worker starts req
   db.db.close();
 });
 
-test('route first, verify trusted ready events and dispatch only once, even when locked arrives first',async t=>{
+test('route before approval, verify actor and author, ignore locks, deduplicate opened and typed',async t=>{
   const topics=[topic,{...topic,repoId:456,repository:'owner/other',cwd:'/state/topics/45/456/leo'}];
   const runtime=topics.map(topic=>{
     const journal=new Journal(':memory:'); journal.start(topic);
@@ -128,13 +128,13 @@ test('route first, verify trusted ready events and dispatch only once, even when
   });
   const [first,second]=runtime;
   const secret=randomUUID();
-  const router=webhook(new Map(runtime.map(route=>[topicKey(route.topic.installation,route.topic.repoId),route])),secret);
+  const router=webhook(new Map(runtime.map(route=>[topicKey(route.topic.installation,route.topic.repoId),route])),secret,async(_topic,actor)=>actor.id===10 || actor.id===12);
   await new Promise<void>(ok=>router.listen(0,'127.0.0.1',ok));
   t.after(async()=>{ await new Promise<void>(ok=>router.close(()=>ok())); runtime.forEach(r=>r.journal.db.close()); });
   const url='http://127.0.0.1:'+(router.address() as AddressInfo).port+'/github';
   const actor={type:'User',id:10,login:'owner'};
-  const issue={user:actor,number:1,title:'Acceptance',body:WORKER_ACCEPTANCE_BODY,locked:true};
-  const payload={installation:{id:45},repository:{id:456,owner:actor,full_name:'owner/other'},issue,sender:actor,action:'locked'};
+  const issue={user:actor,number:1,title:'Manual task',body:'Implement the requested change',locked:false,type:{id:9,name:'Task'},labels:[{name:'class:development'}]};
+  const payload={installation:{id:45},repository:{id:456,owner:actor,full_name:'owner/other'},issue,sender:{type:'User',login:'editor',id:12},action:'typed'};
   async function send(data:unknown,id=randomUUID()) {
     const raw=JSON.stringify(data);
     return (await fetch(url,{method:'POST',headers:{'x-github-delivery':id,'x-github-event':'issues',
@@ -144,24 +144,26 @@ test('route first, verify trusted ready events and dispatch only once, even when
   assert.equal(await send({...payload,installation:{id:99}}),403);
   assert.equal(await send({...payload,sender:{...actor,id:11}}),204);
   assert.equal(await send({...payload,issue:{...issue,user:{...actor,id:11}}}),204);
-  assert.equal(await send({...payload,issue:{...issue,locked:false}}),204);
-  assert.equal(await send({...payload,issue:{...issue,body:WORKER_ACCEPTANCE_BODY+'x'}}),204);
+  assert.equal(await send({...payload,action:'locked',issue:{...issue,locked:true}}),204);
+  assert.equal(await send({...payload,issue:{...issue,type:{id:10,name:'Bug'}}}),204);
+  assert.equal(await send({...payload,issue:{...issue,labels:[{name:'class:development'},{name:'class:consultation'}]}}),422);
   assert.deepEqual(first!.journal.list(),[]); assert.deepEqual(second!.journal.list(),[]);
   const locked=randomUUID();
   assert.equal(await send(payload,locked),202);
   assert.equal(await send(payload),202);
-  assert.equal(await send({...payload,action:'opened'}),202);
-  assert.equal(await send({...payload,action:'opened',repository:{...payload.repository,id:123,full_name:'owner/test'}}),202);
+  assert.equal(await send({...payload,sender:actor,action:'opened'}),202);
+  assert.equal(await send({...payload,sender:actor,action:'opened',repository:{...payload.repository,id:123,full_name:'owner/test'}}),202);
   assert.notEqual(first!.journal.lead().id,second!.journal.lead().id);
   const a=first!.journal.next()!;
-  assert.equal(a.action,'opened'); assert.equal(first!.journal.nextWorker(),undefined);
+  assert.equal(a.action,'task'); assert.equal(first!.journal.nextWorker(),undefined);
   const b=second!.journal.next()!;
-  assert.equal(b.delivery,locked); assert.equal(b.actorId,10); assert.equal(b.actorLogin,'owner');
+  assert.equal(b.delivery,locked); assert.equal(b.actorId,12); assert.equal(b.actorLogin,'editor');
+  assert.equal(approvalFromEvent(b).author.id,10); assert.equal(approvalFromEvent(b).kind,'development');
   second!.journal.complete({issue:1,delivery:locked,disposition:'intake_received'});
   assert.deepEqual(second!.journal.nextWorker(),b);
   assert.equal(second!.journal.next(),undefined);
   second!.journal.finishWorker(locked);
-  assert.equal(second!.journal.next()?.action,'opened');
+  assert.equal(second!.journal.next(),undefined);
   assert.equal(second!.journal.nextWorker(),undefined);
   assert.equal(first!.journal.list().length,1);
 });
@@ -188,4 +190,41 @@ test('a text-producing subagent cannot satisfy native teammate evidence',async t
   assert.equal(await teammateReceipt(root,cwd,session,name,challenge,answer),undefined);
   await writeFile(worker,msg('assistant',[{type:'tool_use',name:'SendMessage',input:{to:'main',message:answer}}]));
   assert.equal((await teammateReceipt(root,cwd,session,name,challenge,answer))?.developer,handle);
+});
+
+
+test('Task approval uses immutable identities and effective collaborator write permission',async()=>{
+  const actor={type:'User',id:1234,login:'editor'};
+  const permitted=(permission:string,user=actor)=>hasTaskWriteAccess(topic,actor,async path=>
+    path.includes('/collaborators/')?{user,permission,role_name:'custom'}:{id:topic.repoId});
+  assert.equal(await permitted('write'),true);
+  assert.equal(await permitted('admin'),true);
+  assert.equal(await permitted('read'),false);
+  assert.equal(await permitted('write',{...actor,id:99}),false);
+  assert.equal(await hasTaskWriteAccess(topic,{...actor,type:'Bot'},async()=>{throw Error('Unexpected provider call');}),false);
+});
+
+
+test('Task admission automatically locks only an unchanged scope from two currently authorized humans',async()=>{
+  const actor={type:'User',login:'approver',id:45}, author={type:'User',login:'author',id:46};
+  const approval={actor,author,title:'Design change',body:'Current scope',typeId:7};
+  const issue={number:11,user:author,state:'open',locked:false,labels:[],type:{id:7,name:'Task'},title:approval.title,body:approval.body};
+  let actorAccess='write', authorAccess='write', locks=0;
+  const clients={
+    read:async()=>async(path:string)=>{
+      if(path.endsWith('/issues/11'))return {...issue};
+      if(path.endsWith('/approver/permission'))return {user:actor,permission:actorAccess};
+      if(path.endsWith('/author/permission'))return {user:author,permission:authorAccess};
+      return {id:topic.repoId};
+    },
+    write:async()=>async(path:string,method?:string)=>{assert.equal(path,'/issues/11/lock');assert.equal(method,'PUT');++locks;issue.locked=true;},
+  };
+  await assert.rejects(validateTaskApproval(topic,11,approval,false,clients));
+  await validateTaskApproval(topic,11,approval,true,clients);
+  assert.equal(locks,1);
+  await validateTaskApproval(topic,11,approval,true,clients);assert.equal(locks,1);
+  issue.body='Modified';await assert.rejects(validateTaskApproval(topic,11,approval,false,clients));
+  issue.body=approval.body;actorAccess='read';await assert.rejects(validateTaskApproval(topic,11,approval,false,clients));
+  actorAccess='write';authorAccess='read';await assert.rejects(validateTaskApproval(topic,11,approval,false,clients));
+  authorAccess='write';issue.type.name='Feature';await assert.rejects(validateTaskApproval(topic,11,approval,false,clients));
 });

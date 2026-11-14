@@ -5,19 +5,18 @@ import { BranchValidation } from './branch-validation.js';
 import { IntegrationQueue, type IntegrationBatch, type ReadyBranch } from './integration-queue.js';
 import { runRoleStage, applyRoleFiles, type StageRole } from './role-harness.js';
 import { checkout, exchange, git } from './profile-checkout.js';
-import { completeCard, publishSpecification, setCardProgress } from './profile-publication.js';
-import { formatProfileCard, type ProfileCard } from './profile-card.js';
-import { checkCurrentRole, type GitHubActor } from './github-authorization.js';
-import { appReader } from './github-app.js';
+import { completeCard, publishSpecification, requestFileScope, setCardProgress } from './profile-publication.js';
+import type { ProfileCard } from './profile-card.js';
+import { validateTaskApproval, type TaskApproval } from './task-approval.js';
 import { atomicJson, readJson } from './storage.js';
 import type { TopicRuntime } from './topics.js';
 
 interface ProfileRun {
   topic:Topic; state:string; lead:string; issue:number; card:ProfileCard; signal:AbortSignal;
-  authorize:()=>Promise<void>;
+  authorize:()=>Promise<void>; approval:TaskApproval;
 }
 type Project = Awaited<ReturnType<typeof checkout>>;
-interface Ready {project:Project;sha:string;card:ProfileCard;spec:string;actor:GitHubActor}
+interface Ready {project:Project;sha:string;card:ProfileCard;spec:string;approval:TaskApproval}
 const directory=(state:string,issue:number)=>join(state,'assignments',String(issue));
 
 async function stage(p:ProfileRun,role:StageRole,input:string){
@@ -56,6 +55,13 @@ export async function runDeveloperProfile(p:ProfileRun) {
     }
     await setCardProgress(topic,issue,'planning');
     await p.authorize();
+    if(!card.files.length) {
+      const plan=await stage(p,'architect','Provide a brief English implementation plan. Identify file scope questions to settle before edits.\n'+card.task);
+      await atomicJson(join(dir,'plan.json'),{kind:'development',plan,waiting:'file-scope'});
+      await p.authorize();
+      await requestFileScope(topic,issue,plan);
+      return;
+    }
     const project=await checkout(state,topic.repository,issue,signal);
     const brief=await context(project.tree,card.files);
     const scope=JSON.stringify({task:card.task,files:card.files});
@@ -78,15 +84,13 @@ export async function runDeveloperProfile(p:ProfileRun) {
     if(!diff)throw Error('Development produced no change');
     await git(project.tree,'commit','-m','Implement work card '+issue);
     const sha=await git(project.tree,'rev-parse','HEAD');
-    const request={repo:topic.repository,sha,base:project.base,expected:project.expected,cards:[{issue}]};
+    const request={repo:topic.repository,sha,base:project.base,expected:project.expected,cards:[{issue,approval:p.approval}]};
     const testStarted=Date.now();
     const tests=await exchange(project.store,{action:'test-head',...request},signal);
     const elapsedMs=Math.max(1,Date.now()-testStarted);
     const review=await stage(p,'consultant','Review code for correctness against the supplied task, spec and test report. Begin with PASS or FAIL, followed by a concise rationale.\n'+scope+'\n'+spec+'\n'+diff+'\n'+tests.log);
     if(!/^PASS\b/i.test(review.trim()))throw Error('Code review needs correction: '+review.slice(0,500));
-    const read=await appReader(topic.repository,String(topic.installation));
-    const approved=await read('repos/'+topic.repository+'/issues/'+issue);
-    await atomicJson(join(dir,'ready.json'),{project,sha,card,spec,actor:approved.user} satisfies Ready);
+    await atomicJson(join(dir,'ready.json'),{project,sha,card,spec,approval:p.approval} satisfies Ready);
     await setCardProgress(topic,issue,'queued');
     const journal=new Journal(join(state,'intake.sqlite'));
     try {new BranchValidation(journal.db).submit({issue,branch:project.branch,sha},elapsedMs);}
@@ -97,10 +101,10 @@ export async function runDeveloperProfile(p:ProfileRun) {
 export async function validateReviewedHead(runtime:TopicRuntime,head:ReadyBranch,signal:AbortSignal) {
   const dir=directory(runtime.state,head.issue);
   try {
-    const {project,sha}=await readJson<Ready>(join(dir,'ready.json'));
+    const {project,sha,approval}=await readJson<Ready>(join(dir,'ready.json'));
     if(sha!==head.sha || project.branch!==head.branch)throw Error('Reviewed head no longer matches handoff');
     const checked=await exchange(project.store,{action:'test-head',repo:runtime.topic.repository,sha,
-      base:project.base,expected:project.expected,cards:[{issue:head.issue}]},signal);
+      base:project.base,expected:project.expected,cards:[{issue:head.issue,approval}]},signal);
     if(checked.sha!==sha)throw Error('Validation returned a different revision');
     await atomicJson(join(dir,'reviewed-head-tests.json'),{sha,tests:checked.tests,log:checked.log});
   } catch(err) {
@@ -127,16 +131,11 @@ export async function integrateReady(runtime:TopicRuntime,signal:AbortSignal,que
     let candidate=await readJson<{sha:string;base:string;expected:string}>(marker).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;});
     if(candidate && seed.dev===candidate.sha)published=true;
     if(!published){
-      const read=await appReader(topic.repository,String(topic.installation));
       const verifyApproval=async()=>{
-       const repository=await read('repos/'+topic.repository);
-       if(repository.id!==topic.repoId)throw Error('Repository identity changed');
-       for(const entry of entries){
-        const permission=await read('repos/'+topic.repository+'/collaborators/'+encodeURIComponent(entry.actor.login)+'/permission');
-        checkCurrentRole(entry.actor,repository,permission);
-        const issue=await read('repos/'+topic.repository+'/issues/'+entry.issue);
-        if(issue.user?.id!==entry.actor.id||issue.pull_request||!issue.locked||issue.state!=='open'||issue.body!==formatProfileCard(entry.card))throw Error('Approved scope changed');
-       }
+        for(const entry of entries) {
+          if(!entry.approval)throw Error('Existing handoff has no native Task approval; reconcile before integration');
+          await validateTaskApproval(topic,entry.issue,entry.approval);
+        }
       };
       await verifyApproval();
       for(const entry of entries)await setCardProgress(topic,entry.issue,'in validation');
@@ -146,7 +145,7 @@ export async function integrateReady(runtime:TopicRuntime,signal:AbortSignal,que
         candidate={sha:await git(candidateTree,'rev-parse','HEAD'),base:seed.sha,expected:seed.dev??''};
         await atomicJson(marker,candidate);
       }
-      const req={repo:topic.repository,...candidate,cards:entries.map(({issue})=>({issue}))};
+      const req={repo:topic.repository,...candidate,cards:entries.map(({issue,approval})=>({issue,approval}))};
       const tested=await exchange(store,{action:'test',...req},signal);
       await atomicJson(join(dir,'tests.json'),tested);
       const review=await runRoleStage({role:'integrator',state,cwd:topic.cwd,session:journal.lead().id,issue:entries[0]!.issue,signal,

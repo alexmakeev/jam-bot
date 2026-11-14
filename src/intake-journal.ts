@@ -1,13 +1,18 @@
 import { DatabaseSync, type SQLOutputValue } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 
-export interface Topic { repository: string; repoId: number; installation: number; cwd: string }
+export interface Topic { repository: string; repoId: number; installation: number; cwd: string; defaultClass?: import("./profile-card.js").ProfileKind }
 export interface Intake {
   delivery: string;
   issue: number;
   title: string;
   body: string;
-  action?: 'opened' | 'locked';
+  action?: 'opened' | 'locked' | 'task';
+  typeId?: number;
+  authorId?: number;
+  authorLogin?: string;
+  kind?: 'assignment'|'development'|'consultation';
+  approvalSource?: 'opened'|'typed';
   actorId?: number;
   actorLogin?: string;
 }
@@ -17,14 +22,17 @@ export interface Lead { id: string; established: boolean }
 function intake(row: Record<string, SQLOutputValue>): Intake {
   return {
     delivery: String(row.delivery), issue: Number(row.issue), title: String(row.title), body: String(row.body),
-    action: row.action === 'locked' ? 'locked' : 'opened',
+    action: row.action === 'task' ? 'task' : row.action === 'locked' ? 'locked' : 'opened',
+    ...(row.typeId==null?{}:{typeId:Number(row.typeId),approvalSource:row.approvalSource as 'opened'|'typed'}),
+    ...(row.authorId==null?{}:{authorId:Number(row.authorId), authorLogin:String(row.authorLogin)}),
+    ...(row.kind==null?{}:{kind:row.kind as Intake['kind']}),
     ...(row.actorId == null ? {} : { actorId: Number(row.actorId), actorLogin: String(row.actorLogin) }),
   };
 }
 
 const createIntake = `CREATE TABLE intake (
-  delivery TEXT PRIMARY KEY, issue INTEGER NOT NULL, action TEXT NOT NULL CHECK(action IN ('opened','locked')),
-  title TEXT NOT NULL, body TEXT NOT NULL, actorId INTEGER, actorLogin TEXT,
+  delivery TEXT PRIMARY KEY, issue INTEGER NOT NULL, action TEXT NOT NULL CHECK(action IN ('opened','locked','task')),
+  title TEXT NOT NULL, body TEXT NOT NULL, actorId INTEGER, actorLogin TEXT, typeId INTEGER, approvalSource TEXT, authorId INTEGER, authorLogin TEXT, kind TEXT,
   state TEXT NOT NULL, receipt TEXT, reason TEXT, workerState TEXT, workerReason TEXT, UNIQUE(issue,action)
 )`;
 
@@ -48,6 +56,12 @@ export class Journal {
         this.db.exec(`INSERT INTO intake (rowid,delivery,issue,action,title,body,state,receipt,reason)
           SELECT rowid,delivery,issue,'opened',title,body,state,receipt,reason FROM opened_intake;
           DROP TABLE opened_intake`);
+      } else if (!columns.some(col=>col.name==='typeId')) {
+        const previous=columns.map(col=>String(col.name)).join(',');
+        this.db.exec('ALTER TABLE intake RENAME TO legacy_intake');
+        this.db.exec(createIntake);
+        this.db.exec('INSERT INTO intake(rowid,'+previous+') SELECT rowid,'+previous+' FROM legacy_intake; DROP TABLE legacy_intake');
+        this.db.exec("UPDATE intake SET workerState='abandoned', workerReason='Native Task approval required' WHERE action='locked' AND workerState='pending'");
       }
     });
   }
@@ -75,9 +89,9 @@ export class Journal {
   }
 
   enqueue(event: Intake) {
-    this.db.prepare(`INSERT INTO intake(delivery,issue,action,title,body,actorId,actorLogin,state)
-      VALUES(?,?,?,?,?,?,?,'queued') ON CONFLICT DO NOTHING`)
-      .run(event.delivery,event.issue,event.action ?? 'opened',event.title,event.body,event.actorId ?? null,event.actorLogin ?? null);
+    this.db.prepare(`INSERT INTO intake(delivery,issue,action,title,body,actorId,actorLogin,typeId,approvalSource,authorId,authorLogin,kind,state)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'queued') ON CONFLICT DO NOTHING`)
+      .run(event.delivery,event.issue,event.action ?? 'opened',event.title,event.body,event.actorId ?? null,event.actorLogin ?? null,event.typeId ?? null,event.approvalSource ?? null,event.authorId ?? null,event.authorLogin ?? null,event.kind ?? null);
   }
 
   next(): Intake | undefined {
@@ -95,7 +109,7 @@ export class Journal {
     this.transaction(() => {
       // The same transaction that records Leo's verified receipt creates the execution intent.
       const result=this.db.prepare(`UPDATE intake SET state='received', receipt=?,
-        workerState=CASE WHEN action='locked' THEN 'pending' END
+        workerState=CASE WHEN action='task' THEN 'pending' END
         WHERE state='running' AND issue=? AND delivery=?`)
         .run(JSON.stringify(ack),ack.issue,ack.delivery);
       if (result.changes !== 1) throw new Error('Acknowledgment has no active intake');
@@ -105,7 +119,7 @@ export class Journal {
 
   nextWorker(): Intake | undefined {
     return this.transaction(() => {
-      const row = this.db.prepare(`SELECT * FROM intake WHERE workerState='pending'
+      const row = this.db.prepare(`SELECT * FROM intake WHERE action='task' AND workerState='pending'
         AND NOT EXISTS(SELECT 1 FROM intake WHERE workerState IN ('running','review') OR state IN ('running','review'))
         ORDER BY rowid LIMIT 1`).get();
       if (!row) return;
@@ -125,7 +139,7 @@ export class Journal {
   }
 
   list() {
-    return this.db.prepare('SELECT delivery,issue,action,state,reason,receipt,workerState,workerReason FROM intake ORDER BY rowid').all();
+    return this.db.prepare('SELECT delivery,issue,action,actorId,actorLogin,typeId,approvalSource,authorId,authorLogin,kind,state,reason,receipt,workerState,workerReason FROM intake ORDER BY rowid').all();
   }
 
   resolve(delivery: string, decision: string, operator: string, session: string) {
@@ -133,8 +147,8 @@ export class Journal {
     if (!Object.hasOwn(states,decision) || !operator.trim() || !['resume','unused'].includes(session)) throw new Error('Invalid resolution');
     if (session==='unused' && (decision==='acked' || this.lead().established)) throw new Error('An established session must resume');
     this.transaction(() => {
-      if (decision==='acked' && this.db.prepare('SELECT action FROM intake WHERE delivery=?').get(delivery)?.action==='locked')
-        throw new Error('Locked receipt requires a verified Leo acknowledgment. Inspect the session then requeue or abandon.');
+      if (decision==='acked' && this.db.prepare('SELECT action FROM intake WHERE delivery=?').get(delivery)?.action==='task')
+        throw new Error('Task receipt requires a verified Leo acknowledgment. Inspect the session then requeue or abandon.');
       const result=this.db.prepare("UPDATE intake SET state=?, reason=NULL WHERE delivery=? AND state='review'").run(states[decision]!,delivery);
       if (result.changes!==1) throw new Error('Delivery is not awaiting review');
       this.db.prepare('UPDATE topic SET established=?').run(Number(session==='resume'));

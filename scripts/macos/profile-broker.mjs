@@ -1,4 +1,5 @@
 // Local dev publisher for explicitly selected repositories. The service only exchanges Git bundles.
+import { brokerFiles } from './runtime/broker-approval.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdir, readFile, readdir, realpath, lstat, rename, rm, writeFile, mkdtemp, copyFile } from 'node:fs/promises';
@@ -39,20 +40,18 @@ async function execute(dir) {
     }
     if (!['test-head','test','publish'].includes(req.action) || !sha(req.sha) || !sha(req.base) || !(req.expected===''||sha(req.expected))) throw Error('Invalid candidate');
     if (!Array.isArray(req.cards)||req.cards.length<1||req.cards.length>15) throw Error('Invalid work cards');
-    const files=new Set();
-    const approvals=[];
-    for(const card of req.cards){
-      if(!Number.isSafeInteger(card.issue)||card.issue<1) throw Error('Invalid issue');
-      const issue=await gh('repos/'+req.repo+'/issues/'+card.issue);
-      if(!issue.locked||issue.state!=='open'||issue.pull_request||issue.user?.login?.toLowerCase()!==req.repo.split('/')[0].toLowerCase())throw Error('Work card requires an open locked repository-owner approval');
-      const match=issue.body?.match(/^I approve this Leo Developer work card\.\n\nClass: development\nFiles: ([^\n]+)\n\n/);
-      if(!match)throw Error('Invalid approved work card');
-      approvals.push({issue:card.issue,author:issue.user.id,body:issue.body});
-      for(const file of match[1].split(', ')){
-        if(!file.split('/').every(part=>/^[a-zA-Z0-9_+-][a-zA-Z0-9_.+-]*$/.test(part)))throw Error('Invalid approved path');
-        files.add(file);
+    const authorizedFiles=async()=>{
+      const allowed=new Set();
+      for(const card of req.cards){
+        if(!Number.isSafeInteger(card.issue)||card.issue<1)throw Error('Invalid issue');
+        const base='repos/'+req.repo;
+        const issue=await gh(base+'/issues/'+card.issue);
+        const paths=await brokerFiles(card.issue,issue,card.approval,login=>gh(base+'/collaborators/'+encodeURIComponent(login)+'/permission'));
+        for(const path of paths)allowed.add(path);
       }
-    }
+      return allowed;
+    };
+    const files=await authorizedFiles();
     if(req.action==='publish' && dev===req.sha) return {sha:dev,alreadyPublished:true};
     if(req.action!=='test-head' && dev!==req.expected) throw Error('Remote dev changed during validation');
     const baseRef=dev?'dev':(await gh('repos/'+req.repo)).default_branch;
@@ -84,11 +83,7 @@ async function execute(dir) {
     } catch(error) {throw Error(String(error.stdout||error.message).slice(-8000));}
     finally {await run('docker',['rm','-f',name]).catch(()=>{});}
     if(req.action==='publish') {
-      for(const approved of approvals) {
-        const current=await gh('repos/'+req.repo+'/issues/'+approved.issue);
-        if(!current.locked || current.state!=='open' || current.user.id!==approved.author || current.body!==approved.body)
-          throw Error('Work card changed during candidate testing');
-      }
+      await authorizedFiles();
       await git(temp,['push','--force-with-lease=refs/heads/dev:'+req.expected,'origin',req.sha+':refs/heads/dev']);
       if(!(await git(temp,['ls-remote','origin','refs/heads/dev'])).startsWith(req.sha+'\t'))throw Error('Publication requires reconciliation');
     }

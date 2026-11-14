@@ -1,3 +1,4 @@
+import type {TaskApproval} from './task-approval.js';
 import { execFile } from 'node:child_process';
 import { mkdir, readFile, writeFile, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -11,7 +12,7 @@ export async function git(cwd:string,...args:string[]) {
     {cwd,timeout:30000,maxBuffer:2**20})).stdout.trimEnd();
 }
 
-interface Request {action:'seed'|'test-head'|'test'|'publish';repo:string;sha?:string;base?:string;expected?:string;cards?:{issue:number}[]}
+interface Request {action:'seed'|'test-head'|'test'|'publish';repo:string;sha?:string;base?:string;expected?:string;cards?:{issue:number;approval:TaskApproval}[]}
 export interface BrokerResult {sha:string;dev?:string;tests?:string[];log?:string;alreadyPublished?:boolean}
 export async function exchange(repository:string, request:Request,signal:AbortSignal) {
   const dir=join(process.env.JAM_PROFILE_EXCHANGE ?? '/var/lib/jam-profile-exchange',randomUUID());

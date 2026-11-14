@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 import { mkdir } from 'node:fs/promises';
+import {profileKinds} from './profile-card.js';
 import { Journal, type Topic } from './intake-journal.js';
 
 type Binding = Omit<Topic,'cwd'>;
@@ -7,12 +8,13 @@ export interface TopicRuntime { topic: Topic; state: string; journal: Journal }
 
 function binding(value: unknown): Binding {
   if (!value || typeof value !== 'object') throw new Error('Expected a configured topic');
-  const { repository, repoId, installation } = value as Binding;
+  const { repository, repoId, installation, defaultClass } = value as Binding;
   if (typeof repository !== 'string' || !/^[\w.-]+\/[\w.-]+$/.test(repository) ||
       !Number.isSafeInteger(repoId) || repoId <= 0 || !Number.isSafeInteger(installation) || installation <= 0) {
     throw new Error('Invalid repository name or numeric installation/repository ID');
   }
-  return { repository, repoId, installation };
+  if(defaultClass!==undefined && !profileKinds.includes(defaultClass))throw Error('Invalid repository default class');
+  return { repository, repoId, installation, ...(defaultClass?{defaultClass}:{}) };
 }
 
 export function topicKey(installation: number, repoId: number): string { return installation+'/'+repoId; }
@@ -20,7 +22,7 @@ export function topicKey(installation: number, repoId: number): string { return 
 export function configuredTopics(root: string, env = process.env) {
   const additional: unknown = JSON.parse(env.JAM_ADDITIONAL_TOPICS || '[]');
   if (!Array.isArray(additional)) throw new Error('JAM_ADDITIONAL_TOPICS must be an array');
-  const topics = [binding({repository:env.JAM_REPOSITORY, repoId:Number(env.JAM_REPOSITORY_ID), installation:Number(env.JAM_INSTALLATION_ID)}),
+  const topics = [binding({repository:env.JAM_REPOSITORY, repoId:Number(env.JAM_REPOSITORY_ID), installation:Number(env.JAM_INSTALLATION_ID),defaultClass:env.JAM_DEFAULT_CLASS}),
     ...additional.map(binding)];
   if (new Set(topics.map(topic=>topic.repoId)).size !== topics.length ||
       new Set(topics.map(topic=>topic.repository.toLowerCase())).size !== topics.length) throw new Error('Duplicate repository binding');

@@ -22,6 +22,7 @@ services:
       JAM_GITHUB_APP_ID: ${JAM_GITHUB_APP_ID:?Set the GitHub App ID}
       JAM_GITHUB_APP_KEY_FILE: /run/secrets/app-key
       JAM_ADDITIONAL_TOPICS: '${JAM_ADDITIONAL_TOPICS:-[]}'
+      JAM_DEFAULT_CLASS: ${JAM_DEFAULT_CLASS:-development}
       JAM_REPOSITORY_ID: ${JAM_REPOSITORY_ID:?Set the repository ID}
       JAM_REPOSITORY: ${JAM_REPOSITORY:?Set the owner/repository name}
       JAM_INSTALLATION_ID: ${JAM_INSTALLATION_ID:?Set the GitHub App installation ID}

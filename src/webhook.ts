@@ -1,12 +1,12 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { topicKey, type TopicRuntime } from './topics.js';
-import { isWorkerAcceptanceCard } from './approved-worker.js';
+import { hasTaskWriteAccess, taskClass } from './task-approval.js';
 
 type Routes = ReadonlyMap<string, TopicRuntime>;
 
 const limit = 2 * 1024 * 1024;
-async function receive(req: IncomingMessage, res: ServerResponse, routes: Routes, secret: string) {
+async function receive(req: IncomingMessage, res: ServerResponse, routes: Routes, secret: string, canApprove: typeof hasTaskWriteAccess) {
   const end = (status: number, data?: string) => { res.writeHead(status); res.end(data); };
   if (req.method === 'GET' && req.url === '/health') {
     for (const {journal} of routes.values()) journal.db.prepare('SELECT 1').get();
@@ -29,7 +29,7 @@ async function receive(req: IncomingMessage, res: ServerResponse, routes: Routes
   try { data = JSON.parse(bytes.toString('utf8')); } catch { return end(400); }
   if (!data || typeof data !== 'object' || Array.isArray(data)) return end(400);
   const type = req.headers['x-github-event'];
-  if (type !== 'issues' || !['opened','locked'].includes(data.action)) return end(204);
+  if (type !== 'issues' || !['opened','typed'].includes(data.action)) return end(204);
   const repoId = data.repository?.id;
   const installation = data.installation?.id;
   if (!Number.isSafeInteger(repoId) || !Number.isSafeInteger(installation)) return end(403);
@@ -38,27 +38,29 @@ async function receive(req: IncomingMessage, res: ServerResponse, routes: Routes
   const { journal } = route;
   const delivery = req.headers['x-github-delivery'];
   const issue = data.issue;
-  // This installation handles personal repositories. Organization intake requires
-  // a live effective-role lookup and stays closed until that adapter is configured.
   if (!issue || typeof issue !== 'object') return end(400);
-  const owner = data.repository.owner;
+  if (issue.type?.name!=='Task' || issue.pull_request) return end(204);
   const actor = data.sender;
-  if (owner?.type !== 'User' || !Number.isSafeInteger(owner.id) || owner.id <= 0 ||
-      actor?.type !== 'User' || actor.id !== owner.id ||
-      issue?.user?.type !== 'User' || issue.user.id !== actor.id) return end(204);
+  if (actor?.type!=='User' || !Number.isSafeInteger(actor.id) || actor.id<=0 ||
+      typeof actor.login!=='string' || !/^[A-Za-z0-9-]+$/.test(actor.login)) return end(204);
+  if(data.action==='opened' && issue.user?.id!==actor.id)return end(204);
   if (typeof delivery !== 'string' || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(delivery) ||
-      !Number.isSafeInteger(issue?.number) || issue.number <= 0 || typeof issue.title !== 'string' ||
-      !(issue.body == null || typeof issue.body === 'string')) return end(400);
-  if (data.action === 'locked' && (issue.locked !== true || typeof actor.login !== 'string' ||
-      !/^[a-zA-Z0-9-]+$/.test(actor.login) || typeof issue.body !== 'string' ||
-      !isWorkerAcceptanceCard(issue.body))) return end(204);
-  journal.enqueue({ delivery, issue:issue.number, action:data.action, actorId:actor.id, actorLogin:actor.login,
-    title:issue.title.slice(0,512), body:(issue.body ?? '').slice(0,8192) });
+      !Number.isSafeInteger(issue.type.id) || issue.type.id<=0 || !Number.isSafeInteger(issue.number) || issue.number<=0 ||
+      typeof issue.title!=='string' || !issue.title.trim() || !(issue.body==null || typeof issue.body==='string')) return end(400);
+  if(issue.title.length>512 || (issue.body?.length ?? 0)>65536)return end(413);
+  const author=issue.user;
+  if(author?.type!=='User' || !Number.isSafeInteger(author.id) || author.id<=0 ||
+     typeof author.login!=='string' || !/^[A-Za-z0-9-]+$/.test(author.login))return end(204);
+  let kind;
+  try { kind=taskClass(issue.labels); } catch { return end(422); }
+  if(!await canApprove(route.topic,actor) || (author.id!==actor.id && !await canApprove(route.topic,author)))return end(204);
+  journal.enqueue({delivery,issue:issue.number,action:'task',approvalSource:data.action,typeId:issue.type.id,
+    actorId:actor.id,actorLogin:actor.login,authorId:author.id,authorLogin:author.login,kind,title:issue.title,body:issue.body ?? ''});
   return end(202);
 }
-export function webhook(routes: Routes, secret: string) {
+export function webhook(routes: Routes, secret: string, canApprove=hasTaskWriteAccess) {
   return createServer({ requestTimeout:30_000, headersTimeout:15_000, maxHeaderSize:16384 }, (req,res) => {
-    receive(req,res,routes,secret).catch(() => {
+    receive(req,res,routes,secret,canApprove).catch(() => {
       if (!res.headersSent) res.writeHead(503);
       res.end();
     });

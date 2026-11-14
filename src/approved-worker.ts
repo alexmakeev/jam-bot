@@ -3,40 +3,25 @@ import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { runTeammate } from './native-teammate.js';
 import type { Intake, Topic } from './intake-journal.js';
-import { appReader } from './github-app.js';
-import { checkCurrentRole } from './github-authorization.js';
-import { parseProfileCard } from './profile-card.js';
+import { approvalFromEvent, validateTaskApproval } from './task-approval.js';
+import { parseTaskCard } from './profile-card.js';
 import { markApproved, setCardProgress, completeCard } from './profile-publication.js';
 import { runDeveloperProfile } from './developer-profile.js';
 import { atomicJson } from './storage.js';
 
 export const WORKER_ACCEPTANCE_BODY = 'I approve the local JAM-Bot routing acceptance test for this issue. After the discussion is locked, have the repository coordinator delegate one checksum task to a local developer. Record the developer identity and verified result in the repository journal.';
 
-export function isWorkerAcceptanceCard(body: string): boolean {
-  return body === WORKER_ACCEPTANCE_BODY || !!parseProfileCard(body);
-}
-
 // The developer can only send messages. The service independently verifies its answer.
 export async function dispatchApprovedWorker(event: Intake, topic: Topic, state: string, signal: AbortSignal, lead: string) {
-  if (!event.actorId || !event.actorLogin || !isWorkerAcceptanceCard(event.body)) throw new Error('Missing approved work card');
-  const authorize = async () => {
-    const read = await appReader(topic.repository, String(topic.installation));
-    const repoPath = 'repos/' + topic.repository;
-    const [repository, role, issue] = await Promise.all([
-      read(repoPath), read(repoPath + '/collaborators/' + encodeURIComponent(event.actorLogin!) + '/permission'),
-      read(repoPath + '/issues/' + event.issue)
-    ]);
-    checkCurrentRole({id:event.actorId!, login:event.actorLogin!, type:'User'}, repository, role);
-    if (repository.id !== topic.repoId || issue.number !== event.issue || issue.user?.id !== event.actorId ||
-        issue.pull_request || issue.state !== 'open' || issue.locked !== true || issue.body !== event.body)
-      throw new Error('Work card protection, author or approved scope changed');
-  };
+  const approval=approvalFromEvent(event);
+  const authorize=()=>validateTaskApproval(topic,event.issue,approval);
   await authorize();
-  const card = parseProfileCard(event.body);
-  await markApproved(topic,event.issue,card?.kind ?? 'assignment');
+  const card=event.body===WORKER_ACCEPTANCE_BODY ? undefined : parseTaskCard(event.title,event.body,approval.kind,topic.defaultClass);
+  if(!card && event.body!==WORKER_ACCEPTANCE_BODY)throw new Error('Task scope could not be interpreted');
+  await markApproved(topic,event.issue);
   try {
     if (card) {
-      return await runDeveloperProfile({topic,state,lead,issue:event.issue,card,signal,authorize});
+      return await runDeveloperProfile({topic,state,lead,issue:event.issue,card,signal,authorize,approval});
     }
     await setCardProgress(topic,event.issue,'in progress');
     const directory = join(state,'assignments',String(event.issue));
