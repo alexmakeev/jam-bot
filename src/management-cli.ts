@@ -74,6 +74,13 @@ export async function cli(argv:string[],config=process.env.JAM_MANAGEMENT_CONFIG
     const found=settings.endpoints.find(e=>e.name===name);
     if(!found)throw Error('Unknown endpoint'); return found;
   };
+  if(cmd==='mcp' && target && !operation) {
+    const ep=named(target);
+    await inventory(ep,ep.serverId);
+    const {serveNamedEndpoint}=await import('./management-client-mcp.js');
+    await serveNamedEndpoint(endpointUrl(ep.url),ep.tokenFile,ep.serverId);
+    return;
+  }
   if(cmd==='add' && target && operation && arg){
     nameSchema.parse(target);
     if(settings.endpoints.some(e=>e.name===target))throw Error('Endpoint name already registered');
@@ -110,4 +117,4 @@ export async function cli(argv:string[],config=process.env.JAM_MANAGEMENT_CONFIG
   return invoke(endpoint,operation,input);
 }
 if(process.argv[1] && import.meta.url===pathToFileURL(resolve(process.argv[1])).href)
-  cli(process.argv.slice(2)).then(result=>console.log(JSON.stringify(result,null,2))).catch(err=>{console.error(err.message);process.exitCode=1;});
+  cli(process.argv.slice(2)).then(result=>{if(result!==undefined)console.log(JSON.stringify(result,null,2));}).catch(err=>{console.error(err.message);process.exitCode=1;});
