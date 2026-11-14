@@ -30,6 +30,11 @@ services:
     volumes:
       - state:/var/lib/jam
       - type: bind
+        source: ${JAM_PROFILE_EXCHANGE:-${HOME}/.jam-bot/profile-exchange}
+        target: /var/lib/jam-profile-exchange
+        bind:
+          create_host_path: false
+      - type: bind
         source: ${JAM_CONTAINER_HOME:-${HOME}/.jam-bot/container-home}
         target: /home/jam
         bind:

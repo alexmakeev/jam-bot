@@ -71,6 +71,14 @@ Codex in maintainer mode reads code, discusses in the user's language and writes
 
 The profile owns TDD, consultants and release policy. Run configured consultants in parallel on a prepared spec, requirements and diff, or failure evidence as appropriate. Preserve the exact combined test revision, environment and runnable test results. Return a fix request and attached Markdown spec to the originating card. Rebuild and retest after a fix. Serialize branch promotion against its expected head. Stable promotion requires explicit maintainer approval of that revision. Required attachments, real unattended teammates, credential isolation and cross-host ownership each need their own integration check.
 
+## Per-topic integration queue
+
+The three work-card routes share admission checks. Leo sends an approved assignment to its owner and an approved consultation to its specialist. Only development emits a ready feature branch for integration. GitHub labels project the trusted class and current progress. The dispatcher chooses a repository-scoped profile after verifying human authorization.
+
+Persist each ready issue, branch and immutable head in the topic journal. A newer ready head supersedes the queued head for the same issue and keeps its waiting time. Leo can vary batch size within JB-20. The default target is ten. A short delay for an undersized group requires a known completion estimate within sixty seconds of the oldest ready entry. With no such signal, claim immediately. A single transaction allocates the batch ID and marks its revisions. The oldest waiting entries are served first.
+
+A snapshot lists waiting revisions and the active batch. Recovery reconciles that same batch ID and exact revisions with candidate artifacts and the integration ref before taking action. Complete verified promotion against the expected base. A failed candidate retains its original membership. After diagnosis, release explicitly unaffected heads for another batch. A corrected revision supersedes an affected head. Ambiguous external effects keep the batch active pending reconciliation.
+
 ## First experiment
 
 Use an isolated workspace, one approved sample card and a controllable child process. Inject failures before launch, after launch and after checkpoint persistence. Replay input and restart the supervisor both while the worker is alive and after it exits. Observe one live assignment, the same worktree, continuation from the saved checkpoint and no duplicate logical effect. Also exercise unapproved input and an ambiguous live-worker observation. Document which cases have actually run.

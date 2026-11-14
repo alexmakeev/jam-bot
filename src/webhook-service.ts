@@ -5,6 +5,9 @@ import { Journal } from './intake-journal.js';
 import { notifyLeo } from './leo-intake.js';
 import { dispatchApprovedWorker } from './approved-worker.js';
 import { configuredTopics, openTopics, type TopicRuntime } from './topics.js';
+import { IntegrationQueue } from './integration-queue.js';
+import { BranchValidation } from './branch-validation.js';
+import { integrateReady, validateReviewedHead } from './developer-profile.js';
 import { webhook } from './webhook.js';
 
 function required(name: string): string {
@@ -20,29 +23,38 @@ async function requireOwnerLock(path: string) {
   throw new Error('Start the service under flock -n -F '+path);
 }
 async function consume({journal,topic,state}: TopicRuntime, signal: AbortSignal) {
-  while (!signal.aborted) {
-    const execution = journal.nextWorker();
-    if (execution) {
-      try {
-        await dispatchApprovedWorker(execution,topic,state,signal,journal.lead().id);
-        journal.finishWorker(execution.delivery);
-      } catch (err) {
-        journal.finishWorker(execution.delivery,err instanceof Error ? err.message : 'Worker dispatch failed');
-        console.error('Worker dispatch requires review',topic.repository,execution.issue);
+  const integrations=new IntegrationQueue(journal.db);
+  const validations=new BranchValidation(journal.db);
+  validations.recover();
+  const runtime={journal,topic,state};
+  try {
+    while (!signal.aborted) {
+      const decision=validations.tick(integrations,head=>validateReviewedHead(runtime,head,signal),signal);
+      if(decision.batch) {await integrateReady(runtime,signal,integrations,decision.batch);continue;}
+      if(decision.waiting) {await delay(250);continue;}
+      const execution = journal.nextWorker();
+      if (execution) {
+        try {
+          await dispatchApprovedWorker(execution,topic,state,signal,journal.lead().id);
+          journal.finishWorker(execution.delivery);
+        } catch (err) {
+          journal.finishWorker(execution.delivery,err instanceof Error ? err.message : 'Worker dispatch failed');
+          console.error('Worker dispatch requires review',topic.repository,execution.issue);
+        }
+        continue;
       }
-      continue;
+      const event = journal.next();
+      if (!event) { await delay(500); continue; }
+      try {
+        const ack = await notifyLeo(event,journal.lead(),topic.cwd,topic.repository,signal);
+        journal.complete(ack);
+        console.log('Leo acknowledged issue',topic.repository,event.issue);
+      } catch (err) {
+        journal.fail(event.delivery,err instanceof Error ? err.message : 'Dispatch failed');
+        console.error('Leo intake requires review',topic.repository,event.issue);
+      }
     }
-    const event = journal.next();
-    if (!event) { await delay(500); continue; }
-    try {
-      const ack = await notifyLeo(event,journal.lead(),topic.cwd,topic.repository,signal);
-      journal.complete(ack);
-      console.log('Leo acknowledged issue',topic.repository,event.issue);
-    } catch (err) {
-      journal.fail(event.delivery,err instanceof Error ? err.message : 'Dispatch failed');
-      console.error('Leo intake requires review',topic.repository,event.issue);
-    }
-  }
+  } finally { await validations.settle(); }
 }
 async function main() {
   const state = resolve(required('JAM_STATE_DIR'));
@@ -54,6 +66,7 @@ async function main() {
     const journal = new Journal(join(route.state,'intake.sqlite'));
     try {
       if (action==='list') console.log(JSON.stringify({repository:selector, session:journal.lead(), deliveries:journal.list()},null,2));
+      else if (action==='retry-integration' && id && decision && operator) new IntegrationQueue(journal.db).retryFailed(id,operator,decision);
       else if (action==='resolve' && id && decision && operator && session) journal.resolve(id,decision,operator,session);
       else if (action==='resolve-worker' && id && decision && operator) journal.resolveWorker(id,decision,operator);
       else throw new Error('Expected review list, review resolve DELIVERY acked|abandon|requeue OPERATOR resume|unused, or review resolve-worker DELIVERY complete|abandon OPERATOR');

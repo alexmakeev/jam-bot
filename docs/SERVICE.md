@@ -68,3 +68,21 @@ The named data volume survives this sequence. For an upgrade, rerun the installe
 ## Verified locally
 
 On this Mac, the initial cutover passed a staged health check, then the installed Ubuntu receiver answered through the existing public TLS endpoint. Killing the Node process caused Docker to restart the receiver; the persisted coordinator session ID remained intact. Terminating the SSH job caused launchd to restore the tunnel and public health. A second container using the same profile failed to acquire the credential lock. A second tunnel refused the active Unix socket, and a disposable stale socket with a refused connection was safely removed on the gateway. The login job was installed and bootstrapped in the active user session; a physical reboot remains untested.
+
+## Local development publisher
+
+The development profile builds one feature branch and worktree per approved issue in the topic's persistent state. It reads available project values and the approved files, asks the architect for the English specification, and waits for the specification attachment on the original issue. The developer returns file contents over the native teammate mailbox. The supervisor applies only the approved paths. Assignment and consultation cards return their native role's answer without changing Git.
+
+For the Mac test recipe, install the local publisher for the single private development repository. Docker Desktop and the signed-in GitHub CLI must already have access.
+
+```sh
+scripts/macos/install-profile-broker.sh OWNER/REPOSITORY jam-bot-local-service:latest
+```
+
+The publisher supplies a Git bundle for the current dev revision, falling back to the repository default branch when dev does not yet exist. Node tests in tracked `tests/**/*.test.{ts,js,mts,mjs,cts,cjs}` run inside a disposable offline Ubuntu container with a read-only checkout, limited CPU, memory and process count. The container receives no host credentials, Docker socket or writable source mount. This recipe requires Node's built-in test runner and permits TypeScript supported by the installed Node runtime. A project requiring another runner needs a corresponding profile.
+
+The integration queue keeps feature revisions separate from the candidate. The integrator reviews the combined diff and full test report. Before updating dev the local publisher verifies repository ownership, approved file paths in every new commit, the exact remote base, and complete tests on the candidate SHA. It writes with an explicit Git lease through the host's existing login. The tested repository is selected in the publisher's private configuration. The App permissions remain unchanged. Successful publication closes the included work cards and removes clean task worktrees and local feature refs. An ambiguous publication or changed branch requires reconciliation against the recorded candidate and current dev.
+
+The service and publisher share a private file exchange under `~/.jam-bot/profile-exchange`. Each command uses a fresh UUID directory; results and repository bundles are removed after the receiver has read the reply. Interrupted exchanges remain available for inspection. The launch job is `local.jam-bot.profile-broker` and the host log is `~/Library/Logs/JAM-Bot/profile-broker.log`. To retire the publisher, boot out its LaunchAgent and remove its plist from the user's Library.
+
+If the integrator rejected a candidate because its test evidence was incomplete, correct the verifier or runner first. To retry an unchanged failed batch, run `node dist/src/webhook-service.js review retry-integration BATCH_ID 'REASON' OPERATOR` in the service container with the appropriate `JAM_REVIEW_REPOSITORY`. The retry is recorded; the queue checks that no other batch is active and no member has a replacement revision. All candidate tests, authorization checks and the integrator decision run again.

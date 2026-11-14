@@ -18,6 +18,7 @@ if launchctl print "$domain/$label" >/dev/null 2>&1; then
   echo "Service already installed and loaded. Use the upgrade steps in docs/SERVICE.md." >&2
   exit 1
 fi
+mkdir -p "${JAM_PROFILE_EXCHANGE:-$HOME/.jam-bot/profile-exchange}"
 docker compose --env-file "$config" -f "$root/compose.service.yaml" config -q
 docker build -t jam-bot-local-service:latest "$root"
 mkdir -p "$base" "$HOME/Library/LaunchAgents" "$HOME/Library/Logs/JAM-Bot"
