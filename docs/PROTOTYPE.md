@@ -41,7 +41,7 @@ The connected GitHub tool inventory was inspected separately: it exposes no oper
 ## Operator-run live experiment
 
 Build with `npm run build`. In a terminal at the repository root, run
-`node dist/src/live-recovery.js https://github.com/alexmakeev/jam-bot/issues/1 --approve-experiment`.
+`node dist/src/live-recovery.js LOCKED_OPEN_ISSUE_URL --approve-experiment`.
 This separate experiment uses the authenticated GitHub CLI and consumes Claude Code quota. It reads the specified open issue twice, checks its scope for changes, and operates in a temporary clone of the current checkout's committed HEAD. The operator approves a synthetic checkpoint exercise for that issue. It does not implement the actual feature described in the issue or write to GitHub.
 
 The lead starts one developer. The observer requires a checkpoint file, a matching native worker write and a delivered acknowledgment before killing the lead. It saves the native agent handle, restarts the same lead session and checks the second checkpoint and acknowledgment from the same developer, with one spawn across the trace. A missing acknowledgment, unexpected trace format or extra spawn cannot produce a passing result. Trace inspection is acceptance instrumentation specific to Claude Code 2.1.325. It should stay out of the production protocol. Temporary evidence remains in the printed directory.

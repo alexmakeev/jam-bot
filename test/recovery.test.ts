@@ -18,7 +18,7 @@ export async function fixture(): Promise<{ config: Config; card: Card; cleanup: 
   await git(repo, 'init'); await git(repo, 'config', 'user.email', 'fixture@example.invalid'); await git(repo, 'config', 'user.name', 'Fixture');
   await writeFile(join(repo, 'README.md'), 'Fixture only\n'); await git(repo, 'add', '.'); await git(repo, 'commit', '-m', 'fixture');
   const config: Config = { root, repo, server: 'server-a', approvers: ['owner'], stepDelayMs: 150 };
-  const card: Card = { id: 'card-1', projectUri: 'fixture:repo', title: 'Approved fixture', scope: 'two inspectable effects', kind: 'task', dependencies: [], approval: { actor: 'owner', conversation: 'fixture:trusted-conversation/1', scope: 'two inspectable effects' } };
+  const card: Card = { id: 'card-1', projectUri: 'fixture:repo', title: 'Approved fixture', scope: 'two inspectable effects', kind: 'task', locked: true, dependencies: [], approval: { actor: 'owner', conversation: 'fixture:trusted-conversation/1', scope: 'two inspectable effects' } };
   await atomicJson(join(root, 'cards', key(card.id) + '.json'), card);
   await atomicJson(join(root, 'owners', key(card.projectUri) + '.json'), { server: 'server-a', epoch: 'epoch-1' });
   return { config, card, cleanup: async () => { await delay(100); await rm(root, { recursive: true, force: true }); } };
@@ -31,9 +31,9 @@ export async function until<T>(read: () => Promise<T>, predicate: (value: T) => 
 test('unapproved, report, changed scope and dependency cannot execute', async () => {
   const f = await fixture();
   try {
-    for (const change of [{ approval: undefined }, { kind: 'report' }, { scope: 'different' }, { dependencies: ['not-ready'] }]) {
+    for (const change of [{ approval: undefined }, { kind: 'report' }, { scope: 'different' }, { dependencies: ['not-ready'] }, { locked: false }, { locked: undefined }]) {
       await atomicJson(join(f.config.root, 'cards', key(f.card.id) + '.json'), { ...f.card, ...change });
-      await assert.rejects(run(f.config, f.card.id), /Unapproved|dependencies/);
+      await assert.rejects(run(f.config, f.card.id), /Unapproved|dependencies|locked/);
     }
   } finally { await f.cleanup(); }
 });

@@ -8,6 +8,7 @@ export interface Card {
   projectUri: string;
   title: string;
   scope: string;
+  locked?: boolean;
   kind: 'task' | 'report';
   approval?: Approval;
   dependencies: string[];

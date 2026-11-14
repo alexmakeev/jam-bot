@@ -11,7 +11,7 @@ const root = await mkdtemp(join(tmpdir(), 'jam-demo-'));
 const repo = join(root, 'repo'); await mkdir(repo);
 await git(repo, 'init'); await git(repo, 'config', 'user.email', 'fixture@example.invalid'); await git(repo, 'config', 'user.name', 'Fixture');
 await writeFile(join(repo, 'README.md'), 'Disposable recovery demonstration\n'); await git(repo, 'add', '.'); await git(repo, 'commit', '-m', 'fixture');
-const card: Card = { id: 'demo', projectUri: 'fixture:demo', kind: 'task', title: 'Recovery demo', scope: 'two fixture artifacts', dependencies: [], approval: { actor: 'fixture-owner', conversation: 'fixture:trusted/1', scope: 'two fixture artifacts' } };
+const card: Card = { id: 'demo', projectUri: 'fixture:demo', kind: 'task', locked: true, title: 'Recovery demo', scope: 'two fixture artifacts', dependencies: [], approval: { actor: 'fixture-owner', conversation: 'fixture:trusted/1', scope: 'two fixture artifacts' } };
 const config: Config = { root, repo, server: 'local-demo', approvers: ['fixture-owner'], stepDelayMs: 600 };
 await atomicJson(join(root, 'cards', key(card.id) + '.json'), card);
 await atomicJson(join(root, 'owners', key(card.projectUri) + '.json'), { server: config.server, epoch: 'demo-1' });

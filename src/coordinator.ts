@@ -8,6 +8,7 @@ import { git } from './git.js';
 export function admit(card: Card, config: Config): void {
   if (card.kind !== 'task' || !card.approval || !config.approvers.includes(card.approval.actor)
     || !card.approval.conversation || card.approval.scope !== card.scope) throw new Error('Unapproved task or invalid attribution/scope');
+  if (card.locked !== true) throw new Error('Work card discussion must be confirmed locked');
   if (card.dependencies.length) throw new Error('Waiting for dependencies');
 }
 export async function run(config: Config, id: string): Promise<{ status: string; assignment: Assignment }> {

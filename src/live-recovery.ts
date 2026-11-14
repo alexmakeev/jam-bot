@@ -6,6 +6,7 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { checkpointAuthor } from './claude-evidence.js';
+import { readLockedIssue } from './locked-issue.js';
 import { atomicJson } from './storage.js';
 
 async function main(): Promise<void> {
@@ -14,11 +15,7 @@ async function main(): Promise<void> {
       || approval !== '--approve-experiment' || !process.stdin.isTTY) {
     throw new Error('Run in a terminal: node dist/src/live-recovery.js ISSUE_URL --approve-experiment');
   }
-  const readIssue = () => JSON.parse(execFileSync('gh', ['issue', 'view', url,
-    '--json', 'url,title,state,body'], { encoding: 'utf8' })) as
-    { url: string; state: string; title: string; body: string };
-  const issue = readIssue();
-  if (issue.state !== 'OPEN' || issue.url !== url) throw new Error('Expected the specified open issue');
+  const issue = readLockedIssue(url);
   const root = await mkdtemp(join(tmpdir(), 'jam-live-'));
   const worktree = join(root, 'worktree');
   // Temporary clone keeps experimental branches and Claude writes out of the source checkout.
@@ -46,6 +43,9 @@ async function main(): Promise<void> {
       'The developer must send a checkpoint acknowledgment containing exactly the token ' + expected + ' to its lead and then wait. Do not write the checkpoint as the lead.',
       'No other files, shell commands or network calls are needed.'
     ].join(' ');
+    const current = readLockedIssue(issue.url);
+    if (current.body !== issue.body || current.title !== issue.title)
+      throw new Error('The issue changed before dispatch');
     const child = spawn('claude', [resume ? '--resume' : '--session-id', session,
       '--teammate-mode', 'in-process', '--permission-mode', 'acceptEdits', '--strict-mcp-config', prompt],
       { cwd: worktree, stdio: 'inherit', env: { ...process.env, CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' } });
@@ -74,9 +74,6 @@ async function main(): Promise<void> {
   }
   const nativeHandle = await phase();
   await atomicJson(join(root, 'assignment.json'), { ...assignment, nativeHandle });
-  const current = readIssue();
-  if (current.state !== 'OPEN' || current.body !== issue.body || current.title !== issue.title)
-    throw new Error('The issue changed during recovery');
   await phase(nativeHandle);
   await atomicJson(join(root, 'result.json'), { ...assignment, nativeHandle, checkpoints: ['first', 'second'] });
   console.log('Observed both checkpoints across a forced lead restart. Verified a single developer wrote and acknowledged both checkpoints.');
