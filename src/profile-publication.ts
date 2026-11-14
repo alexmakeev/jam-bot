@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { attachmentUrl, digestOf, specName } from './specification-upload.js';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -51,8 +51,8 @@ export async function publishSpecification({topic,issue,markdown,signal}: {
   topic:Topic;issue:number;markdown:string;signal:AbortSignal
 }) {
   const api = await issueClient(topic.repository,topic.installation);
-  const digest = createHash('sha256').update(markdown).digest('hex');
-  const name = 'spec-'+issue+'-'+digest.slice(0,12)+'.md';
+  const digest = digestOf(markdown);
+  const name = specName(issue,digest);
   const directory = join(dirname(topic.cwd),'assignments',String(issue),'attachments');
   await mkdir(directory,{recursive:true,mode:0o700});
   await writeFile(join(directory,name),markdown,{mode:0o600});
@@ -72,7 +72,7 @@ export async function publishSpecification({topic,issue,markdown,signal}: {
       }
       const [repo,comment] = await Promise.all([api(''),api('/issues/comments/'+receipt.commentId)]);
       if (comment.issue_url!=='https://api.github.com/repos/'+topic.repository+'/issues/'+issue ||
-          comment.user?.id!==repo.owner?.id || !String(comment.body).includes('['+name+']('+receipt.url+')')) {
+          comment.user?.id!==repo.owner?.id || attachmentUrl(String(comment.body),name)!==receipt.url) {
         throw new Error('Specification attachment is missing from the original work card');
       }
       return;
