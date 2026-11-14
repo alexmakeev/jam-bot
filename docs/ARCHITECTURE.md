@@ -40,7 +40,7 @@ type Assignment = { id: string; card: CardRef; worktree: string };
 
 interface ProjectSource {
   readCard(card: CardRef): Promise<CardSnapshot>;
-  recordCheckpoint(card: CardRef, change: CheckpointChange): Promise<WriteOutcome>;
+  recordTransition(card: CardRef, change: CardTransition): Promise<WriteOutcome>;
 }
 
 interface Harness {
@@ -49,7 +49,7 @@ interface Harness {
 }
 ```
 
-A card snapshot includes verified approval, the current spec reference, dependencies, waiting request and checkpoint. A checkpoint change carries an operation ID and expected prior state. The source reports an applied, previously applied, conflicting or uncertain write. Reconcile uncertain writes by reading the remote record. Avoid promising conditional writes that the provider cannot enforce.
+A card snapshot includes verified approval, the current spec reference, dependencies, waiting request and shared handoff. A card transition carries an operation ID and expected prior state. The source reports an applied, previously applied, conflicting or uncertain write. Reconcile uncertain writes by reading the remote record. Avoid promising conditional writes that the provider cannot enforce.
 
 GitHub is the first adapter. A future GitLab adapter would own its authentication, webhook payloads, issue references and merge request semantics. Add a second adapter when its workflow and permissions can be tested. Keep Git operations on the worktree independent of provider event parsing. A new consultant or role is a profile change when existing operations suffice.
 
@@ -62,6 +62,8 @@ GitHub is the first adapter. A future GitLab adapter would own its authenticatio
 5. A local claim protects a single host only. For the first deployment, assign disjoint repositories to named machines. Before enabling reassignment, require evidence the old owner can no longer mutate GitHub or start work. Warn on conflicting ownership and halt the contender. Timeout or silence alone is insufficient to take ownership. Cross-host exclusion remains an explicit test gate.
 
 For an in-process Claude team, apply exclusive local ownership to the lead session. The planned service wrapper holds that claim while launching or resuming the lead; an assignment carries the native teammate handle. Reach the teammate through that lead. A fresh response can demonstrate logical resumption even when the original OS process died. The live experiment below is single-operator and does not implement concurrent lead-session ownership.
+
+Local checkpoints and logs belong in a Git-ignored directory inside each feature worktree. Recovery reads them with the diff and current files. Routine progress writes stay local. After a verified integration into shared dev, stop the included workers and remove their worktree directories and scratch logs. Preserve any worktree with unintegrated changes, including unrelated untracked files. Retrying cleanup skips worktrees already retired.
 
 ## Developer and operator boundaries
 

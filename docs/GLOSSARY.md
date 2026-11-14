@@ -19,7 +19,7 @@ Canonical English terms apply to all project documents. Russian aliases help map
 | feature branch | Branch for one approved work card's implementation (ветка задачи). |
 | worktree | Git working tree associated with a branch (рабочее дерево). Not a security boundary. |
 | specification / spec | Attached Markdown describing sufficient implementation intent, contracts, dependencies, and tests (спецификация). |
-| checkpoint | Compact durable progress and resumption record (контрольная точка). |
+| checkpoint | Compact progress and resumption record kept locally in the assigned worktree (контрольная точка). |
 | candidate | Local combined revision awaiting full validation (кандидат). |
 | local staging | Separate local environment for candidate verification (локальный стенд). Not production. |
 | release candidate / RC | Verified main revision undergoing acceptance (релиз-кандидат). |
