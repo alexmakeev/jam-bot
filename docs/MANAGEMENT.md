@@ -36,3 +36,5 @@ For a deployment that may outlive the request, invoke `start_environment_deploym
 ## Reconcile existing work
 
 Use `topic_status` for recent deliveries, worker state, ready revisions and the active integration batch. Use the existing journal reconciliation operations only after inspecting the work and its evidence. A conflicting state returns an error. Normal authenticated management reads do not trigger a model turn.
+
+For a Codex client with the owner bearer provisioned in its environment, configure a native remote endpoint with its URL and the **name** of that environment variable. For example, `codex mcp add jam-bot-home --url https://jam-bot.example.org/mcp --bearer-token-env-var JAM_BOT_OWNER_BEARER`. Provision the value privately in that client's launch environment. The CLI workflow above can use the protected token file directly. [Codex MCP configuration](https://developers.openai.com/codex/mcp/)
