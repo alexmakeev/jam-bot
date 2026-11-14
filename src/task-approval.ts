@@ -40,17 +40,19 @@ export async function hasTaskWriteAccess(topic:Topic,actor:GitHubActor,read?:Rea
   }catch(error){if(error instanceof GitHubRequestError && error.status===404)return false; throw error;}
 }
 
+export class TaskApprovalDenied extends Error {}
+
 export async function validateTaskApproval(topic:Topic,number:number,approval:TaskApproval,lockIfNeeded=false,
   clients:{read:typeof appReader;write:typeof issueClient}={read:appReader,write:issueClient}) {
   const read=await clients.read(topic.repository,String(topic.installation));
-  if(!await hasTaskWriteAccess(topic,approval.actor,read))throw new Error('Task approval actor lacks current write access');
-  if(approval.author.id!==approval.actor.id && !await hasTaskWriteAccess(topic,approval.author,read))throw new Error('Task content author lacks current write access');
+  if(!await hasTaskWriteAccess(topic,approval.actor,read))throw new TaskApprovalDenied('Task approval actor lacks current write access');
+  if(approval.author.id!==approval.actor.id && !await hasTaskWriteAccess(topic,approval.author,read))throw new TaskApprovalDenied('Task content author lacks current write access');
   const path='repos/'+topic.repository+'/issues/'+number;
   const check=(issue:any)=>{
     const kind=taskClass(issue.labels);
     if(kind!==approval.kind || issue.user?.id!==approval.author.id || issue.user?.type!=='User' || issue.number!==number || issue.pull_request || issue.state!=='open' || issue.type?.id!==approval.typeId ||
        issue.type?.name!=='Task' || issue.title!==approval.title || (issue.body ?? '')!==approval.body)
-      throw new Error('Native Task type, open state or approved scope changed');
+      throw new TaskApprovalDenied('Native Task type, open state or approved scope changed');
   };
   let issue=await read(path);check(issue);
   if(!issue.locked && lockIfNeeded){

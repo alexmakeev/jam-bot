@@ -1,12 +1,13 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { topicKey, type TopicRuntime } from './topics.js';
+import { TaskAdmission } from './task-admission.js';
 import { hasTaskWriteAccess, taskClass } from './task-approval.js';
 
 type Routes = ReadonlyMap<string, TopicRuntime>;
 
 const limit = 2 * 1024 * 1024;
-async function receive(req: IncomingMessage, res: ServerResponse, routes: Routes, secret: string, canApprove: typeof hasTaskWriteAccess) {
+async function receive(req: IncomingMessage, res: ServerResponse, routes: Routes, secret: string, canApprove: typeof hasTaskWriteAccess, admission:TaskAdmission) {
   const end = (status: number, data?: string) => { res.writeHead(status); res.end(data); };
   if (req.method === 'GET' && req.url === '/health') {
     for (const {journal} of routes.values()) journal.db.prepare('SELECT 1').get();
@@ -35,7 +36,6 @@ async function receive(req: IncomingMessage, res: ServerResponse, routes: Routes
   if (!Number.isSafeInteger(repoId) || !Number.isSafeInteger(installation)) return end(403);
   const route = routes.get(topicKey(installation,repoId));
   if (!route || data.repository.full_name !== route.topic.repository) return end(403);
-  const { journal } = route;
   const delivery = req.headers['x-github-delivery'];
   const issue = data.issue;
   if (!issue || typeof issue !== 'object') return end(400);
@@ -57,13 +57,13 @@ async function receive(req: IncomingMessage, res: ServerResponse, routes: Routes
   let kind;
   try { kind=taskClass(issue.labels); } catch { return end(422); }
   if(!await canApprove(route.topic,actor) || (author.id!==actor.id && !await canApprove(route.topic,author)))return end(204);
-  journal.enqueue({delivery,issue:issue.number,action:'task',approvalSource:data.action,typeId:taskType.id,
+  const status=await admission.admit(route,{delivery,issue:issue.number,action:'task',approvalSource:data.action,typeId:taskType.id,
     actorId:actor.id,actorLogin:actor.login,authorId:author.id,authorLogin:author.login,kind,title:issue.title,body:issue.body ?? ''});
-  return end(202);
+  return end(status);
 }
-export function webhook(routes: Routes, secret: string, canApprove=hasTaskWriteAccess) {
+export function webhook(routes: Routes, secret: string, canApprove=hasTaskWriteAccess, admission=new TaskAdmission()) {
   return createServer({ requestTimeout:30_000, headersTimeout:15_000, maxHeaderSize:16384 }, (req,res) => {
-    receive(req,res,routes,secret,canApprove).catch(() => {
+    receive(req,res,routes,secret,canApprove,admission).catch(() => {
       if (!res.headersSent) res.writeHead(503);
       res.end();
     });

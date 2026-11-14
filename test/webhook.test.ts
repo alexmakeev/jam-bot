@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { DatabaseSync } from 'node:sqlite';
-import { approvalFromEvent, hasTaskWriteAccess, validateTaskApproval } from '../src/task-approval.js';
+import { TaskAdmission } from '../src/task-admission.js';
+import { approvalFromEvent, hasTaskWriteAccess, TaskApprovalDenied, validateTaskApproval } from '../src/task-approval.js';
 import { configuredTopics, topicKey } from '../src/topics.js';
 import { Journal, type Topic } from '../src/intake-journal.js';
 import { envelope } from '../src/leo-intake.js';
@@ -18,7 +19,7 @@ const event = {action:'opened' as const, delivery:randomUUID(), issue:1, title:'
 test('the receiver checks raw signature, topic and shape before durable deduplicated intake',async t => {
   const db = new Journal(':memory:'); db.start(topic);
   const secret = randomUUID();
-  const server = webhook(new Map([[topicKey(topic.installation,topic.repoId),{topic,state:'/state',journal:db}]]),secret,async(_topic,actor)=>actor.id===10 || actor.id===12);
+  const server = webhook(new Map([[topicKey(topic.installation,topic.repoId),{topic,state:'/state',journal:db}]]),secret,async(_topic,actor)=>actor.id===10 || actor.id===12,new TaskAdmission(async()=>{}));
   await new Promise<void>(ok=>server.listen(0,'127.0.0.1',ok));
   t.after(async () => { await new Promise<void>(ok=>server.close(()=>ok())); db.db.close(); });
   const url='http://127.0.0.1:'+(server.address() as AddressInfo).port+'/github';
@@ -128,7 +129,7 @@ test('route before approval, verify actor and author, ignore locks, deduplicate 
   });
   const [first,second]=runtime;
   const secret=randomUUID();
-  const router=webhook(new Map(runtime.map(route=>[topicKey(route.topic.installation,route.topic.repoId),route])),secret,async(_topic,actor)=>actor.id===10 || actor.id===12);
+  const router=webhook(new Map(runtime.map(route=>[topicKey(route.topic.installation,route.topic.repoId),route])),secret,async(_topic,actor)=>actor.id===10 || actor.id===12,new TaskAdmission(async()=>{}));
   await new Promise<void>(ok=>router.listen(0,'127.0.0.1',ok));
   t.after(async()=>{ await new Promise<void>(ok=>router.close(()=>ok())); runtime.forEach(r=>r.journal.db.close()); });
   const url='http://127.0.0.1:'+(router.address() as AddressInfo).port+'/github';
@@ -231,4 +232,51 @@ test('Task admission automatically locks only an unchanged scope from two curren
   issue.body=approval.body;actorAccess='read';await assert.rejects(validateTaskApproval(topic,11,approval,false,clients));
   actorAccess='write';authorAccess='read';await assert.rejects(validateTaskApproval(topic,11,approval,false,clients));
   authorAccess='write';issue.type.name='Feature';await assert.rejects(validateTaskApproval(topic,11,approval,false,clients));
+});
+
+test('signed admission protects independent cards immediately and recovers a durable intent after a lock-side failure',async t=>{
+  const dir=await mkdtemp(join(tmpdir(),'jam-admission-')); t.after(()=>rm(dir,{recursive:true,force:true}));
+  const path=join(dir,'intake.sqlite');
+  let journal=new Journal(path); journal.start(topic);
+  const event={delivery:randomUUID(),issue:12,title:'Change',body:'Approved scope',action:'task' as const,approvalSource:'typed' as const,
+    typeId:44,actorId:10,actorLogin:'owner',authorId:10,authorLogin:'owner'};
+  // A running assignment blocks Leo's native consumer but must not defer the next task's lock.
+  journal.enqueue({...event,issue:11,delivery:randomUUID()});
+  assert.ok(journal.next());
+  let providerLocked=false, mutations=0;
+  const interrupted=new TaskAdmission(async()=>{
+    if(!providerLocked){providerLocked=true; mutations++;}
+    throw Error('Connection failed after GitHub accepted lock');
+  });
+  await assert.rejects(interrupted.admit({topic,state:dir,journal},event));
+  assert.equal(mutations,1);
+  assert.equal(journal.pendingAdmissions()[0]?.delivery,event.delivery);
+  assert.equal(journal.next(),undefined);
+  journal.db.close(); journal=new Journal(path);journal.start(topic);
+  t.after(()=>journal.db.close());
+  const recovered=new TaskAdmission(async(_topic,issue,approval)=>{
+    assert.equal(issue,12);assert.equal(approval.actor.id,10);assert.ok(providerLocked);
+  });
+  await recovered.recover([{topic,state:dir,journal}]);
+  assert.equal(journal.list().find(row=>row.issue===12)?.state,'queued');
+  assert.equal(journal.list().find(row=>row.issue===12)?.lockVerified,1);
+  assert.equal(await recovered.admit({topic,state:dir,journal},{...event,delivery:randomUUID()}),202);
+  assert.equal(await recovered.admit({topic,state:dir,journal},{...event,delivery:randomUUID(),actorId:22}),409);
+  assert.equal(await recovered.admit({topic,state:dir,journal},{...event,delivery:randomUUID(),body:'Replaced'}),409);
+  assert.equal(mutations,1);
+});
+
+test('an already closed or retyped issue is rejected before Leo and concurrent redelivery shares one lock',async t=>{
+  const journal=new Journal(':memory:');journal.start(topic);t.after(()=>journal.db.close());
+  const runtime={topic,journal,state:'/state'};
+  const approval={...event,action:'task' as const,approvalSource:'typed' as const,typeId:44,authorId:10,authorLogin:'owner',actorId:10,actorLogin:'owner'};
+  let calls=0;
+  const admission=new TaskAdmission(async()=>{
+    calls++;
+    await Promise.resolve();
+    throw new TaskApprovalDenied('Native Task type, open state or approved scope changed');
+  });
+  assert.deepEqual(await Promise.all([admission.admit(runtime,approval),admission.admit(runtime,{...approval,delivery:randomUUID()})]),[409,409]);
+  assert.equal(calls,1); assert.equal(journal.next(),undefined);
+  assert.equal(journal.list()[0]?.state,'rejected');
 });

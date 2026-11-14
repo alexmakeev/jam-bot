@@ -63,6 +63,11 @@ export class Journal {
         this.db.exec('INSERT INTO intake(rowid,'+previous+') SELECT rowid,'+previous+' FROM legacy_intake; DROP TABLE legacy_intake');
         this.db.exec("UPDATE intake SET workerState='abandoned', workerReason='Native Task approval required' WHERE action='locked' AND workerState='pending'");
       }
+      if (!this.db.prepare("SELECT 1 FROM pragma_table_info('intake') WHERE name='lockVerified'").get()) {
+        this.db.exec("ALTER TABLE intake ADD COLUMN lockVerified INTEGER NOT NULL DEFAULT 0");
+        // Previous versions left the lock to the consumer. Recover their queued signed approvals at startup.
+        this.db.exec("UPDATE intake SET state='admitting' WHERE action='task' AND state='queued'");
+      }
     });
   }
 
@@ -88,10 +93,29 @@ export class Journal {
     return { id: String(row.session), established: row.established === 1 };
   }
 
-  enqueue(event: Intake) {
+  enqueue(event: Intake, state:'admitting'|'queued'='queued') {
     this.db.prepare(`INSERT INTO intake(delivery,issue,action,title,body,actorId,actorLogin,typeId,approvalSource,authorId,authorLogin,kind,state)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'queued') ON CONFLICT DO NOTHING`)
-      .run(event.delivery,event.issue,event.action ?? 'opened',event.title,event.body,event.actorId ?? null,event.actorLogin ?? null,event.typeId ?? null,event.approvalSource ?? null,event.authorId ?? null,event.authorLogin ?? null,event.kind ?? null);
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`)
+      .run(event.delivery,event.issue,event.action ?? 'opened',event.title,event.body,event.actorId ?? null,event.actorLogin ?? null,event.typeId ?? null,event.approvalSource ?? null,event.authorId ?? null,event.authorLogin ?? null,event.kind ?? null,state);
+  }
+
+  beginAdmission(event: Intake): { event:Intake; state:string } | undefined {
+    return this.transaction(()=>{
+      this.enqueue(event,'admitting');
+      const row=this.db.prepare("SELECT * FROM intake WHERE issue=? AND action='task'").get(event.issue);
+      if(!row || row.actorId!==event.actorId || row.authorId!==event.authorId || row.typeId!==event.typeId ||
+         row.title!==event.title || row.body!==event.body || (row.kind ?? undefined)!==event.kind) return;
+      return {event:intake(row),state:String(row.state)};
+    });
+  }
+
+  pendingAdmissions(): Intake[] {
+    return this.db.prepare("SELECT * FROM intake WHERE state='admitting' ORDER BY rowid").all().map(intake);
+  }
+
+  finishAdmission(delivery:string, rejection?:string) {
+    this.db.prepare("UPDATE intake SET state=?,lockVerified=?,reason=? WHERE delivery=? AND state='admitting'")
+      .run(rejection ? 'rejected':'queued',rejection ? 0:1,rejection ?? null,delivery);
   }
 
   next(): Intake | undefined {
@@ -139,7 +163,7 @@ export class Journal {
   }
 
   list() {
-    return this.db.prepare('SELECT delivery,issue,action,actorId,actorLogin,typeId,approvalSource,authorId,authorLogin,kind,state,reason,receipt,workerState,workerReason FROM intake ORDER BY rowid').all();
+    return this.db.prepare('SELECT delivery,issue,action,actorId,actorLogin,typeId,approvalSource,authorId,authorLogin,kind,lockVerified,state,reason,receipt,workerState,workerReason FROM intake ORDER BY rowid').all();
   }
 
   resolve(delivery: string, decision: string, operator: string, session: string) {
