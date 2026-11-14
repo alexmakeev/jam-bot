@@ -22,24 +22,30 @@ export function topicKey(installation: number, repoId: number): string { return 
 export function configuredTopics(root: string, env = process.env) {
   const additional: unknown = JSON.parse(env.JAM_ADDITIONAL_TOPICS || '[]');
   if (!Array.isArray(additional)) throw new Error('JAM_ADDITIONAL_TOPICS must be an array');
-  const topics = [binding({repository:env.JAM_REPOSITORY, repoId:Number(env.JAM_REPOSITORY_ID), installation:Number(env.JAM_INSTALLATION_ID),defaultClass:env.JAM_DEFAULT_CLASS}),
-    ...additional.map(binding)];
+  const primary = env.JAM_REPOSITORY ? [binding({repository:env.JAM_REPOSITORY, repoId:Number(env.JAM_REPOSITORY_ID), installation:Number(env.JAM_INSTALLATION_ID),defaultClass:env.JAM_DEFAULT_CLASS})] : [];
+  const topics = [...primary,...additional.map(binding)];
   if (new Set(topics.map(topic=>topic.repoId)).size !== topics.length ||
       new Set(topics.map(topic=>topic.repository.toLowerCase())).size !== topics.length) throw new Error('Duplicate repository binding');
   return topics.map((topic,index) => {
-    const state = index===0 ? root : join(root,'topics',topicKey(topic.installation,topic.repoId));
+    const state = index===0 && primary.length ? root : join(root,'topics',topicKey(topic.installation,topic.repoId));
     return { topic:{...topic,cwd:join(state,'leo')},state };
   });
+}
+
+export async function openTopic(state:string, topic:Topic):Promise<TopicRuntime> {
+  await mkdir(topic.cwd,{recursive:true,mode:0o700});
+  const journal=new Journal(join(state,'intake.sqlite'));
+  try {
+    journal.start(topic);
+    return {topic,state,journal};
+  } catch (error) { journal.db.close(); throw error; }
 }
 
 export async function openTopics(root: string): Promise<Map<string,TopicRuntime>> {
   const routes = new Map<string,TopicRuntime>();
   try {
     for (const {topic,state} of configuredTopics(root)) {
-      await mkdir(topic.cwd,{recursive:true,mode:0o700});
-      const journal = new Journal(join(state,'intake.sqlite'));
-      routes.set(topicKey(topic.installation,topic.repoId),{topic,state,journal});
-      journal.start(topic);
+      routes.set(topicKey(topic.installation,topic.repoId),await openTopic(state,topic));
     }
     return routes;
   } catch (err) {

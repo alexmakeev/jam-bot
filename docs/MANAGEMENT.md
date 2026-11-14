@@ -1,0 +1,38 @@
+# Managing a JAM-Bot instance
+
+Each service has a persistent instance ID and reports its repository inventory. An owner can use a compatible MCP client, the HTTP API, or the repository CLI to manage that instance. Ordinary project discussion and work-card approval still take place in the project's established workflow. Management access authorizes changes to the instance and carries no implicit human approval of a GitHub work card.
+
+## Connect a client
+
+Use the instance's HTTPS origin. The Streamable HTTP endpoint is `/mcp`. Configure a client that supports a secret bearer header and obtain the operator credential from the host's protected credential store. The endpoint checks the destination host and credential before listing tools. Keep the token out of conversation transcripts, project config and command history. The receiver configuration, host deployment recipes and credentials are separate from environment definitions. See [host runner](ENVIRONMENT-RUNNER.md).
+
+The HTTP API publishes its authenticated OpenAPI 3.1 document at `/api/v1/openapi.json`. It includes resource routes, operation inputs, outputs and errors generated from the same definitions used by MCP. Clients can invoke any documented operation using `POST /api/v1/operations/<name>` with a JSON object. The exact tool list is also available through MCP discovery.
+
+Build the CLI from this checkout. Register a named endpoint with a path to its token file, then inspect the available projects.
+
+```sh
+npm ci
+npm run build
+node dist/src/management-cli.js add home https://jam-bot.example.org /private/path/owner.token
+node dist/src/management-cli.js inventory home
+node dist/src/management-cli.js route https://github.com/OWNER/REPO topic_status '{}'
+```
+
+The CLI retains the server ID and project placement in the operator's home directory. It reads the bearer from the separate file on each request. When live placement changes, inspect the inventory. When more than one server advertises the same project, select the named endpoint explicitly. An owner can configure several named endpoints without running a fleet service.
+
+## Connect a repository
+
+1. Install the instance's GitHub App on the repository with metadata read access and Issues write access.
+2. Discover the installation with `list_installations` and inspect its granted repositories with `available_projects`.
+3. Call `connect_project` with the current server ID, canonical GitHub repository URI and installation ID. The service checks GitHub, creates the project's directories and starts its coordinator consumer. Retrying the same connection preserves the journal and session. New bindings survive restart. Existing installer-managed topics keep their original locations.
+4. Use `configure_topic` to select the repository's default work class or bind a saved environment. Ordinary Tasks use the repository's configured default.
+
+## Configure and deploy an environment
+
+In a project conversation, an operator might ask to create a staging environment, select its nonsecret application parameters and associate it with the project. The client resolves the instance and repository and calls `environment_upsert`. The definition persists under `environments/<name>/definition.json` in that project's state directory. A separate `environment_deploy` request targets an exact revision admitted by a local machine recipe. `environment_status` checks the actual container and `environment_stop` stops that instance. The lifecycle tier is fixed on first creation. A stable deployment also requires verifiable human approval of the exact revision.
+
+For a deployment that may outlive the request, invoke `start_environment_deployment` with a fresh UUID in `requestId`, then retrieve `operation_status` using the same target and ID. Retry the original request with its original ID. If the service restarts during execution, inspect actual environment status and the interrupted operation before starting another deployment. Status, configuration and deployment share the host's repository/environment authorization boundary. Fresh machines need a locally provisioned recipe and eligible release image before deploying that project.
+
+## Reconcile existing work
+
+Use `topic_status` for recent deliveries, worker state, ready revisions and the active integration batch. Use the existing journal reconciliation operations only after inspecting the work and its evidence. A conflicting state returns an error. Normal authenticated management reads do not trigger a model turn.

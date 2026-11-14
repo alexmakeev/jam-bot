@@ -1,7 +1,7 @@
 import { DatabaseSync, type SQLOutputValue } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 
-export interface Topic { repository: string; repoId: number; installation: number; cwd: string; defaultClass?: import("./profile-card.js").ProfileKind }
+export interface Topic { repository: string; repoId: number; installation: number; cwd: string; defaultEnvironment?: string; defaultClass?: import("./profile-card.js").ProfileKind }
 export interface Intake {
   delivery: string;
   issue: number;

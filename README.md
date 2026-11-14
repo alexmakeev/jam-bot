@@ -1,6 +1,6 @@
 # JAM-Bot
 
-MIT-licensed project in active design. See [PRD](docs/PRD.md), [architecture](docs/ARCHITECTURE.md), and [glossary](docs/GLOSSARY.md). The repository includes the [local recovery experiment](https://github.com/alexmakeev/jam-bot/issues/1) and an opt-in [single-repository webhook-to-Leo service](docs/SERVICE.md).
+MIT-licensed project in active design. See [PRD](docs/PRD.md), [architecture](docs/ARCHITECTURE.md), and [glossary](docs/GLOSSARY.md). The repository includes the [local recovery experiment](https://github.com/alexmakeev/jam-bot/issues/1) and an opt-in [multi-repository webhook-to-Leo service](docs/SERVICE.md).
 
 ## Run the experiment
 
@@ -39,4 +39,4 @@ With Docker Desktop running, use `docker compose run --rm jam` to build the imag
 
 Use `docker compose run --rm jam node --test --test-concurrency=1 dist/test/recovery.test.js` to exercise the local worker fixture on Linux. The interactive environment shares the Claude subscription with the local service. Stop the service before opening interactive Claude with the same directory, or supply a separate subscription directory and home.
 
-For the separately installed local webhook service, see [Mac service setup and operation](docs/SERVICE.md). The service runs in Ubuntu 22.04 under Docker Desktop and starts after the Mac user logs in.
+For the separately installed local webhook service, see [Mac service setup and operation](docs/SERVICE.md). The service runs in Ubuntu 22.04 under Docker Desktop and starts after the Mac user logs in. For project discovery, remote MCP, REST and deployment environments, see the [owner management guide](docs/MANAGEMENT.md).
