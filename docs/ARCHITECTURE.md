@@ -61,6 +61,8 @@ GitHub is the first adapter. A future GitLab adapter would own its authenticatio
 4. A crash after an external effect and before local acknowledgment requires observing that effect before retry. For a question, persist its correlation identity and waiting reason, then notify the recipient. Repair derived labels from the reconciled record. A repeated delivery may have a different delivery ID from another event describing the same change.
 5. A local claim protects a single host only. For the first deployment, assign disjoint repositories to named machines. Before enabling reassignment, require evidence the old owner can no longer mutate GitHub or start work. Warn on conflicting ownership and halt the contender. Timeout or silence alone is insufficient to take ownership. Cross-host exclusion remains an explicit test gate.
 
+For an in-process Claude team, apply exclusive local ownership to the lead session. The planned service wrapper holds that claim while launching or resuming the lead; an assignment carries the native teammate handle. Reach the teammate through that lead. A fresh response can demonstrate logical resumption even when the original OS process died. The live experiment below is single-operator and does not implement concurrent lead-session ownership.
+
 ## Developer and operator boundaries
 
 Codex in maintainer mode reads code, discusses in the user's language and writes English work cards through scoped issue access. Its workspace and credentials must enforce the code-write restriction. Protect service credentials and neighboring worktrees from code and tests run by a developer. The role instructions communicate policy; tool authorization enforces it.

@@ -1,10 +1,11 @@
 // Operator-run acceptance experiment. Uses a real issue and spends Claude Code quota.
 import { execFileSync, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, mkdtemp, readFile, realpath } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { checkpointAuthor } from './claude-evidence.js';
 import { atomicJson } from './storage.js';
 
 async function main(): Promise<void> {
@@ -29,17 +30,20 @@ async function main(): Promise<void> {
   await mkdir(join(worktree, 'evidence'));
   console.log('Live run directory:', root);
 
-  async function phase(resume: boolean): Promise<void> {
+  const projectKey = (await realpath(worktree)).replace(/[^a-zA-Z0-9-]/g, '-');
+  const trace = join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'projects', projectKey, session);
+  async function phase(previous?: string): Promise<string> {
+    const resume = Boolean(previous);
     const checkpoint = resume ? 'second' : 'first';
     const expected = checkpoint + '-' + nonce;
     const file = 'evidence/' + checkpoint + '.txt';
     const instruction = resume
-      ? 'Resume the original in-process developer by its saved native agent ID from the original spawn result. Use SendMessage. Do not spawn a replacement. Ask it to read its first checkpoint and continue.'
+      ? 'Resume the original in-process developer by its saved native agent ID ' + previous + '. Use SendMessage. Do not spawn a replacement. Ask it to read its first checkpoint and continue.'
       : 'Use the Agent tool to create exactly one native in-process teammate named developer. Assign it this checkpoint test.';
     const prompt = [
       'JAM-Bot operator-approved recovery experiment for ' + issue.url + '.',
       instruction, 'Have the developer itself write exactly ' + expected + ' to ' + file + ' via Write.',
-      'The developer must send a checkpoint acknowledgment to its lead and then wait. Do not write the checkpoint as the lead.',
+      'The developer must send a checkpoint acknowledgment containing exactly the token ' + expected + ' to its lead and then wait. Do not write the checkpoint as the lead.',
       'No other files, shell commands or network calls are needed.'
     ].join(' ');
     const child = spawn('claude', [resume ? '--resume' : '--session-id', session,
@@ -56,7 +60,10 @@ async function main(): Promise<void> {
         let content: string | undefined;
         try { content = await readFile(join(worktree, file), 'utf8'); }
         catch (err) { if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err; }
-        if (content?.trim() === expected) return;
+        if (content?.trim() === expected) {
+          const id = await checkpointAuthor(trace, expected, checkpoint + '.txt', previous);
+          if (id) return id;
+        }
         await delay(300);
       }
       throw new Error('Timed out waiting for ' + file);
@@ -65,13 +72,14 @@ async function main(): Promise<void> {
       await closed;
     }
   }
-  await phase(false);
+  const nativeHandle = await phase();
+  await atomicJson(join(root, 'assignment.json'), { ...assignment, nativeHandle });
   const current = readIssue();
   if (current.state !== 'OPEN' || current.body !== issue.body || current.title !== issue.title)
     throw new Error('The issue changed during recovery');
-  await phase(true);
-  await atomicJson(join(root, 'result.json'), { ...assignment, checkpoints: ['first', 'second'] });
-  console.log('Observed both checkpoints across a forced lead restart. Inspect the native tool trace for worker identity.');
+  await phase(nativeHandle);
+  await atomicJson(join(root, 'result.json'), { ...assignment, nativeHandle, checkpoints: ['first', 'second'] });
+  console.log('Observed both checkpoints across a forced lead restart. Verified a single developer wrote and acknowledged both checkpoints.');
 }
 
 main().catch(error => { console.error(error.message); process.exitCode = 1; });

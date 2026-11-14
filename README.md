@@ -16,6 +16,8 @@ Tests create disposable Git repositories and worktrees. The demo keeps its tempo
 
 For a prepared local fixture, use `node dist/src/cli.js CONFIG.json CARD_ID`. Configuration contains `root`, `repo`, `server`, `approvers`, and optional `stepDelayMs`. The fixture source reads `cards/<hash>.json` and `owners/<hash>.json` under root. `src/demo.ts` is the complete runnable example; do not treat user-supplied fixture JSON as authenticated approval.
 
+For a separate operator-approved run using a real GitHub issue and a paid Claude Code session, see the [live recovery experiment](docs/PROTOTYPE.md#operator-run-live-experiment).
+
 ## What exists
 
 - Typed source/card/assignment/checkpoint boundaries; English card with human actor, conversation reference, and exact approved scope.
