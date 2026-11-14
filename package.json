@@ -12,8 +12,12 @@
     "demo": "npm run build && node dist/src/demo.js"
   },
   "devDependencies": {
+    "@types/markdown-it": "^14.2.0",
     "@types/node": "^22.20.5",
     "playwright-core": "^1.65.1",
     "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "markdown-it": "^15.0.3"
   }
 }

@@ -55,7 +55,7 @@ export async function runDeveloperProfile(p:ProfileRun) {
     if(card.kind!=='development'){
       await setCardProgress(topic,issue,'in progress');
       const output=await stage(p,card.kind==='consultation'?'consultant':'assignment',
-        'Answer this approved request directly in English. Return a concise, self-contained deliverable.\n'+card.task);
+        'Answer this approved request directly in English. Return concise GitHub Markdown suitable for an issue comment. Preserve separate steps as a list.\n'+card.task);
       await atomicJson(join(dir,'result.json'),{kind:card.kind,output});
       await p.authorize();
       await completeCard(topic,issue,output);
@@ -64,7 +64,7 @@ export async function runDeveloperProfile(p:ProfileRun) {
     await setCardProgress(topic,issue,'planning');
     await p.authorize();
     if(!card.files.length) {
-      const plan=await stage(p,'architect','Provide a brief English implementation plan. Identify file scope questions to settle before edits.\n'+card.task);
+      const plan=await stage(p,'architect','Return only a short numbered Markdown list of two to four steps for this exact task. JAM-Bot development routes are team workflows. Avoid assumptions about application routes or frameworks. Identify the file scope needed before edits.\n'+card.task);
       await atomicJson(join(dir,'plan.json'),{kind:'development',plan,waiting:'file-scope'});
       await p.authorize();
       await requestFileScope(topic,issue,plan);

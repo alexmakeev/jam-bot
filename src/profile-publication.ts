@@ -1,3 +1,4 @@
+import { issueComment } from './issue-comment.js';
 import { attachmentUrl, digestOf, specName } from './specification-upload.js';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -33,8 +34,7 @@ export async function requestFileScope(topic:Topic,issue:number,plan:string) {
   const marker='<!-- jam-bot:needs-files -->';
   const comments:{body:string}[]=await api('/issues/'+issue+'/comments?per_page=100');
   if(!comments.some(c=>c.body?.endsWith(marker))){
-    await api('/issues/'+issue+'/comments','POST',{body:plan.replace(/\s+/g,' ').slice(0,600)+
-      ' Please create a linked follow-up Task with a Files: line naming the repository-relative paths authorized for editing. '+marker});
+    await api('/issues/'+issue+'/comments','POST',{body:issueComment('needs-files',plan)});
   }
   await setCardProgress(topic,issue,'blocked');
 }
@@ -45,7 +45,7 @@ export async function completeCard(topic: Topic, issue: number, summary: string)
   const marker = '<!-- jam-bot:completion -->';
   const existing: {body:string}[] = await api(path+'/comments?per_page=100');
   if (!existing.some(c=>c.body?.endsWith(marker))) {
-    await api(path+'/comments','POST',{body:summary.replace(/\s+/g,' ').trim().slice(0,1400)+'\n\n'+marker});
+    await api(path+'/comments','POST',{body:issueComment('completion',summary)});
   }
   await api(path,'PATCH',{state:'closed',state_reason:'completed'});
   const labels: {name:string}[] = await api(path+'/labels?per_page=100');
