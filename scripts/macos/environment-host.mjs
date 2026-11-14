@@ -113,7 +113,7 @@ export async function serve(root,exchange,tokenPath) {
       return result(await current(),previous);
     }
     const target={revision:x.revision,config:{LOG_LEVEL:x.config?.LOG_LEVEL??'info'},secretRefs:[...(x.secretRefs??[])].sort(),
-      appVariables:Object.fromEntries(Object.entries(x.appVariables??{}).sort()),endpoint:x.endpoint??null,dataPath:recipe.dataPath??null,image:recipe.releases[x.revision]};
+      appVariables:Object.fromEntries(Object.entries(x.appVariables??{}).sort()),endpoint:x.endpoint?{address:'127.0.0.1',port:x.endpoint.port}:null,dataPath:recipe.dataPath??null,image:recipe.releases[x.revision]};
     if(same(target,previous) && result(existing,previous).healthy && same(result(existing,previous).endpoint,target.endpoint))return result(existing,previous);
     if(target.endpoint){
       const port=target.endpoint.port;
@@ -181,9 +181,10 @@ export async function serve(root,exchange,tokenPath) {
       try{
         const outer=JSON.parse(await privateFile(path,16384));
         if(!allowedKeys(outer,['body','signature'])||typeof outer.body!=='string'||!validEnvironmentSignature(token,'request',outer.body,outer.signature))continue;
-        const x=JSON.parse(outer.body);if(x.id!==id||!Number.isSafeInteger(x.at)||Math.abs(Date.now()-x.at)>120000)continue;
+        const x=JSON.parse(outer.body);if(x.id!==id||!Number.isSafeInteger(x.at))continue;
         const h=digest(outer.body),prior=db.prepare('SELECT * FROM requests WHERE id=?').get(id);
-        if(prior){if(h!==prior.hash)continue;await send(id,JSON.parse(prior.response));continue;}
+        if(prior){if(h!==prior.hash)continue;if(prior.state==='done')await send(id,JSON.parse(prior.response));continue;}
+        if(Math.abs(Date.now()-x.at)>120000)continue;
         db.prepare("INSERT INTO requests(id,hash,input,state) VALUES(?,?,?,'started')").run(id,h,outer.body);
         await finish({id,input:outer.body});
       }catch{/* Ignore malformed, unauthenticated or incomplete exchange files. Durable intents resume on restart. */}
