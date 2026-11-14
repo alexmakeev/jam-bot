@@ -18,8 +18,8 @@ async function main(): Promise<void> {
   }
   // The explicit experiment approval is attributable to the authenticated operator.
   const approver = github('user');
-  authorizeGitHubIssue(url, approver);
-  const issue = readLockedIssue(url);
+  await authorizeGitHubIssue(url, approver);
+  const issue = await readLockedIssue(url);
   const root = await mkdtemp(join(tmpdir(), 'jam-live-'));
   const worktree = join(root, 'worktree');
   // Temporary clone keeps experimental branches and Claude writes out of the source checkout.
@@ -47,8 +47,8 @@ async function main(): Promise<void> {
       'The developer must send a checkpoint acknowledgment containing exactly the token ' + expected + ' to its lead and then wait. Do not write the checkpoint as the lead.',
       'No other files, shell commands or network calls are needed.'
     ].join(' ');
-    authorizeGitHubIssue(issue.url, approver);
-    const current = readLockedIssue(issue.url);
+    await authorizeGitHubIssue(issue.url, approver);
+    const current = await readLockedIssue(issue.url);
     if (current.body !== issue.body || current.title !== issue.title)
       throw new Error('The issue changed before dispatch');
     const child = spawn('claude', [resume ? '--resume' : '--session-id', session,
