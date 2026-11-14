@@ -20,12 +20,35 @@ async function main(): Promise<void> {
   const approver = github('user');
   await authorizeGitHubIssue(url, approver);
   const issue = await readLockedIssue(url);
+  let delivery: string | undefined;
+  const receiver = process.env.JAM_E2E_RECEIVER;
+  if (receiver) {
+    const number = Number(url.split('/').pop());
+    const repository = url.split('/').slice(3, 5).join('/');
+    const boundRepository = execFileSync('docker', ['exec', receiver, 'printenv', 'JAM_REPOSITORY'],
+      { encoding: 'utf8', timeout: 15_000 }).trim();
+    if (boundRepository !== repository) throw new Error('Receiver belongs to another repository');
+    const deadline = Date.now() + 180_000;
+    while (!delivery && Date.now() < deadline) {
+      const result = execFileSync('docker', ['exec', receiver, 'node', 'dist/src/webhook-service.js',
+        'review', 'list'], { encoding: 'utf8', timeout: 15_000 });
+      const row = JSON.parse(result).deliveries.find((event: { issue: number }) => event.issue === number);
+      if (row && ['review', 'abandoned'].includes(row.state)) throw new Error('Delivery needs operator review');
+      if (row?.state === 'received') {
+        const ack = JSON.parse(row.receipt);
+        if (ack?.disposition !== 'intake_received' || ack.issue !== number || ack.delivery !== row.delivery)
+          throw new Error('Invalid Leo receipt');
+        delivery = row.delivery;
+      } else await delay(2000);
+    }
+    if (!delivery) throw new Error('Timed out waiting for the signed delivery and Leo acknowledgment');
+  }
   const root = await mkdtemp(join(tmpdir(), 'jam-live-'));
   const worktree = join(root, 'worktree');
   // Temporary clone keeps experimental branches and Claude writes out of the source checkout.
-  execFileSync('git', ['clone', '--quiet', '--local', '--no-hardlinks', '.', worktree]);
+  execFileSync('gh', ['repo', 'clone', url.split('/').slice(3,5).join('/'), worktree]);
   const session = randomUUID();
-  const assignment = { issue: url, title: issue.title, approver, session, worktree };
+  const assignment = { issue: url, title: issue.title, approver: {id:approver.id, login:approver.login}, delivery, session, worktree };
   await atomicJson(join(root, 'assignment.json'), assignment);
   const nonce = randomUUID();
   await mkdir(join(worktree, 'evidence'));
