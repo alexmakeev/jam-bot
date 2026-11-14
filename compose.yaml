@@ -1,0 +1,8 @@
+services:
+  jam:
+    build: .
+    init: true
+    stdin_open: true
+    tty: true
+    volumes:
+      - ${JAM_CONTAINER_HOME:-${HOME}/.jam-bot/container-home}:/home/jam

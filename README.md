@@ -32,3 +32,9 @@ The compact file journal avoids a database dependency for the experiment. It is 
 ## Boundaries and evidence
 
 See [prototype validation](docs/PROTOTYPE.md) for executed checks and limitations. The fixture adapter trusts local test data; it does not verify GitHub approval or signatures. It has no REST/OpenAPI service, remote management MCP, webhook receiver, upload API, real Claude team adapter, sandbox, or cross-host fencing. Do not expose it or use it for untrusted work.
+
+## Local Ubuntu 22.04 experiment
+
+With Docker Desktop running, use `docker compose run --rm jam` to build the image and open Claude Code. On the first run, sign in inside the container. Its writable home is mounted from `~/.jam-bot/container-home` on the host. Set `JAM_CONTAINER_HOME` to choose a different dedicated folder. Recreating the container preserves this directory. The existing macOS login can use Keychain, so mounting only the Mac configuration folder may not carry over authentication.
+
+Use `docker compose run --rm jam node --test --test-concurrency=1 dist/test/recovery.test.js` to exercise the local worker fixture on Linux. This interactive environment is for development; the GitHub webhook service is a separate implementation milestone.
