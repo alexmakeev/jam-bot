@@ -31,6 +31,14 @@ async function receive(req: IncomingMessage, res: ServerResponse, topic: Topic, 
     data.repository?.full_name !== topic.repository) return end(403);
   const delivery = req.headers['x-github-delivery'];
   const issue = data.issue;
+  // This installation handles personal repositories. Organization intake requires
+  // a live effective-role lookup and stays closed until that adapter is configured.
+  if (!issue || typeof issue !== 'object') return end(400);
+  const owner = data.repository.owner;
+  const actor = data.sender;
+  if (owner?.type !== 'User' || !Number.isSafeInteger(owner.id) || owner.id <= 0 ||
+      actor?.type !== 'User' || actor.id !== owner.id ||
+      issue?.user?.type !== 'User' || issue.user.id !== actor.id) return end(204);
   if (typeof delivery !== 'string' || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(delivery) ||
       !Number.isSafeInteger(issue?.number) || issue.number <= 0 || typeof issue.title !== 'string' ||
       !(issue.body == null || typeof issue.body === 'string')) return end(400);

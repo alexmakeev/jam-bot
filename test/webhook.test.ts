@@ -19,7 +19,8 @@ test('the receiver checks raw signature, topic and shape before durable deduplic
   await new Promise<void>(ok=>server.listen(0,'127.0.0.1',ok));
   t.after(async () => { await new Promise<void>(ok=>server.close(()=>ok())); db.db.close(); });
   const url='http://127.0.0.1:'+(server.address() as AddressInfo).port+'/github';
-  const payload={action:'opened',repository:{id:123,full_name:'owner/test'},installation:{id:45},issue:{number:1,title:event.title,body:event.body}};
+  const owner={type:'User',id:10};
+  const payload={action:'opened',sender:owner,repository:{id:123,full_name:'owner/test',owner},installation:{id:45},issue:{user:owner,number:1,title:event.title,body:event.body}};
   const send=(raw:string, id:string=event.delivery, signature='sha256='+createHmac('sha256',secret).update(raw).digest('hex')) =>
     fetch(url,{method:'POST',body:raw,headers:{'x-hub-signature-256':signature,'x-github-delivery':id,'x-github-event':'issues'}});
   const body=JSON.stringify(payload);
@@ -31,6 +32,9 @@ test('the receiver checks raw signature, topic and shape before durable deduplic
   assert.equal((await send(JSON.stringify({...payload,repository:{id:2,full_name:'owner/test'}}))).status,403);
   assert.equal((await send(JSON.stringify({...payload,issue:null}))).status,400);
   assert.equal((await send(JSON.stringify({...payload,action:'closed'}))).status,204);
+  const outsider={type:'User',id:11};
+  assert.equal((await send(JSON.stringify({...payload,sender:outsider,issue:{...payload.issue,user:outsider}}))).status,204);
+  assert.equal((await send(JSON.stringify({...payload,issue:{...payload.issue,user:outsider}}))).status,204);
   assert.deepEqual(db.list(),[]);
   for (const id of [event.delivery,event.delivery,randomUUID()]) assert.equal((await send(body,id)).status,202);
   assert.equal(db.list().length,1);
