@@ -6,3 +6,9 @@ services:
     tty: true
     volumes:
       - ${JAM_CONTAINER_HOME:-${HOME}/.jam-bot/container-home}:/home/jam
+      - type: bind
+        source: ${JAM_CLAUDE_DIR:-${HOME}/.claude}
+        target: /home/jam/.claude
+        read_only: false
+        bind:
+          create_host_path: false

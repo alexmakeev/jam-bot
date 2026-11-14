@@ -35,6 +35,6 @@ See [prototype validation](docs/PROTOTYPE.md) for executed checks and limitation
 
 ## Local Ubuntu 22.04 experiment
 
-With Docker Desktop running, use `docker compose run --rm jam` to build the image and open Claude Code. On the first run, sign in inside the container. Its writable home is mounted from `~/.jam-bot/container-home` on the host. Set `JAM_CONTAINER_HOME` to choose a different dedicated folder. Recreating the container preserves this directory. The existing macOS login can use Keychain, so mounting only the Mac configuration folder may not carry over authentication.
+With Docker Desktop running, use `docker compose run --rm jam` to build the image and open Claude Code. Claude Code uses the Mac's existing `~/.claude` directory mounted read/write at `/home/jam/.claude`. This directory mount allows atomic credential-file replacement. Set `JAM_CLAUDE_DIR` to select a different existing Claude directory. Other container home files persist separately under `~/.jam-bot/container-home` (override with `JAM_CONTAINER_HOME`). Check login inside the container: macOS Keychain credentials are separate from the mounted files.
 
 Use `docker compose run --rm jam node --test --test-concurrency=1 dist/test/recovery.test.js` to exercise the local worker fixture on Linux. This interactive environment is for development; the GitHub webhook service is a separate implementation milestone.
