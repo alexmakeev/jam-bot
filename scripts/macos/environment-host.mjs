@@ -1,6 +1,6 @@
 // This host-only process owns Docker access and reads the operator's private recipe catalog.
 import {execFile} from 'node:child_process';
-import {createHash,randomUUID} from 'node:crypto';
+import {createHash,createHmac,randomUUID} from 'node:crypto';
 import {constants} from 'node:fs';
 import {chmod,lstat,mkdir,open,readFile,readdir,rename,rm,stat,writeFile} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
@@ -112,7 +112,25 @@ export async function serve(root,exchange,tokenPath) {
       if(existing?.State?.Running)await docker(['stop','--time','8',existing.Id]);
       return result(await current(),previous);
     }
-    const target={revision:x.revision,config:{LOG_LEVEL:x.config?.LOG_LEVEL??'info'},secretRefs:[...(x.secretRefs??[])].sort(),
+    const directory=join(root,project+'-secrets');
+    const secretRefs=[...(x.secretRefs??[])].sort(),secretVersions={};
+    if(secretRefs.length)await mkdir(directory,{recursive:true,mode:0o700});
+    for(const ref of secretRefs){
+      const source=recipe.secrets[ref];
+      if(typeof source!=='string'||resolve(source)!==source)throw Error('Invalid registered secret file');
+      const fd=await open(source,constants.O_RDONLY|constants.O_NOFOLLOW);
+      try{
+        const st=await fd.stat();if(!st.isFile()||st.nlink!==1||st.size>65536)throw Error('Invalid secret source');
+        const bytes=await fd.readFile(),version=createHmac('sha256',token).update('jam-secret-version\0').update(bytes).digest('hex');
+        const snapshot=join(directory,version);secretVersions[ref]=version;
+        if(!await lstat(snapshot).then(()=>true,e=>{if(e.code==='ENOENT')return false;throw e;})){
+          const temporary=snapshot+'.'+randomUUID()+'.tmp';
+          try{await writeFile(temporary,bytes,{mode:0o400,flag:'wx'});await chmod(temporary,0o444);await rename(temporary,snapshot);}
+          finally{await rm(temporary,{force:true});}
+        }
+      }finally{await fd.close();}
+    }
+    const target={revision:x.revision,config:{LOG_LEVEL:x.config?.LOG_LEVEL??'info'},secretRefs,secretVersions,
       appVariables:Object.fromEntries(Object.entries(x.appVariables??{}).sort()),endpoint:x.endpoint?{address:'127.0.0.1',port:x.endpoint.port}:null,dataPath:recipe.dataPath??null,image:recipe.releases[x.revision]};
     if(same(target,previous) && result(existing,previous).healthy && same(result(existing,previous).endpoint,target.endpoint))return result(existing,previous);
     if(target.endpoint){
@@ -128,17 +146,15 @@ export async function serve(root,exchange,tokenPath) {
       if(recipe.tier==='stable'&&!recipe.stableApprovedRevisions?.includes(want.revision))throw Error('Stable release is no longer host-approved');
       const im=JSON.parse(await docker(['image','inspect',want.image]))[0];
       if(im.Id!==want.image||!im.Config.Healthcheck?.Test||im.Config.Healthcheck.Test[0]==='NONE'||Object.keys(im.Config.Volumes??{}).length)throw Error('Image must be preinstalled with healthcheck and without declared volumes');
-      for(const ref of want.secretRefs){const path=recipe.secrets?.[ref];if(!path||resolve(path)!==path||path.includes('$')||!(await lstat(path)).isFile())throw Error('Secret binding unavailable');}
       const secrets={};
-      if(want.secretRefs.length){
-        const directory=join(root,project+'-secrets');await mkdir(directory,{recursive:true,mode:0o700});
-        for(const ref of want.secretRefs){
-          const path=join(directory,ref),tmp=path+'.'+randomUUID();
-          const from=await open(recipe.secrets[ref],constants.O_RDONLY|constants.O_NOFOLLOW);
-          try{const st=await from.stat();if(!st.isFile()||st.nlink!==1||st.size>65536)throw Error('Invalid secret source');await writeFile(tmp,await from.readFile(),{mode:0o400,flag:'wx'});}
-          finally{await from.close();}
-          await chmod(tmp,0o444);await rename(tmp,path);secrets[ref]=path;
-        }
+      for(const ref of want.secretRefs){
+        if(!Object.hasOwn(recipe.secrets??{},ref))throw Error('Secret binding was revoked');
+        const version=want.secretVersions?.[ref];
+        if(version!==undefined && !/^[0-9a-f]{64}$/.test(version))throw Error('Invalid recorded secret version');
+        // Older persisted deployments used an operator-owned snapshot named after the alias.
+        const path=join(directory,version??ref);
+        if(!(await lstat(path)).isFile())throw Error('Secret snapshot unavailable');
+        secrets[ref]=path;
       }
       const model=composeModel(project,row.owner,{...recipe,secrets},want,gen);
       await writeFile(spec,JSON.stringify(model),{mode:0o600});
@@ -151,6 +167,11 @@ export async function serve(root,exchange,tokenPath) {
       if(want.dataPath&&!c.Mounts.some(m=>m.Type==='volume'&&m.Name===project+'_data'&&m.Destination===want.dataPath&&m.RW))throw Error('Persistent data volume mismatch');
       if(want.endpoint)await new Promise((ok,fail)=>{const socket=connect(want.endpoint.port,'127.0.0.1');socket.setTimeout(2500);socket.once('connect',()=>{socket.destroy();ok();});socket.once('timeout',()=>{socket.destroy();fail(Error('Endpoint timed out'));});socket.once('error',()=>fail(Error('Endpoint unreachable')));});
       db.prepare('UPDATE environments SET lastGood=?,container=?,pending=NULL WHERE k=?').run(JSON.stringify(want),c.Id,key);
+      // Rollback still has its original snapshots until the new observed release is durable.
+      const retained=new Set(Object.values(want.secretVersions??{}));
+      for(const name of await readdir(directory).catch(()=>[])){
+        if(/^[a-f0-9]{64}$/.test(name)&&!retained.has(name))await rm(join(directory,name),{force:true}).catch(()=>{});
+      }
       return result(c,want);
     }
     try{if(db.prepare('SELECT phase FROM requests WHERE id=?').get(x.id)?.phase==='rollback')throw Error('Resume rollback');return await deploy(target,x.id);}
