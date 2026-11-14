@@ -26,13 +26,21 @@ async function stage(p:ProfileRun,role:StageRole,input:string){
   return receipt.output;
 }
 
-async function context(tree:string, files:string[]) {
+export async function projectContext(tree:string, files:string[], references:string) {
   const names=(await git(tree,'ls-files','-z')).split('\0').filter(Boolean);
   const parts=['Tracked files: '+JSON.stringify(names)];
-  for(const file of new Set(['.jam-bot/VALUES.md','README.md',...files])){
+  // A referenced implementation or neighboring test is read-only context for the teammate.
+  const referenced=names.filter(name=>/\.(?:[cm]?[jt]sx?|md)$/.test(name) && references.includes(name));
+  const required=new Set(['.jam-bot/VALUES.md','README.md',...files]);
+  let remainingReferenceBytes=16000;
+  for(const file of new Set([...required,...referenced])){
     const path=join(tree,file);
     if(!names.includes(file))continue;
     const info=await lstat(path);
+    if(!required.has(file)){
+      if(!info.isFile() || info.size>remainingReferenceBytes)continue;
+      remainingReferenceBytes-=info.size;
+    }
     if(!info.isFile()||await realpath(path)!==path||info.size>16384)throw Error('Unsupported project context file: '+file);
     parts.push(file+'\n'+await readFile(path,'utf8'));
   }
@@ -63,13 +71,14 @@ export async function runDeveloperProfile(p:ProfileRun) {
       return;
     }
     const project=await checkout(state,topic.repository,issue,signal);
-    const brief=await context(project.tree,card.files);
+    const brief=await projectContext(project.tree,card.files,card.task);
     const scope=JSON.stringify({task:card.task,files:card.files});
     const spec=await stage(p,'architect','Return a compact English Markdown implementation specification, including acceptance tests.\n'+scope+'\n'+brief);
     await publishSpecification({topic,issue,markdown:spec,signal});
     await setCardProgress(topic,issue,'in progress');
     const assignment=await stage(p,'assignment','Prepare the developer handoff from this approved scope and specification.\n'+scope+'\n'+spec);
-    const output=await stage(p,'developer','Implement the approved task. Return raw JSON {"files":[{"path":"approved/path","content":"entire file text"}]}. For tests use node:test and node:assert/strict, with explicit .ts imports for local TS modules, no dependencies.\n'+scope+'\n'+spec+'\n'+assignment+'\n'+brief);
+    const implementationContext=await projectContext(project.tree,card.files,card.task+'\n'+spec+'\n'+assignment);
+    const output=await stage(p,'developer','Implement the approved task. Return raw JSON {"files":[{"path":"approved/path","content":"entire file text"}]}. For tests use node:test and node:assert/strict, with explicit .ts imports for local TS modules, no dependencies.\n'+scope+'\n'+spec+'\n'+assignment+'\n'+implementationContext);
     for(const file of card.files){
       let parent=project.tree;
       for(const part of file.split('/').slice(0,-1)){
