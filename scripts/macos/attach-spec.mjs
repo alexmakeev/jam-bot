@@ -11,20 +11,25 @@ if (process.argv.length!==4 || !/^[\w.-]+\/[\w.-]+$/.test(repo) || !/^[1-9]\d*$/
   throw Error('Usage: node scripts/macos/attach-spec.mjs OWNER/REPOSITORY ISSUE');
 const cardUrl='https://github.com/'+repo+'/issues/'+issue;
 const handoff=(...args)=>execFileSync('docker',['exec','jam-bot-service-receiver-1','node','dist/src/specification-handoff.js',repo,issue,...args],{encoding:'utf8'});
-const packet=JSON.parse(handoff());
-const buffer=Buffer.from(packet.content,'base64');
-if (digestOf(buffer)!==packet.digest) throw Error('Corrupted specification handoff');
 const context=await chromium.launchPersistentContext(join(homedir(),'.jam-bot','spec-upload-profile'),{channel:'chrome',headless:false});
 try {
   const page=await context.newPage();
   await page.goto(cardUrl);
   console.log('Sign in if needed, then open the comment editor on the specified issue. The helper selects the file.');
+  if (await page.getByRole('link',{name:'Sign in',exact:true}).count()) {
+    await page.goto('https://github.com/login?return_to='+encodeURIComponent(cardUrl));
+    console.log('GitHub sign-in required in the dedicated Chrome window.');
+    await page.waitForURL(cardUrl,{timeout:0});
+  }
   const editor=page.getByRole('textbox',{name:/comment/i}).last();
   await editor.waitFor({timeout:180000});
   const form=editor.locator('xpath=ancestor::form[1]');
   const input=form.locator('input[type=file]');
   if (page.url()!==cardUrl || await input.count()!==1 || await editor.inputValue()!=='')
     throw Error('Expected the empty issue comment form and one attachment input');
+  const packet=JSON.parse(handoff());
+  const buffer=Buffer.from(packet.content,'base64');
+  if (digestOf(buffer)!==packet.digest) throw Error('Corrupted specification handoff');
   // Recheck scope immediately before handing bytes to the browser. Selection starts upload.
   if (JSON.parse(handoff()).digest!==packet.digest) throw Error('Specification changed');
   await input.setInputFiles({name:packet.name,mimeType:'text/markdown',buffer});
