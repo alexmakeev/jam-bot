@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { topicKey, type TopicRuntime } from './topics.js';
+import type { ManagementHandler } from './management-transport.js';
 import { TaskAdmission } from './task-admission.js';
 import { hasTaskWriteAccess, taskClass } from './task-approval.js';
 
@@ -61,9 +62,11 @@ async function receive(req: IncomingMessage, res: ServerResponse, routes: Routes
     actorId:actor.id,actorLogin:actor.login,authorId:author.id,authorLogin:author.login,kind,title:issue.title,body:issue.body ?? ''});
   return end(status);
 }
-export function webhook(routes: Routes, secret: string, canApprove=hasTaskWriteAccess, admission=new TaskAdmission()) {
+export function webhook(routes: Routes, secret: string, canApprove=hasTaskWriteAccess, admission=new TaskAdmission(), management?:ManagementHandler) {
   return createServer({ requestTimeout:30_000, headersTimeout:15_000, maxHeaderSize:16384 }, (req,res) => {
-    receive(req,res,routes,secret,canApprove,admission).catch(() => {
+    const isManagement=req.url==='/mcp' || req.url?.startsWith('/api/v1/');
+    const handled=management && isManagement ? management(req,res) : receive(req,res,routes,secret,canApprove,admission);
+    handled.catch(() => {
       if (!res.headersSent) res.writeHead(503);
       res.end();
     });

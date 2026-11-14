@@ -27,8 +27,11 @@ function catalog<T>(state:string,action:(db:DatabaseSync)=>T):T {
 
 export function serverIdentity(state:string):string {
   return catalog(state,db=>{
-    db.prepare('INSERT OR IGNORE INTO server VALUES(1,?)').run(randomUUID());
-    return z.uuid().parse(db.prepare('SELECT id FROM server WHERE singleton=1').get()?.id);
+    const pinned=process.env.JAM_SERVER_ID===undefined ? undefined : z.uuid().parse(process.env.JAM_SERVER_ID);
+    db.prepare('INSERT OR IGNORE INTO server VALUES(1,?)').run(pinned??randomUUID());
+    const id=z.uuid().parse(db.prepare('SELECT id FROM server WHERE singleton=1').get()?.id);
+    if(pinned && pinned!==id)throw new ManagementError(409,'wrong_server','The saved server identity differs from the installed host.');
+    return id;
   });
 }
 

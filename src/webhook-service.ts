@@ -10,6 +10,9 @@ import { configuredTopics, openTopics, type TopicRuntime } from './topics.js';
 import { IntegrationQueue } from './integration-queue.js';
 import { BranchValidation } from './branch-validation.js';
 import { integrateReady, validateReviewedHead } from './developer-profile.js';
+import { configuredManagement } from './management-transport.js';
+import { restoreManagedTopics } from './management-projects.js';
+import { createManagement } from './management.js';
 import { webhook } from './webhook.js';
 
 function required(name: string): string {
@@ -81,21 +84,47 @@ async function main() {
   const secret = (await readFile(required('JAM_WEBHOOK_SECRET_FILE'),'utf8')).trim();
   if (!secret) throw new Error('Missing signing secret');
   const routes = await openTopics(state);
+  await restoreManagedTopics(state,routes);
   const admissions=new TaskAdmission();
   await admissions.recover(routes.values());
-  const server = webhook(routes,secret,undefined,admissions);
-  await new Promise<void>((ok,fail) => { server.once('error',fail); server.listen(19739,'0.0.0.0',ok); });
   const stop = new AbortController();
-  function shutdown() { stop.abort(); server.close(); server.closeAllConnections(); }
+  const consumers=new Set<Promise<void>>();
+  let failure:unknown;
+  const start=(route:TopicRuntime)=>{
+    if(stop.signal.aborted)return;
+    const task=consume(route,stop.signal).catch(err=>{failure=err;stop.abort();});
+    consumers.add(task);
+    void task.finally(()=>consumers.delete(task));
+  };
+  let control:Awaited<ReturnType<typeof createManagement>>|undefined;
+  const requests=new Set<Promise<Record<string,unknown>>>();
+  const management=await configuredManagement(async()=>{
+    const api=await createManagement(state,routes,start);
+    control=api;
+    return {operations:api.operations,invoke:async(name,input)=>{
+      const pending=api.invoke(name,input);
+      requests.add(pending);
+      try {return await pending;} finally {requests.delete(pending);}
+    }};
+  });
+  const server=webhook(routes,secret,undefined,admissions,management);
+  await new Promise<void>((ok,fail)=>{server.once('error',fail);server.listen(19739,'0.0.0.0',ok);});
+  const done=new Promise<void>(ok=>stop.signal.addEventListener('abort',()=>ok(),{once:true}));
+  const shutdown=()=>stop.abort();
   process.once('SIGTERM',shutdown);
   process.once('SIGINT',shutdown);
-  console.log('Signed issue intake ready for',routes.size,'repositories');
-  const tasks = [...routes.values()].map(route=>consume(route,stop.signal));
-  try { await Promise.all(tasks); }
-  finally {
-    shutdown();
-    await Promise.allSettled(tasks);
-    for (const route of routes.values()) route.journal.db.close();
+  try {
+    for(const route of routes.values())start(route);
+    console.log('Signed issue intake ready for',routes.size,'repositories');
+    await done;
+  } finally {
+    const closed=new Promise<void>(ok=>server.close(()=>ok()));
+    server.closeIdleConnections();
+    await Promise.all([closed,...consumers]);
+    await Promise.allSettled(requests);
+    await control?.settle();
+    for(const route of routes.values())route.journal.db.close();
   }
+  if(failure)throw failure;
 }
 main().catch(err => { console.error(err.message); process.exitCode=1; });
