@@ -26,8 +26,19 @@ async function request(endpoint:Pick<Endpoint,'url'|'tokenFile'>,path:string,inp
   const response=await fetch(endpointUrl(endpoint.url)+path,{method:input===undefined?'GET':'POST',redirect:'error',
     signal:AbortSignal.timeout(60000),headers:{authorization:'Bearer '+bearer,'content-type':'application/json'},
     ...(input===undefined?{}:{body:JSON.stringify(input)})});
-  if(!response.ok)throw Error('Management request failed (HTTP '+response.status+')');
-  return response.json();
+  if(!response.ok){await response.body?.cancel();throw Error('Management request failed (HTTP '+response.status+')');}
+  const reader=response.body?.getReader();
+  if(!reader)throw Error('Management endpoint returned an empty response');
+  const chunks:Uint8Array[]=[];
+  let size=0;
+  while(true){
+    const {done,value}=await reader.read();
+    if(done)break;
+    size+=value.length;
+    if(size>8*1024*1024){await reader.cancel();throw Error('Management response exceeds 8 MiB');}
+    chunks.push(value);
+  }
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 }
 const invoke=(ep:Pick<Endpoint,'url'|'tokenFile'>,op:string,input:unknown)=>request(ep,'/api/v1/operations/'+encodeURIComponent(op),input);
 async function inventory(endpoint:Pick<Endpoint,'url'|'tokenFile'>,expected?:string) {
