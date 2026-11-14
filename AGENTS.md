@@ -1,7 +1,7 @@
 # Project instructions
 
 - Product name: **JAM-Bot**. Repository: `jam-bot`. License: MIT; preserve the existing LICENSE.
-- This project is in requirements discussion. Documentation updates do not authorize implementation, task creation, service setup, or deployment. Wait for a separate explicit instruction.
+- This project is in requirements discussion. Documentation updates do not authorize implementation, task creation, service setup, or deployment. Issue #1 explicitly authorizes the TypeScript/Node.js local recovery prototype; production and unrelated implementation remain unauthorized.
 - Write all documents in English, including drafts, intermediate documents, specifications, checkpoints, and architectural Markdown attachments produced by agents. Russian aliases are allowed in the glossary.
 - Use canonical terms from [docs/GLOSSARY.md](docs/GLOSSARY.md). Do not conflate teammates with subagents, issues with pull requests, or mentions with authorization.
 - Keep [docs/PRD.md](docs/PRD.md) the single requirements source of truth. Separate confirmed requirements, proposals, open questions, and non-goals. Preserve short requirement IDs; avoid duplicating requirements across files.
@@ -13,5 +13,10 @@
 
 - Distinguish intake reports from execution work cards: only authorized-human-approved work cards may execute; bots cannot self-approve. Approval is separate from queue state.
 - Distinguish project source of truth, topic, work profile, and orchestrating harness. Build concrete recipes, not arbitrary compatibility machinery.
-- Keep management REST/OpenAPI and its thin MCP interface separate from the agent communication protocol. Share application operations across CLI/REST/MCP. Python is excluded; implementation language remains undecided.
+- Keep management REST/OpenAPI and its thin MCP interface separate from the agent communication protocol. Share application operations across CLI/REST/MCP. TypeScript is selected; Node.js runs the prototype. Python is excluded.
 - MVP networking requires public IP, reachable HTTPS, primary verified webhooks, and authenticated remote management MCP. API reconciliation is for recovery, not a primary polling loop. A future private-machine relay is outside MVP.
+
+- Trusted human conversation approval is sufficient when work cards retain verifiable attribution; no second click. Labels project approval, not prove it. Small scope adjustments follow goals/values; escalate strategic ambiguity, conflicts, or dead ends.
+- Read managed project .jam-bot/VALUES.md before changes and after recovery; absence does not block initially approved work. Human-facing Codex alone may load the relevant optional vocab.<lang>.json.
+- Recovery compares actual code, card and checkpoint. Warn on conflicting ownership and prevent duplicate execution.
+- Stable requires explicit human approval of the exact build SHA. Keep original/fix specs as .md attachments in the original issue, never substitute repository links.
