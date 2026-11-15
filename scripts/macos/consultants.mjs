@@ -33,7 +33,7 @@ export function selectedConsultants(entries,only){
   return profiles.filter(p=>only.includes(p.name));
 }
 
-async function consultCodex({profile,packet,signal,phase}) {
+async function consultCodex({profile,packet,signal,phase,onOutput}) {
   const name='jam-advice-'+randomUUID();
   const args=['run','--rm','-i','--pull=never','--entrypoint','/bin/codex','--name',name,'--read-only','--cap-drop','ALL','--security-opt','no-new-privileges',
     '--pids-limit','100','--memory','512m','--cpus','1.5','--tmpfs','/tmp:rw,nosuid,nodev,size=64m',
@@ -46,7 +46,7 @@ async function consultCodex({profile,packet,signal,phase}) {
   args.push('--color','never','-');
   const child=spawn('docker',args,{stdio:['pipe','pipe','pipe'],signal});
   let output='',diagnostic='',overflow=false;
-  child.stdout.on('data',chunk=>{if(Buffer.byteLength(output)<65536)output+=chunk.toString();else overflow=true;});
+  child.stdout.on('data',chunk=>{onOutput?.(chunk.length);if(Buffer.byteLength(output)<65536)output+=chunk.toString();else overflow=true;});
   child.stderr.on('data',chunk=>{diagnostic=(diagnostic+chunk.toString()).slice(-4000);});
   child.stdin.on('error',()=>{});
   const ended=new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',resolve);});
@@ -71,13 +71,17 @@ export async function consultAll(entries,phase,packet,adapters={codex:consultCod
     const identity={name:profile.name,provider:profile.provider,...(profile.model?{model:profile.model}:{})};
     const signal=AbortSignal.timeout((profile.timeoutMinutes??30)*60_000);
     const startedAt=new Date().toISOString();
-    if(progress)await progress({...identity,status:'running',startedAt,updatedAt:startedAt});
+    let outputBytes=0,lastOutputAt;
+    const onOutput=bytes=>{if(bytes>0){outputBytes+=bytes;lastOutputAt=new Date().toISOString();}};
+    const snapshot=(status,checkedAt,finishedAt)=>({...identity,status,startedAt,updatedAt:checkedAt,checkedAt,outputBytes,
+      ...(lastOutputAt?{lastOutputAt}:{}),...(finishedAt?{finishedAt}:{})});
+    if(progress)await progress(snapshot('running',startedAt));
     // A heartbeat confirms the host still owns the call. It is not a model token/progress estimate.
-    const heartbeat=progress && setInterval(()=>progress({...identity,status:'running',startedAt,updatedAt:new Date().toISOString()})
+    const heartbeat=progress && setInterval(()=>progress(snapshot('running',new Date().toISOString()))
       .catch(()=>{}),20000);
     let receipt;
     try{
-      const result=await adapters[profile.provider]({profile,packet,signal,phase});
+      const result=await adapters[profile.provider]({profile,packet,signal,phase,onOutput});
       if(typeof result!=='string'||!result.trim())throw Error('Empty consultant response');
       receipt={...identity,status:'ok',text:result.trim().slice(0,6000)};
     }catch(error){
@@ -85,7 +89,7 @@ export async function consultAll(entries,phase,packet,adapters={codex:consultCod
     }
     if(heartbeat)clearInterval(heartbeat);
     const finishedAt=new Date().toISOString();
-    if(progress)await progress({...identity,status:receipt.status,startedAt,finishedAt,updatedAt:finishedAt});
+    if(progress)await progress(snapshot(receipt.status,finishedAt,finishedAt));
     return {...receipt,startedAt,finishedAt};
   }));
   return {advice};

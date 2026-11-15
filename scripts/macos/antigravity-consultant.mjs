@@ -20,13 +20,14 @@ export function antigravityArgs(profile,name,question='Give concise independent 
     'consult','--mode','plan','--settings',settings,'--disable-slash-commands','--print-timeout',String(minutes)+'m',
     ...(profile.model?['--model',profile.model]:[]),'--output-format','text'];
 }
-export async function consultAntigravity({profile,packet,signal,question}){
+export async function consultAntigravity({profile,packet,signal,question,onOutput}){
   if(typeof packet!=='string'||Buffer.byteLength(packet)>65536||!packet.trim())throw Error('Invalid Antigravity review packet');
   const name='jam-agy-review-'+randomUUID();
   const args=antigravityArgs(profile,name,question);
   signal?.throwIfAborted();
   try{
     const job=exec('docker',args,{signal,timeout:((profile.timeoutMinutes??30)*60+15)*1000,maxBuffer:512*1024});
+    job.child.stdout.on('data',chunk=>onOutput?.(Buffer.byteLength(chunk)));
     job.child.stdin.on('error',()=>{});
     job.child.stdin.end(packet);
     const {stdout}=await job;
