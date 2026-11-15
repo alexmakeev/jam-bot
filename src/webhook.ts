@@ -1,3 +1,4 @@
+import { storeReleaseApprovalHint } from './release-approval-hint.js';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { topicKey, type TopicRuntime } from './topics.js';
@@ -31,12 +32,17 @@ async function receive(req: IncomingMessage, res: ServerResponse, routes: Routes
   try { data = JSON.parse(bytes.toString('utf8')); } catch { return end(400); }
   if (!data || typeof data !== 'object' || Array.isArray(data)) return end(400);
   const type = req.headers['x-github-event'];
-  if (type !== 'issues' || !['opened','typed'].includes(data.action)) return end(204);
+  const approvalComment=type==='issue_comment' && data.action==='created' && data.comment?.body?.startsWith?.('Approve JAM-Bot stable release of ');
+  if (!approvalComment && (type !== 'issues' || !['opened','typed'].includes(data.action))) return end(204);
   const repoId = data.repository?.id;
   const installation = data.installation?.id;
   if (!Number.isSafeInteger(repoId) || !Number.isSafeInteger(installation)) return end(403);
   const route = routes.get(topicKey(installation,repoId));
   if (!route || data.repository.full_name !== route.topic.repository) return end(403);
+  if(approvalComment){
+    if(!data.issue?.pull_request && data.sender?.type==='User')await storeReleaseApprovalHint(process.env.JAM_PROFILE_EXCHANGE ?? '/var/lib/jam-profile-exchange',repoId,route.topic.repository,data.issue?.number,data.comment,data.sender.id);
+    return end(204);
+  }
   const delivery = req.headers['x-github-delivery'];
   const issue = data.issue;
   if (!issue || typeof issue !== 'object') return end(400);

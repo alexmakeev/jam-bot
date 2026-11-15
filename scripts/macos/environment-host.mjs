@@ -87,12 +87,16 @@ export async function serve(root,exchange,tokenPath) {
       ? {port:19853,index:'calculator-dev-releases.json'}
       : x.repoId===1457276329 && x.environment==='sum' && recipe?.autoDeploySum===true
         ? {port:19854,index:'sum-dev-releases.json'} : undefined;
-    if(x.action==='deploy' && developmentSite && recipe?.tier==='development'){
+    const pilotPorts={'calculator-rc':19857,'calculator-pilot':19858};
+    const pilot=x.repoId===1457276291 && recipe?.tier==='staging' && recipe.localReleasePilot===true && Object.hasOwn(pilotPorts,x.environment)
+      ? {port:pilotPorts[x.environment],index:'calculator-pilot-images.json'} : undefined;
+    const releaseSite=pilot??(recipe?.tier==='development'?developmentSite:undefined);
+    if(x.action==='deploy' && releaseSite){
       let releases={};
-      try{releases=JSON.parse(await privateConfig(join(root,developmentSite.index)));}
+      try{releases=JSON.parse(await privateConfig(join(root,releaseSite.index)));}
       catch(error){if(error.code!=='ENOENT')throw error;}
       if(Object.entries(releases).some(([sha,id])=>!/^[a-f0-9]{40}$/.test(sha)||!image.test(id)))throw Error('Invalid development release index');
-      if(Object.hasOwn(releases,x.revision) && ((x.secretRefs?.length??0)>0 || x.endpoint?.port!==developmentSite.port || x.endpoint?.address!=='127.0.0.1'))
+      if(Object.hasOwn(releases,x.revision) && ((x.secretRefs?.length??0)>0 || x.endpoint?.port!==releaseSite.port || x.endpoint?.address!=='127.0.0.1'))
         throw Error('Automatic calculator releases require the dedicated loopback endpoint and no secrets');
       recipe={...recipe,releases:{...releases,...recipe.releases}};
     }
