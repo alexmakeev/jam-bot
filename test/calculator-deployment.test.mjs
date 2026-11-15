@@ -27,3 +27,29 @@ test('receipt proves exact SHA, image, local endpoint and healthy running contai
     assert.equal(verifiedSite({...site,...patch},'abc','pinned'),false);
   }
 });
+
+test('failed deployment retries the same built image and reconciles an already healthy deployment',async t=>{
+  const {reconcileCalculator}=await import('../scripts/macos/calculator-deployment.mjs');
+  const queue=await mkdtemp(join(tmpdir(),'jam-deploy-retry-'));t.after(()=>rm(queue,{force:true,recursive:true}));
+  const req={repo:calculatorRepo,action:'publish',sha:'a'.repeat(40),expected:'b'.repeat(40)};
+  const project={autoDeployCalculator:true},image='sha256:'+'1'.repeat(64);
+  const endpoint={address:'127.0.0.1',port:19853},calls=[];
+  let healthy=false;
+  const options={queue,registry:join(queue,'registry.json'),repositoryId:async()=>1457276291,
+    remoteHead:async()=>req.sha,build:async()=>{calls.push('build');return image;},
+    managementCall:async(_project,op)=>{
+      calls.push(op);
+      if(op==='get')return {tier:'development',settings:{secretRefs:[],endpoint}};
+      if(op==='deploy'){healthy=true;throw Error('Simulated lost response after healthy deployment');}
+      return {healthy,running:true,image,revision:req.sha,endpoint};
+    }};
+  await queueCalculator(project,req,queue);
+  await reconcileCalculator(project,options);
+  const file=join(queue,req.sha+'.json');
+  const job=JSON.parse(await readFile(file,'utf8'));
+  assert.equal(job.attempts,1);assert.equal(job.image,image);assert.equal(job.done,undefined);
+  await writeFile(file,JSON.stringify({...job,after:0}));
+  await reconcileCalculator(project,options);
+  assert.equal(JSON.parse(await readFile(file,'utf8')).done,'deployed');
+  assert.deepEqual(calls,['get','status','build','deploy','get','status']);
+});

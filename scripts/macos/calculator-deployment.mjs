@@ -69,36 +69,37 @@ export async function buildCalculator(rev,project){
     return image;
   } finally {await rm(temp,{recursive:true,force:true});}
 }
-export async function reconcileCalculator(project){
+export async function reconcileCalculator(project,{
+  queue=stateDir,registry=join(management,'calculator-dev-releases.json'),remoteHead=head,managementCall=manage,build=buildCalculator,
+  repositoryId=async()=>JSON.parse(await command('gh',['api','repos/'+calculatorRepo])).id
+}={}){
   if(project?.autoDeployCalculator!==true)return;
-  await mkdir(stateDir,{mode:0o700,recursive:true});
-  const orders=(await readdir(stateDir)).filter(name=>/^[0-9a-f]{40}\.json$/.test(name));
+  await mkdir(queue,{mode:0o700,recursive:true});
+  const orders=(await readdir(queue)).filter(name=>/^[0-9a-f]{40}\.json$/.test(name));
   for(const name of orders){
-    const file=join(stateDir,name),job=await json(file);
+    const file=join(queue,name),job=await json(file);
     if(job.done||job.after>Date.now())continue;
     try{
       if(job.revision+'.json'!==name||!commit.test(job.base))throw Error('Invalid calculator queue record');
-      const repo=JSON.parse(await command('gh',['api','repos/'+calculatorRepo]));
-      if(repo.id!==repoId)throw Error('Calculator repository identity changed');
-      const current=await head();
+      if(await repositoryId()!==repoId)throw Error('Calculator repository identity changed');
+      const current=await remoteHead();
       if(current!==job.revision){
         if(current===job.base&&Date.now()-job.queuedAt<24*3600*1000){job.after=Date.now()+30000;}
         else job.done='superseded';
       }else{
-        const def=await manage(project,'get');
+        const def=await managementCall(project,'get');
         if(def.tier!=='development'||def.settings.secretRefs.length||def.settings.endpoint?.port!==port||def.settings.endpoint?.address!=='127.0.0.1')throw Error('Calculator definition outside operator scope');
-        let status=await manage(project,'status');
+        let status=await managementCall(project,'status');
         if(!job.image){
-          job.image=await buildCalculator(job.revision,project);
+          job.image=await build(job.revision,project);
           await atomic(file,job);
         }
-        if(await head()!==job.revision){job.done='superseded';}
+        if(await remoteHead()!==job.revision){job.done='superseded';}
         else{
-          const catalogFile=join(management,'calculator-dev-releases.json');
-          let releases={};try{releases=await json(catalogFile);}catch(e){if(e.code!=='ENOENT')throw e;}
+          let releases={};try{releases=await json(registry);}catch(e){if(e.code!=='ENOENT')throw e;}
           if(releases[job.revision]&&releases[job.revision]!==job.image)throw Error('Conflicting calculator image for published revision');
-          releases[job.revision]=job.image;await atomic(catalogFile,releases);
-          if(!verifiedSite(status,job.revision,job.image))status=await manage(project,'deploy',job.revision);
+          releases[job.revision]=job.image;await atomic(registry,releases);
+          if(!verifiedSite(status,job.revision,job.image))status=await managementCall(project,'deploy',job.revision);
           if(!verifiedSite(status,job.revision,job.image))throw Error('Calculator deployment not healthy at requested revision');
           job.done='deployed';job.verifiedAt=Date.now();
         }
