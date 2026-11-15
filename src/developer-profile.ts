@@ -93,7 +93,7 @@ async function prepareReview(p:ProfileRun,project:Project,sha:string,scope:strin
   const started=Date.now();
   let tests='',passing=false;
   try {
-    const result=await exchange(project.store,{action:'test-head',repo:p.topic.repository,sha,base:project.base,expected:project.expected,cards},p.signal);
+    const result=await exchange(project.store,{action:'test-head',scope:'implementation-review:'+p.issue,repo:p.topic.repository,sha,base:project.base,expected:project.expected,cards},p.signal);
     tests=result.log??'';passing=result.sha===sha;
   } catch(err){
     if(!(err instanceof Error) || !err.message.startsWith('Profile broker: Validation failed for '))throw err;
@@ -258,7 +258,7 @@ export async function validateReviewedHead(runtime:TopicRuntime,head:ReadyBranch
     recordProgress(runtime.state,head.issue,'validation:'+sha,'Validator received reviewed head `'+sha+'` for its final branch checks.');
     const cached=await readJson<{sha:string}>(join(dir,'reviewed-head-tests.json')).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;});
     if(cached?.sha===sha)return;
-    const checked=await exchange(project.store,{action:'test-head',repo:runtime.topic.repository,sha,
+    const checked=await exchange(project.store,{action:'test-head',scope:'reviewed-head:'+head.issue,repo:runtime.topic.repository,sha,
       base:project.base,expected:project.expected,cards:[{issue:head.issue,approval}]},signal);
     if(checked.sha!==sha)throw Error('Validation returned a different revision');
     recordProgress(runtime.state,head.issue,'validated:'+sha,'Validator passed `'+sha+'`. The branch is ready for the integrator.',{purpose:'tests',markdown:'# Branch validation\n\nCandidate `'+sha+'`\n\n'+(checked.log??'The configured test recipe passed.')});
