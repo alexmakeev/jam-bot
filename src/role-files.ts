@@ -20,13 +20,13 @@ function replaceExact(source:string, changes:unknown):string {
   return result+source.slice(cursor);
 }
 
-export async function applyRoleFiles(checkout: string, allowedPaths: readonly string[], output: string): Promise<string[]> {
+export async function planRoleFiles(checkout: string, allowedPaths: readonly string[], output: string) {
   const root = await realpath(checkout);
   if (Buffer.byteLength(output)>65536) throw new Error('Developer output exceeds the role limit');
   const artifact: unknown = JSON.parse(output);
   if (!artifact || typeof artifact!=='object' || !('files' in artifact) || !Array.isArray(artifact.files) ||
       artifact.files.length===0 || artifact.files.length>32) throw new Error('Expected a files array in developer output');
-  const files: {path:string; content:string; target:string; mode:number}[] = [];
+  const files: {path:string; content:string; target:string; mode:number;before:string|null}[] = [];
   for (const file of artifact.files) {
     if (!file || typeof file.path!=='string' || !allowedPaths.includes(file.path) || files.some(existing=>existing.path===file.path) ||
         (typeof file.content==='string')===Array.isArray(file.replacements)) throw new Error('Unapproved or malformed file edit');
@@ -40,11 +40,19 @@ export async function applyRoleFiles(checkout: string, allowedPaths: readonly st
     if(file.replacements && (!status || status.size>65536))throw Error('Exact replacements require an existing bounded file');
     const content=file.replacements?replaceExact(await readFile(target,'utf8'),file.replacements):file.content;
     if(typeof content!=='string' || content.includes('\0') || Buffer.byteLength(content)>65536)throw Error('Unsafe or oversized resulting file');
-    files.push({path:file.path,content,target,mode:status ? status.mode & 0o777 : 0o644});
+    files.push({path:file.path,content,target,before:status?await readFile(target,'utf8'):null,mode:status ? status.mode & 0o777 : 0o644});
   }
-  // Validate the whole artifact before changing this fresh, task-owned checkout.
-  // Each replacement is atomic; the caller can discard a failed checkout before retry.
-  for (const file of files) {
+  return files;
+}
+
+export async function finishRoleFiles(files:Awaited<ReturnType<typeof planRoleFiles>>) {
+  for(const file of files){
+    if(await realpath(dirname(file.target))!==dirname(file.target))throw Error('Unsafe recovered edit path');
+    const info=await lstat(file.target).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;});
+    if(info && (!info.isFile()||info.nlink!==1 || (info.mode&0o777)!==file.mode))throw Error('Recovered file type or permissions changed');
+    const current=info?await readFile(file.target,'utf8'):null;
+    if(current===file.content)continue;
+    if(current!==file.before)throw Error('Worktree differs from both expected versions of '+file.path);
     const temp=join(dirname(file.target),'.jam-edit-'+randomUUID());
     try {
       await writeFile(temp,file.content,{flag:'wx',mode:file.mode});
@@ -52,4 +60,8 @@ export async function applyRoleFiles(checkout: string, allowedPaths: readonly st
     } finally { await rm(temp,{force:true}); }
   }
   return files.map(f=>f.path);
+}
+
+export async function applyRoleFiles(checkout:string,allowedPaths:readonly string[],output:string){
+  return finishRoleFiles(await planRoleFiles(checkout,allowedPaths,output));
 }

@@ -1,3 +1,6 @@
+import {readFile} from 'node:fs/promises';
+import {homedir} from 'node:os';
+import {join} from 'node:path';
 import { spawn } from 'node:child_process';
 import type { Intake, Lead, Receipt } from './intake-journal.js';
 
@@ -41,4 +44,24 @@ export async function notifyLeo(event: Intake, lead: Lead, cwd: string, reposito
       return { disposition:'intake_received', issue:event.issue, delivery:event.delivery };
     } catch { throw new Error('Claude acknowledgment or session did not match delivery'); }
   } finally { clearTimeout(timer); signal.removeEventListener('abort',stop); }
+}
+
+// Only a direct assistant reply to the original metadata-only envelope can acknowledge intake.
+export async function recoveredIntake(event:Pick<Intake,'issue'|'delivery'>,lead:Lead,cwd:string,repository:string){
+  const config=process.env.CLAUDE_CONFIG_DIR??join(homedir(),'.claude');
+  const path=join(config,'projects',cwd.replace(/[^a-zA-Z0-9-]/g,'-'),lead.id+'.jsonl');
+  const source=await readFile(path,'utf8').catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;return '';});
+  type Row={uuid:string;parentUuid:string;sessionId:string;type:string;message?:{content?:string|{type:string;text?:string}[]}};
+  const rows:Row[]=source.slice(0,source.lastIndexOf('\n')+1).split('\n').filter(Boolean).map(s=>JSON.parse(s)).filter(r=>r.sessionId===lead.id);
+  const byId=new Map(rows.map(r=>[r.uuid,r]));
+  const input=JSON.stringify({repository,delivery:event.delivery,issue:event.issue});
+  for(const row of rows){
+    const content=row.message?.content;
+    if(row.type!=='assistant'||!Array.isArray(content)||content.length!==1||content[0]?.type!=='text')continue;
+    let ack;try{ack=JSON.parse(content[0].text??'');}catch{continue;}
+    if(ack?.disposition!=='intake_received'||ack.delivery!==event.delivery||ack.issue!==event.issue)continue;
+    let parent=byId.get(row.parentUuid);
+    for(let i=0;parent?.type==='attachment' && i<100;i++)parent=byId.get(parent.parentUuid);
+    if(parent?.type==='user' && parent.message?.content===input)return {issue:event.issue,delivery:event.delivery,disposition:'intake_received' as const};
+  }
 }

@@ -3,12 +3,13 @@ import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { PublisherSeedUnavailable } from './profile-checkout.js';
 import {prepareReviewNotices,migrateReviewNotices,deliverReviewNotice} from './review-escalation.js';
+import {publishTimeline,pendingProgress} from './work-progress.js';
 import { Journal } from './intake-journal.js';
 import { withoutEnvironmentAuthority } from './environment-runner.js';
 import { TaskAdmission } from './task-admission.js';
 import { approvalFromEvent, validateTaskApproval } from './task-approval.js';
-import { notifyLeo } from './leo-intake.js';
-import { dispatchApprovedWorker } from './approved-worker.js';
+import { notifyLeo,recoveredIntake } from './leo-intake.js';
+import { dispatchApprovedWorker,WORKER_ACCEPTANCE_BODY } from './approved-worker.js';
 import { configuredTopics, openTopics, type TopicRuntime } from './topics.js';
 import { IntegrationQueue } from './integration-queue.js';
 import { BranchValidation } from './branch-validation.js';
@@ -38,12 +39,16 @@ async function consume({journal,topic,state}: TopicRuntime, signal: AbortSignal)
   prepareReviewNotices(journal.db);
   try {
     await migrateReviewNotices(runtime);
+    for(const row of journal.list().filter(r=>r.state==='review' && r.reason==='Service stopped during dispatch')){
+      const receipt=await recoveredIntake({issue:Number(row.issue),delivery:String(row.delivery)},journal.lead(),topic.cwd,topic.repository);
+      if(receipt)journal.complete(receipt,true);
+    }
     while (!signal.aborted) {
       await deliverReviewNotice(runtime,signal);
       const decision=validations.tick(integrations,head=>validateReviewedHead(runtime,head,signal),signal);
       if(decision.batch) {await integrateReady(runtime,signal,integrations,decision.batch);continue;}
       if(decision.waiting) {await delay(250);continue;}
-      const execution = journal.nextWorker(task=>validations.canStart(task,topic.defaultClass));
+      const execution = journal.nextWorker(task=>validations.canStart(task,topic.defaultClass),task=>task.body!==WORKER_ACCEPTANCE_BODY);
       if (execution) {
         try {
           await dispatchApprovedWorker(execution,topic,state,signal,journal.lead().id);
@@ -67,6 +72,7 @@ async function consume({journal,topic,state}: TopicRuntime, signal: AbortSignal)
         journal.complete(ack);
         console.log('Leo acknowledged issue',topic.repository,event.issue);
       } catch (err) {
+        if(signal.aborted)return;
         journal.fail(event.delivery,err instanceof Error ? err.message : 'Dispatch failed');
         console.error('Leo intake requires review',topic.repository,event.issue);
       }
@@ -82,7 +88,10 @@ async function main() {
     if (!route) throw new Error('Unconfigured review repository');
     const journal = new Journal(join(route.state,'intake.sqlite'));
     try {
-      if (action==='list') console.log(JSON.stringify({repository:selector, session:journal.lead(), deliveries:journal.list()},null,2));
+      if(action==='backfill' && id && /^[1-9][0-9]*$/.test(id)){
+        const {backfillTimeline}=await import('./reconcile-timeline.js');
+        await backfillTimeline(route,Number(id));
+      }else if (action==='list') console.log(JSON.stringify({repository:selector, session:journal.lead(), deliveries:journal.list(), pendingTimeline:pendingProgress(route.state)},null,2));
       else if (action==='retry-integration' && id && decision && operator) new IntegrationQueue(journal.db).retryFailed(id,operator,decision);
       else if (action==='resolve' && id && decision && operator && session) journal.resolve(id,decision,operator,session);
       else if (action==='retry-seed' && id && decision) {
@@ -111,7 +120,7 @@ async function main() {
   let failure:unknown;
   const start=(route:TopicRuntime)=>{
     if(stop.signal.aborted)return;
-    const task=withoutEnvironmentAuthority(()=>consume(route,stop.signal)).catch(err=>{failure=err;stop.abort();});
+    const task=withoutEnvironmentAuthority(()=>Promise.all([consume(route,stop.signal),publishTimeline(route.state,route.topic,stop.signal)]).then(()=>{})).catch(err=>{failure=err;stop.abort();});
     consumers.add(task);
     void task.finally(()=>consumers.delete(task));
   };

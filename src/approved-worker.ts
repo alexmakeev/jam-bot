@@ -2,12 +2,12 @@ import { randomUUID, createHash } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { runTeammate } from './native-teammate.js';
-import type { Intake, Topic } from './intake-journal.js';
+import {Journal,type Intake,type Topic} from './intake-journal.js';
 import { approvalFromEvent, validateTaskApproval } from './task-approval.js';
 import { parseTaskCard } from './profile-card.js';
-import { markApproved, setCardProgress, completeCard } from './profile-publication.js';
+import { markApproved, setCardProgress, completeCard,hasClosedResult } from './profile-publication.js';
 import { runDeveloperProfile } from './developer-profile.js';
-import { atomicJson } from './storage.js';
+import { atomicJson,readJson } from './storage.js';
 
 export const WORKER_ACCEPTANCE_BODY = 'I approve the local JAM-Bot routing acceptance test for this issue. After the discussion is locked, have the repository coordinator delegate one checksum task to a local developer. Record the developer identity and verified result in the repository journal.';
 
@@ -15,10 +15,18 @@ export const WORKER_ACCEPTANCE_BODY = 'I approve the local JAM-Bot routing accep
 export async function dispatchApprovedWorker(event: Intake, topic: Topic, state: string, signal: AbortSignal, lead: string) {
   const approval=approvalFromEvent(event);
   const authorize=()=>validateTaskApproval(topic,event.issue,approval);
+  const result=await readJson<{kind?:string;output?:string}>(join(state,'assignments',String(event.issue),'result.json')).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;});
+  if((result?.kind==='assignment'||result?.kind==='consultation')&&result.output&&await hasClosedResult(topic,event.issue,result.output))return;
   await authorize();
   const card=event.body===WORKER_ACCEPTANCE_BODY ? undefined : parseTaskCard(event.title,event.body,approval.kind,topic.defaultClass);
   if(!card && event.body!==WORKER_ACCEPTANCE_BODY)throw new Error('Task scope could not be interpreted');
-  await markApproved(topic,event.issue);
+  const journal=new Journal(join(state,'intake.sqlite'));
+  let resumed=false;
+  try{
+    const saved=journal.specificationCheckpoint(event.issue);resumed=Boolean(saved && saved!=='starting');
+    if(card && !resumed)journal.checkpointSpecification(event.issue,'starting');
+  }finally{journal.db.close();}
+  if(!resumed)await markApproved(topic,event.issue);
   try {
     if (card) {
       return await runDeveloperProfile({topic,state,lead,issue:event.issue,card,signal,authorize,approval});
@@ -36,7 +44,7 @@ export async function dispatchApprovedWorker(event: Intake, topic: Topic, state:
     await completeCard(topic,event.issue,'The local developer returned the verified checksum '+expected.split(':')[1]+'.');
   } catch (error) {
     // Status reporting can fail independently. Preserve the original cause for local review.
-    await setCardProgress(topic,event.issue,'blocked').catch(()=>undefined);
+    if(!signal.aborted)await setCardProgress(topic,event.issue,'blocked').catch(()=>undefined);
     throw error;
   }
 }

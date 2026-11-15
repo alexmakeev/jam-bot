@@ -19,8 +19,8 @@ async function find<T>(api:Api,path:string,predicate:(item:T)=>boolean) {
 // The intent is durable before POST. After a lost response use a matching remote record.
 // Never repeat an ambiguous create. Known GitHub validation/rate-limit rejections are retryable.
 export async function publishIssueSpec(state:string,repository:string,repoId:number,issue:number,markdown:string,
-  botId:number,api:Api,authorize:()=>Promise<void>,signal:AbortSignal) {
-  const digest=digestOf(markdown),name=specName(issue,digest),base='/issues/'+issue,card='https://github.com/'+repository+base;
+  botId:number,api:Api,authorize:()=>Promise<void>,signal:AbortSignal,purpose?:'review'|'tests'|'consultation') {
+  const digest=digestOf(markdown),name=purpose?purpose+'-'+issue+'-'+digest.slice(0,12)+'.md':specName(issue,digest),base='/issues/'+issue,card='https://github.com/'+repository+base;
   const repositoryPath='https://api.github.com/repos/'+repository+base;
   if((await api('')).id!==repoId)throw Error('Repository identity changed before specification publication');
   const db=new DatabaseSync(join(state,'specifications.sqlite'));
@@ -29,7 +29,7 @@ export async function publishIssueSpec(state:string,repository:string,repoId:num
       CREATE TABLE IF NOT EXISTS publications(issue INTEGER,digest TEXT,stage TEXT,receipt INTEGER,
         PRIMARY KEY(issue,digest,stage))`);
     async function once<T>(stage:string,search:()=>Promise<T|undefined>,post:()=>Promise<T>,id:(v:T)=>number,load:(id:number)=>Promise<T>){
-      const params=[issue,digest,stage];
+      const params=[issue,digest,purpose?purpose+'-'+stage:stage];
       const saved=db.prepare('SELECT receipt FROM publications WHERE issue=? AND digest=? AND stage=?').get(...params);
       if(saved?.receipt)return load(Number(saved.receipt));
       for(let attempt=0;;attempt++){

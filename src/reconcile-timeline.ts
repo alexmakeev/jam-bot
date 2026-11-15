@@ -1,0 +1,50 @@
+import {join} from 'node:path';
+import {readFile,readdir} from 'node:fs/promises';
+import {issueClient} from './github-app.js';
+import {recordProgress,publishProgress,fingerprint} from './work-progress.js';
+import type {TopicRuntime} from './topics.js';
+
+export async function backfillTimeline(runtime:Pick<TopicRuntime,'state'|'topic'>,issue:number){
+  const {state,topic}=runtime;
+  const api=await issueClient(topic.repository,topic.installation);
+  const card=await api('/issues/'+issue);
+  if(card.number!==issue || card.type?.name!=='Task' || (await api('')).id!==topic.repoId)throw Error('Cannot establish the source work card');
+  const dir=join(state,'assignments',String(issue));
+  const files=await readdir(dir);
+  for(const [role,next] of [['designer','architecture'],['architect','specification handoff'],['assignment','development'],['developer','candidate validation'],['consultant','branch validation']] as const){
+    if(!files.includes(role+'.json'))continue;
+    const saved=JSON.parse(await readFile(join(dir,role+'.json'),'utf8'));
+    if(saved.backend!=='in-process'||!String(saved.nativeMember).startsWith(role+'-'+issue+'-')|| typeof saved.output!=='string')continue;
+    const digest=fingerprint(saved.output);
+    recordProgress(state,issue,'historical:'+saved.nativeMember+':'+digest,
+      'Historical checkpoint reconstructed from a saved native receipt. '+role+' ('+saved.nativeMember+') delivered output `'+digest.slice(0,12)+'` for this card. The handoff was to '+next+'.');
+  }
+  const phases=await readdir(join(dir,'consultations')).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;return [];});
+  for(const phase of phases.filter(name=>/^(architecture|implementation|diagnosis)\.json$/.test(name))){
+    const evidence=JSON.parse(await readFile(join(dir,'consultations',phase),'utf8'));
+    if(evidence.repository!==topic.repository || !evidence.cards?.includes(issue) || !/^[a-f0-9]{64}$/.test(evidence.inputDigest) || !Array.isArray(evidence.advice))throw Error('Historical consultation attribution mismatch');
+    const replies=evidence.advice as {name:string;status:string;text:string}[];
+    recordProgress(state,issue,'historical:consultation:'+evidence.inputDigest,
+      'Historical '+evidence.phase+' consultation record for input `'+evidence.inputDigest.slice(0,12)+'`. '+replies.map(a=>a.name+' reported '+a.status).join(', ')+'. The attached report preserves the recorded responses.',
+      {purpose:'consultation',markdown:'# '+evidence.phase+' consultation\n\nInput `'+evidence.inputDigest+'`\n\n'+replies.map(a=>'## '+a.name+' ('+a.status+')\n\n'+a.text).join('\n\n')});
+  }
+  if(files.includes('reviewed-head-tests.json')){
+    const result=JSON.parse(await readFile(join(dir,'reviewed-head-tests.json'),'utf8'));
+    const ready=JSON.parse(await readFile(join(dir,'ready.json'),'utf8'));
+    if(result.sha!==ready.sha || !/^[a-f0-9]{40}$/.test(result.sha))throw Error('Historical tested head disagrees with handoff');
+    recordProgress(state,issue,'historical:tests:'+result.sha,'Historical branch validation passed for `'+result.sha+'`. The integrator was next.',
+      {purpose:'tests',markdown:'# Branch validation\n\nCandidate `'+result.sha+'`\n\n'+result.log});
+  }
+  if(files.includes('result.json')){
+    const result=JSON.parse(await readFile(join(dir,'result.json'),'utf8'));
+    if(result.issue===issue && /^[a-f0-9]{40}$/.test(result.dev) && result.batch){
+      const batch=join(state,'integration',result.batch);
+      const candidate=JSON.parse(await readFile(join(batch,'candidate.json'),'utf8'));
+      const review=JSON.parse(await readFile(join(batch,'integrator.json'),'utf8'));
+      if(candidate.sha!==result.dev || review.backend!=='in-process' || !/^PASS\b/i.test(review.output.trim()))throw Error('Historical integration evidence does not match publication');
+      recordProgress(state,issue,'historical:integrator:'+candidate.sha,'Historical integrator PASS on tested candidate `'+candidate.sha+'`. Dev publication is recorded. The attached report preserves the native review.',
+        {purpose:'review',markdown:'# Integration review\n\nCandidate `'+candidate.sha+'`\n\n'+review.output});
+    }
+  }
+  while(await publishProgress(state,topic)){}
+}

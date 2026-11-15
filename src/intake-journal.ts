@@ -134,26 +134,26 @@ export class Journal {
     });
   }
 
-  complete(ack: Receipt) {
+  complete(ack: Receipt, recovered=false) {
     this.transaction(() => {
       // The same transaction that records Leo's verified receipt creates the execution intent.
-      const result=this.db.prepare(`UPDATE intake SET state='received', receipt=?,
+      const result=this.db.prepare(`UPDATE intake SET state='received', reason=NULL,receipt=?,
         workerState=CASE WHEN action='task' THEN 'pending' END
-        WHERE state='running' AND issue=? AND delivery=?`)
-        .run(JSON.stringify(ack),ack.issue,ack.delivery);
+        WHERE (state='running' OR (? AND state='review' AND reason='Service stopped during dispatch')) AND issue=? AND delivery=?`)
+        .run(JSON.stringify(ack),Number(recovered),ack.issue,ack.delivery);
       if (result.changes !== 1) throw new Error('Acknowledgment has no active intake');
       this.db.exec('UPDATE topic SET established=1');
     });
   }
 
-  nextWorker(canStart: (task: Intake) => boolean = () => true): Intake | undefined {
+  nextWorker(canStart: (task: Intake) => boolean = () => true,checkpointable:(task:Intake)=>boolean=()=>false): Intake | undefined {
     return this.transaction(() => {
       const rows = this.db.prepare(`SELECT * FROM intake WHERE action='task' AND workerState='pending' AND seedRetryAt<=unixepoch()
         AND NOT EXISTS(SELECT 1 FROM intake WHERE workerState IN ('running','review') OR state IN ('running','review'))
         ORDER BY rowid`).all();
       const row=rows.find(item=>canStart(intake(item)));
       if (!row) return;
-      this.db.prepare("UPDATE intake SET workerState='running' WHERE delivery=?").run(row.delivery!);
+      this.db.prepare("UPDATE intake SET workerState='running',specCheckpoint=COALESCE(specCheckpoint,?) WHERE delivery=?").run(checkpointable(intake(row))?'starting':null,row.delivery!);
       return intake(row);
     });
   }

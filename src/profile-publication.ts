@@ -30,24 +30,29 @@ export async function markApproved(topic: Topic, issue: number) {
   await setCardProgress(topic,issue,'queued');
 }
 
-export async function requestFileScope(topic:Topic,issue:number,plan:string) {
-  const api=await issueClient(topic.repository,topic.installation);
-  const marker='<!-- jam-bot:needs-files -->';
-  const comments:{body:string}[]=await api('/issues/'+issue+'/comments?per_page=100');
-  if(!comments.some(c=>c.body?.endsWith(marker))){
-    await api('/issues/'+issue+'/comments','POST',{body:issueComment('needs-files',plan)});
+async function authenticatedComment(topic:Topic,issue:number,body:string,lookupOnly=false){
+  const [api,publisher]=await Promise.all([issueClient(topic.repository,topic.installation),publisherIdentity(topic.repository,topic.installation)]);
+  const path='/issues/'+issue+'/comments';
+  for(let page=1;;page++){
+    const rows:{user:{id:number};body:string}[]=await api(path+'?per_page=100&page='+page);
+    if(rows.some(c=>c.user?.id===publisher && c.body===body))return true;
+    if(rows.length<100)break;
   }
+  if(lookupOnly)return false;
+  const published=await api(path,'POST',{body});
+  if(published.user?.id!==publisher || published.body!==body)throw Error('Work card publication could not be verified');
+  return true;
+}
+export async function requestFileScope(topic:Topic,issue:number,plan:string) {
+  await authenticatedComment(topic,issue,issueComment('needs-files',plan));
   await setCardProgress(topic,issue,'blocked');
 }
 
 export async function completeCard(topic: Topic, issue: number, summary: string) {
   const api = await issueClient(topic.repository,topic.installation);
   const path = '/issues/'+issue;
-  const marker = '<!-- jam-bot:completion -->';
-  const existing: {body:string}[] = await api(path+'/comments?per_page=100');
-  if (!existing.some(c=>c.body?.endsWith(marker))) {
-    await api(path+'/comments','POST',{body:issueComment('completion',summary)});
-  }
+  await authenticatedComment(topic,issue,issueComment('completion',summary));
+  if((await api(path)).state!=='closed')
   await api(path,'PATCH',{state:'closed',state_reason:'completed'});
   const labels: {name:string}[] = await api(path+'/labels?per_page=100');
   for (const label of labels.filter(label=>progressLabels.has(label.name))) {
@@ -68,4 +73,11 @@ export async function publishSpecification({topic,issue,markdown,signal,authoriz
   const [api,bot]=await Promise.all([issueClient(topic.repository,topic.installation),publisherIdentity(topic.repository,topic.installation)]);
   const receipt=await publishIssueSpec(state,topic.repository,topic.repoId,issue,markdown,bot,api,authorize,signal);
   await atomicJson(join(directory,name+'.artifact-receipt.json'),receipt);
+}
+
+export async function hasClosedResult(topic:Topic,issue:number,summary:string){
+  const api=await issueClient(topic.repository,topic.installation);
+  const card=await api('/issues/'+issue);
+  return card.number===issue && card.state==='closed' && card.state_reason==='completed' &&
+    await authenticatedComment(topic,issue,issueComment('completion',summary),true);
 }

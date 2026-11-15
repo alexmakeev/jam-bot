@@ -17,7 +17,7 @@ const refusal='The native model refused the mandatory review';
 const unavailable='The mandatory reviewer returned no verifiable result after bounded recovery';
 const uncertain='The previous mandatory reviewer may still be active';
 
-async function observe(job:MandatoryReview,attempt:Attempt) {
+export async function observe(job:RoleStage,attempt:Attempt) {
   const config=process.env.CLAUDE_CONFIG_DIR??join(homedir(),'.claude');
   const name=job.role+'-'+job.issue+'-'+attempt.challenge.slice(0,6);
   const transcript=join(config,'projects',job.cwd.replace(/[^a-zA-Z0-9-]/g,'-'),job.session+'.jsonl');

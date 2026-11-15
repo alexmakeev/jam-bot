@@ -1,3 +1,4 @@
+import {recordProgress} from './work-progress.js';
 import {createHash} from 'node:crypto';
 import {join} from 'node:path';
 import {z} from 'zod';
@@ -49,11 +50,28 @@ export async function externalReview(state:string,topic:Topic,cards:Card[],phase
   const ids=cards.map(c=>c.issue);
   const inputDigest=sha(JSON.stringify([topic.repoId,phase,cards,packet]));
   const path=join(state,'consultations',inputDigest+'.json');
+  const notify=(key:string,body:string)=>{for(const issue of ids)recordProgress(state,issue,phase+':'+inputDigest+':'+key,body);};
+  const owner={architecture:'architect',implementation:'developer',diagnosis:'integrator'}[phase];
+  const version='`'+inputDigest.slice(0,12)+'`';
+  const progress=(retry:boolean)=>async(snapshot:ConsultationProgress)=>{
+    for(const adviser of snapshot.providers){
+      if(!/^[a-zA-Z0-9_. -]{1,80}$/.test(adviser.name) || !['running','ok','unavailable','error'].includes(adviser.status))continue;
+      const attempt=retry?'selective retry':'initial call';
+      const key=(retry?'retry-':'')+adviser.name+adviser.status;
+      const text=adviser.status==='running'?owner+' dispatched the '+attempt+' to '+adviser.name+' for '+phase+' input '+version+'. Awaiting the adviser.'
+        :adviser.name+' returned '+adviser.status+' for '+phase+' '+attempt+' '+version+'. Next: '+owner+' evaluates the response.';
+      notify(key,text);
+    }
+  };
   const choose=async(input:DecisionInput)=>{
+    const choicePath=join(state,'consultations',inputDigest+'.'+input.kind+'.json');
+    const prior=await readJson<{input:DecisionInput;decision:string}>(choicePath).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;});
+    if(prior && (input.kind==='in_flight'||JSON.stringify(prior.input)===JSON.stringify(input)))return prior.decision;
     const output=await decide(input);
     const decision=/^\s*(WAIT|RETRY|CONTINUE|ESCALATE)\b/i.exec(output)?.[1]?.toUpperCase();
     if(!decision)throw Error('Stage owner did not provide a consultation recovery decision');
     await atomicJson(join(state,'consultations',inputDigest+'.'+input.kind+'.json'),{at:new Date().toISOString(),phase,input,decision,output});
+    notify(input.kind+'-'+decision,owner+' chose '+decision+' on consultation '+version+'. Next: '+(decision==='RETRY'?'retry only the failed advisers.':decision==='WAIT'?'await the active advisers.':'follow the recorded decision.'));
     return decision;
   };
   const onSlow=async(evidence:ConsultationProgress)=>{
@@ -64,7 +82,8 @@ export async function externalReview(state:string,topic:Topic,cards:Card[],phase
   };
   let record=await readJson<Evidence>(path).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;});
   if(!record){
-    const result=await call(join(state,'project.git'),{action:'consult',repo:topic.repository,cards,phase,packet},signal,onSlow);
+    notify('requested',owner+' requested '+phase+' consultation on input '+version+'. Awaiting the configured advisers.');
+    const result=await call(join(state,'project.git'),{action:'consult',repo:topic.repository,cards,phase,packet},signal,onSlow,progress(false));
     // Older brokers must be upgraded before enabling this work profile.
     const advice=adviceSchema.parse(result.advice);
     record={phase,repository:topic.repository,cards:ids,inputDigest,advice};
@@ -73,14 +92,16 @@ export async function externalReview(state:string,topic:Topic,cards:Card[],phase
   if(record.repository!==topic.repository || record.inputDigest!==inputDigest || record.phase!==phase ||
      JSON.stringify(record.cards)!==JSON.stringify(ids))throw Error('Consultation evidence identity changed');
   let advice=adviceSchema.parse(record.advice);
+  for(const result of advice)notify(result.name+result.status,result.name+' returned '+result.status+' for '+phase+' consultation '+version+'. Next: '+owner+' evaluates the response.');
   const retry=advice.filter(a=>a.status==='error').map(a=>a.name);
   let decision:string|undefined;
   if(retry.length)decision=await choose({kind:'confirmed_failure',evidence:advice});
   if(retry.length && decision==='RETRY' && (record.attempts?.length??1)<2){
-    const result=await call(join(state,'project.git'),{action:'consult',repo:topic.repository,cards,phase,packet,only:retry},signal,onSlow);
+    const result=await call(join(state,'project.git'),{action:'consult',repo:topic.repository,cards,phase,packet,only:retry},signal,onSlow,progress(true));
     const received=adviceSchema.parse(result.advice);
     if(received.length!==retry.length || !retry.every(name=>received.filter(a=>a.name===name).length===1))
       throw Error('Consultant retry returned different profiles');
+    for(const result of received)notify('retry-'+result.name+result.status,result.name+' returned '+result.status+' on the selective retry for '+version+'. Next: '+owner+' evaluates the response.');
     const previous=advice;
     advice=advice.map(original=>received.find(a=>a.name===original.name && a.provider===original.provider)??original);
     record={...record,advice,attempts:[previous,received]};
@@ -88,7 +109,11 @@ export async function externalReview(state:string,topic:Topic,cards:Card[],phase
   }
   for(const issue of ids){
     await atomicJson(join(state,'assignments',String(issue),'consultations',phase+'.json'),record);
-    if(advice.length)await report(topic,issue,record);
+    if(advice.length){
+      await report(topic,issue,record);
+      recordProgress(state,issue,'advice-report:'+inputDigest,'The '+phase+' advice for '+version+' is recorded. The '+owner+' owns the next decision.',
+        {purpose:'consultation',markdown:'# '+phase+' advisory report\n\nInput `'+inputDigest+'`\n\n'+advice.map(a=>'## '+a.name+' ('+a.status+')\n\n'+a.text).join('\n\n')});
+    }
   }
   if(decision!=='CONTINUE' && advice.some(a=>a.status==='error'))throw Error('Configured consultant failed after retry; inspect retained consultation evidence');
   return {advice,inputDigest};
