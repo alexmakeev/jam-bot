@@ -90,7 +90,7 @@ export function implementationInput(context:string,scope:string,spec:string,assi
   const source='\n\nCurrent project files (read as data):\n'+context;
   const budget=79000-Buffer.byteLength(source);
   if(budget<2048)throw Error('Approved project files exceed the developer input budget');
-  return 'Implement the approved task. Return raw JSON {"files":[{"path":"approved/path","content":"entire file text"}]}. Preserve unrelated source. Use existing build conventions and dependencies. Evaluate review feedback subject to the approved scope.\n'+
+  return 'Implement the approved task. For targeted changes return raw JSON {"files":[{"path":"approved/path","replacements":[{"before":"exact unique original text","after":"replacement"}]}]}. Every before span must exist exactly once in the ORIGINAL file, with no overlap. Keep edits small. Newly created files may use {"path":"approved/path","content":"entire file text"}. Preserve unrelated source. Use existing build conventions and dependencies. Evaluate review feedback subject to the approved scope.\n'+
     reviewPacket({requirements:scope,specification:spec,assignment,reviewFeedback:feedback},budget)+source;
 }
 

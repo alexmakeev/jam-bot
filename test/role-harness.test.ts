@@ -20,3 +20,16 @@ test('only approved regular files in the isolated checkout receive developer out
   await apply('answer.ts');
   assert.equal(await readFile(join(checkout,'answer.ts'),'utf8'),'new');
 });
+
+test('exact replacements preserve unrelated source and reject ambiguous or overlapping spans before writing',async t=>{
+  const root=await mkdtemp(join(tmpdir(),'jam-role-spans-'));
+  t.after(()=>rm(root,{recursive:true,force:true}));
+  const original='head '+'middle '.repeat(3500)+'tail';
+  await writeFile(join(root,'page.html'),original);
+  const apply=(replacements:{before:string;after:string}[])=>applyRoleFiles(root,['page.html'],JSON.stringify({files:[{path:'page.html',replacements}]}));
+  await assert.rejects(apply([{before:'middle',after:'x'}]),/exactly one/);
+  await assert.rejects(apply([{before:'head ',after:'new'},{before:'head',after:'other'}]),/Overlapping/);
+  assert.equal(await readFile(join(root,'page.html'),'utf8'),original);
+  await apply([{before:'tail',after:'new tail'},{before:'head',after:'new head'}]);
+  assert.equal(await readFile(join(root,'page.html'),'utf8'),'new '+original.slice(0,-4)+'new tail');
+});
