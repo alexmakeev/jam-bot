@@ -425,7 +425,13 @@ export async function integrateReady(runtime:TopicRuntime,signal:AbortSignal,que
       return;
     }
     // Preserve active state on uncertain publication and recover against remote dev after restart.
-    if(published || signal.aborted || error.includes('requires reconciliation'))throw err;
+    if(signal.aborted)return;
+    if(published || error.includes('requires reconciliation')){
+      for(const entry of batch.entries)recordProgress(state,entry.issue,'publication-recovery:'+batch.id,
+        'Integrator retained the batch and its original publication intent. Confirming the remote revision and remaining handoffs before completion.');
+      await delay(10000,undefined,{signal}).catch(()=>{});
+      return;
+    }
     queue.finish(batch.id,'failed');
     for(const e of batch.entries)await setCardProgress(topic,e.issue,'blocked').catch(()=>{});
     console.error('Integration needs review',topic.repository,error);
