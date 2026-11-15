@@ -28,6 +28,8 @@ The test profile targets TypeScript using the Node test runner. The publisher re
 
 The [assignment](https://github.com/alexmakeev/jam-bot-test/issues/10) and [consultation](https://github.com/alexmakeev/jam-bot-sandbox/issues/3) closed with their respective teammate outputs. The [development issue](https://github.com/alexmakeev/jam-bot-sandbox/issues/4) recorded planning, active work, waiting for integration, validation, a blocked review, resumed validation and closure. The architect's specification was attached through GitHub's web form. The operator verified its bytes and recorded the receipt. The integrator initially rejected the test evidence. After the runner supplied a fuller report, the operator retried the same revision. Eight candidate tests passed. The [verified revision](https://github.com/alexmakeev/jam-bot-sandbox/commit/d90b1aa26aa344c2bbc1539932eb8fc672857ab0) reached dev and the clean feature worktree and branch were removed.
 
+Before an architect opens a worktree, the service checks the Task’s approved file list against earlier revisions in final validation. An overlapping Task waits for the earlier integration, then starts from the updated development branch. Tasks with disjoint file lists can start during validation. A conflict caused by another writer is recorded with the original branch and worktree for reconciliation.
+
 The live integration contained one ready task. The scheduler tests cover larger batches, including sixteen readying branches processed as ten followed by six, the fifteen-branch cap and restart recovery. The one-minute maximum intentional wait is measured at scheduling decisions. Already-running native stages can affect elapsed time.
 
 ### Host-pinned recipes for multiple development repositories
