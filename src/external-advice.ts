@@ -9,7 +9,7 @@ import type {TaskApproval} from './task-approval.js';
 
 const sha=(text:string)=>createHash('sha256').update(text).digest('hex');
 const adviceSchema=z.array(z.object({name:z.string().regex(/^[a-zA-Z0-9_. -]{1,80}$/),provider:z.string().regex(/^[a-zA-Z0-9_. -]{1,80}$/),
-  status:z.enum(['ok','unavailable','error']),text:z.string().max(6000)})).max(12);
+  model:z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9 ._()/-]{0,99}$/).optional(),status:z.enum(['ok','unavailable','error']),text:z.string().max(6000)})).max(12);
 type Advice=z.infer<typeof adviceSchema>;
 type Fields=Record<string,string>;
 type Card={issue:number;approval:TaskApproval};
@@ -38,7 +38,7 @@ export function reviewPacket(fields:Fields,limit=60000):string {
 export function adviserNotes(run:ExternalReview) {
   const replies=run.advice.filter(r=>r.status==='ok');
   if(!replies.length)return '';
-  return reviewPacket(Object.fromEntries(replies.map((v,i)=>[i+' '+v.name+' ('+v.provider+')',v.text])),10000);
+  return reviewPacket(Object.fromEntries(replies.map((v,i)=>[i+' '+v.name+' ('+[v.provider,v.model].filter(Boolean).join(', ')+')',v.text])),10000);
 }
 
 export async function externalReview(state:string,topic:Topic,cards:Card[],phase:ReviewPhase,fields:Fields,signal:AbortSignal,
@@ -68,7 +68,7 @@ async function reportAdvice(topic:Topic,issue:number,record:Evidence){
   const [api,publisher]=await Promise.all([issueClient(topic.repository,topic.installation),publisherIdentity(topic.repository,topic.installation)]);
   const path='/issues/'+issue+'/comments';
   const marker='<!-- jam-bot:consultation:'+record.phase+' -->';
-  const described=record.advice.map(v=>v.name+' ('+v.provider+'): '+(v.status==='ok'?'review received':v.status));
+  const described=record.advice.map(v=>v.name+' ('+[v.provider,v.model].filter(Boolean).join(', ')+'): '+(v.status==='ok'?'review received':v.status));
   const body='External '+record.phase+' review — '+described.join(', ')+'. Evidence `'+record.inputDigest.slice(0,12)+'`.\n\n'+marker;
   for(let page=1;;page++){
     const rows=await api(path+'?per_page=100&page='+page) as {id:number;user:{id:number};body:string}[];

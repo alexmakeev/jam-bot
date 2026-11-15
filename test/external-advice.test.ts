@@ -25,7 +25,7 @@ test('each original work card retains attributable adviser results and identical
     calls++;assert.equal(request.phase,'diagnosis');assert.deepEqual(request.cards?.map(c=>c.issue),[2,3]);
     assert.equal(JSON.parse(request.packet!).revision,'abcd');
     return {sha:'',advice:[{name:'primary',provider:'codex',status:'ok',text:'Check the test expectation.'},
-      {name:'other',provider:'antigravity',status:'unavailable',text:'Not signed in'}]};
+      {name:'other',provider:'antigravity',model:'gemini-4-carbon-high',status:'unavailable',text:'Not signed in'}]};
   };
   const cards=[{issue:2,approval},{issue:3,approval}];
   try{
@@ -35,7 +35,7 @@ test('each original work card retains attributable adviser results and identical
     assert.doesNotMatch(adviserNotes(first),/Not signed in/);
     for(const card of cards){
       const record=JSON.parse(await readFile(join(dir,'assignments',String(card.issue),'consultations','diagnosis.json'),'utf8'));
-      assert.equal(record.inputDigest,first.inputDigest);assert.equal(record.advice[1].status,'unavailable');
+      assert.equal(record.inputDigest,first.inputDigest);assert.equal(record.advice[1].status,'unavailable');assert.equal(record.advice[1].model,'gemini-4-carbon-high');
     }
   }finally{await rm(dir,{recursive:true,force:true});}
 });
