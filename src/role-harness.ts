@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { runNativeJob } from './native-teammate.js';
 
 const responsibilities = {
+  designer: 'Design a usable interface for the approved task. Specify layout, typography, color, interaction and accessibility within the existing project.',
   architect: 'Prepare a concise implementation specification and testable acceptance criteria.',
   assignment: 'Carry out the approved direct assignment and return its requested result.',
   developer: 'Implement the assigned work using the provided project files. Return the requested artifact exactly.',

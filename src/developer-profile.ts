@@ -85,7 +85,11 @@ export async function runDeveloperProfile(p:ProfileRun) {
         spec=(await readJson<{output:string}>(join(dir,'architect.json'))).output;
       } else {
         project=await checkout(state,topic.repository,issue,signal);
-        const brief=await projectContext(project.tree,card.files,card.task);
+        let brief=await projectContext(project.tree,card.files,card.task);
+        if (card.designer) {
+          const design=await stage(p,'designer','Provide a concise visual design brief with verifiable criteria for desktop and mobile.\n'+scope+'\n'+brief);
+          brief+='\n\nDesigner brief:\n'+design;
+        }
         spec=await stage(p,'architect','Return a compact English Markdown implementation specification, including acceptance tests.\n'+scope+'\n'+brief);
         progress.checkpointSpecification(issue,JSON.stringify(project));
       }

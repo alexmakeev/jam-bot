@@ -4,7 +4,7 @@ Create an open issue with native type **Task**, or assign that type to a finishe
 
 ## Work cards
 
-Use the title and description to explain the work. The repository's Leo Developer profile defaults to development. List the approved editable paths in a leading `Files: src/example.ts, tests/example.test.ts` line before the task description. An explicit `Class: assignment` or `Class: consultation` line can select another route. Ordinary tasks require no class label or approval phrase.
+Use the title and description to explain the work. The repository's Leo Developer profile defaults to development. List the approved editable paths in a leading `Files: src/example.ts, tests/example.test.ts` line before the task description. An explicit `Class: assignment` or `Class: consultation` line can select another route. A development card can include a leading `Design: requested` line. Leo requests a visual brief from a named designer and supplies it to the architect before the implementation specification. Ordinary tasks require no class label or approval phrase.
 
 | Class | Work and completion |
 | --- | --- |
