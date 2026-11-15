@@ -8,7 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 interface Block {
   type: string; id?: string; name?: string; tool_use_id?: string;
   input?: {name?: string; subagent_type?: string; to?: string; message?: string; prompt?: string};
-  content?: {text?: string}[];
+  is_error?:boolean; content?: string | {text?: string}[];
 }
 interface Row { sessionId?: string; type:string; message?: {content?: string | Block[]} }
 interface Roster { leadSessionId:string; members:{name:string;agentId:string;cwd:string;backendType:string}[] }
@@ -52,7 +52,9 @@ export async function mailboxReceipt({config,cwd,session,name,agentType,challeng
   const callIds=new Set(spawns.map(b=>b.id).filter(Boolean));
   if (callIds.size!==1) return;
   const result=blocks.find(b=>b.type==='tool_result' && callIds.has(b.tool_use_id));
-  const handle=result?.content?.map(c=>c.text).join('\n').match(/^agent_id: ([\w-]+)$/m)?.[1];
+  if(result?.is_error)throw Error('Native teammate spawn was declined or interrupted by the harness; reconcile before another execution');
+  const summary=typeof result?.content==='string'?result.content:result?.content?.map(c=>c.text).join('\n');
+  const handle=summary?.match(/^agent_id: ([\w-]+)$/m)?.[1];
   if (!handle) return;
 
   const workerRows=await rows(join(prefix,'subagents','agent-'+handle+'.jsonl'));

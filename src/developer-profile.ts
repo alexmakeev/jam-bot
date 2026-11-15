@@ -17,7 +17,7 @@ interface ProfileRun {
   authorize:()=>Promise<void>; approval:TaskApproval;
 }
 type Project = Awaited<ReturnType<typeof checkout>>;
-interface Correction {sha:string;attempt:number;feedback:string}
+interface Correction {sha:string;attempt:number;feedback:string;reviewOnly?:boolean}
 interface Ready {project:Project;sha:string;card:ProfileCard;spec:string;approval:TaskApproval}
 const directory=(state:string,issue:number)=>join(state,'assignments',String(issue));
 
@@ -97,9 +97,11 @@ export function implementationInput(context:string,scope:string,spec:string,assi
 async function reviewedImplementation(p:ProfileRun,project:Project,scope:string,spec:string,assignment:string,correction?:Correction) {
   let feedback=correction?.feedback??'';
   for(let attempt=correction?.attempt??0;attempt<2;attempt++){
-    const context=await projectContext(project.tree,p.card.files,p.card.task+'\n'+spec+'\n'+assignment);
-    const output=await stage(p,'developer',implementationInput(context,scope,spec,assignment,feedback));
-    await applyImplementation(p,project,output);
+    if(!correction?.reviewOnly) {
+      const context=await projectContext(project.tree,p.card.files,p.card.task+'\n'+spec+'\n'+assignment);
+      const output=await stage(p,'developer',implementationInput(context,scope,spec,assignment,feedback));
+      await applyImplementation(p,project,output);
+    }
     const sha=await git(project.tree,'rev-parse','HEAD');
     const diff=await git(project.tree,'diff','--no-ext-diff',project.base,sha);
     const cards=[{issue:p.issue,approval:p.approval}];
