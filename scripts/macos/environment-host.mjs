@@ -90,7 +90,11 @@ export async function serve(root,exchange,tokenPath) {
     const pilotPorts={'calculator-rc':19857,'calculator-pilot':19858};
     const pilot=x.repoId===1457276291 && recipe?.tier==='staging' && recipe.localReleasePilot===true && Object.hasOwn(pilotPorts,x.environment)
       ? {port:pilotPorts[x.environment],index:'calculator-pilot-images.json'} : undefined;
-    const releaseSite=pilot??(recipe?.tier==='development'?developmentSite:undefined);
+    // The machine operator binds one local environment to its repository's immutable release index.
+    const routed=recipe?.repositoryRelease===true && ['development','staging'].includes(recipe.tier) && recipe.environment===x.environment &&
+      recipe.repoId===x.repoId && recipe.loopbackPorts?.length===1
+      ? {port:recipe.loopbackPorts[0],index:'repo-'+x.repoId+'-releases.json'} : undefined;
+    const releaseSite=routed??pilot??(recipe?.tier==='development'?developmentSite:undefined);
     if(x.action==='deploy' && releaseSite){
       let releases={};
       try{releases=JSON.parse(await privateConfig(join(root,releaseSite.index)));}

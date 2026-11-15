@@ -19,7 +19,58 @@ Use the existing management host, private publisher configuration and GitHub ope
 }
 ```
 
-Reload the management environment host with this version of `environment-host.mjs`. Define both environments through the authenticated management client, with the corresponding loopback endpoint and an empty list of secret references. Create the private file `~/.jam-bot/management/calculator-release-pilot/config.json` with `{"acceptanceMinutes":5,"automatic":true}`. Five minutes was chosen for the local demonstration. The operator chooses the project's acceptance period. Install the dedicated login service using `scripts/macos/install-release-pilot.sh /absolute/path/to/node` with Node 22.13 or later, an authenticated GitHub CLI, Git and Docker.
+Reload the management environment host with this version of `environment-host.mjs`. Define both environments through the authenticated management client, with the corresponding loopback endpoint and an empty list of secret references. Create the private file `~/.jam-bot/management/calculator-release-pilot/config.json` with `{"automatic":true}`. The project selects its acceptance period in the release table and the operator can enforce a minimum. Install the dedicated login service using `scripts/macos/install-release-pilot.sh /absolute/path/to/node` with Node 22.13 or later, an authenticated GitHub CLI, Git and Docker.
+
+## Repository routing
+
+The publisher and release host select the same operator-registered profile ref under the publisher project entry's `releaseProfile.profileRef`. Both local pilots use `jam-bot-profile`. This keeps profile changes independent of the build under acceptance. The host resolves the GitHub repository ID and profile ref, then reads `.jam-bot/VALUES.md` by the resulting commit SHA. Receipts include both the profile commit and the deployed commit.
+
+The compact Markdown section in the calculator repository is:
+
+```markdown
+## Release routes
+
+| Source | Channel | Destination | Trigger | Checks | Acceptance |
+| --- | --- | --- | --- | --- | --- |
+| branch:dev | nightly | calculator-rc | checks | unit, browser, live | 0m |
+| channel:nightly | rc | calculator-pilot | checks | unit, browser, live | 5m |
+| channel:rc | stable | none | approval | unit, browser, live | 0m |
+```
+
+`Source` names a Git branch or the output channel of an earlier row. `Channel` identifies the tested build. `Destination` names a separately registered deployment environment. `none` is valid for the stable maturity decision. The trigger accepts successful checks, a UTC schedule such as `daily@12:00Z`, or an exact human approval. `Acceptance` specifies how long this output must be held before its next transition. Stable requires a human comment for the exact SHA even after this period elapses.
+
+The second installed repository uses the same header and one row:
+
+```markdown
+| branch:dev | nightly | sum-nightly | daily@12:00Z | unit, browser, live | 0m |
+```
+
+The Sandbox recipe uses the newest green source available for the daily UTC slot. It verifies the source branch head again before deploying. Build checks run against a detached copy, Chromium exercises its candidate page and the live browser submits sample input at the configured development site. Its durable receipt under `~/.jam-bot/management/release-routes/1457276329/<sha>.json` contains the test report, image, exact destination and live result. The two recipes advance independently.
+
+Machine policy grants each repository concrete capabilities. For example, the Sandbox publisher entry includes:
+
+```json
+{
+  "releaseProfile": {
+    "recipe": "sum-nightly",
+    "repoId": 1457276329,
+    "profileRef": "jam-bot-profile",
+    "channels": {
+      "nightly": {
+        "sources": ["branch:dev"],
+        "triggers": ["daily"],
+        "destinations": ["sum-nightly"],
+        "requiredChecks": ["unit", "browser", "live"]
+      }
+    },
+    "environments": {"sum-nightly": {"tier": "development", "port": 19860}}
+  }
+}
+```
+
+Register `sum-nightly` in the host-private catalog with that repository ID, tier `development`, `containerPort: 8080`, `loopbackPorts: [19860]`, `allowBridgeEgress: true`, `releases: {}` and `repositoryRelease: true`. Save the matching environment in management. The host reads an immutable-image index scoped to the repository ID. Repository guidance cannot select keys, host mounts, commands, foreign projects or unregistered destinations.
+
+For Test, register `recipe: "calculator-rc"`, the corresponding repository ID, the shared profile ref and `promotionBranch: "main"`. Grant each channel only the sources, trigger classes, named destinations and required checks in its table. For the `rc` channel set `minimumMinutes: 5` in this installation. The destinations map binds the two staging environments to their respective ports. For an operator-registered alternate Test destination, use a `repositoryRelease: true` host recipe for the same repository. A held candidate records its route; a changed route requires reconciliation before release.
 
 ## Release and recovery
 
