@@ -2,6 +2,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { runTeammate } from './native-teammate.js';
+import {reconcileIssueArtifacts} from './issue-artifact-recovery.js';
 import {reconcileProgress} from './work-progress.js';
 import {Journal,type Intake,type Topic} from './intake-journal.js';
 import { approvalFromEvent, validateTaskApproval } from './task-approval.js';
@@ -20,6 +21,7 @@ export async function dispatchApprovedWorker(event: Intake, topic: Topic, state:
   if((result?.kind==='assignment'||result?.kind==='consultation')&&result.output&&await hasClosedResult(topic,event.issue,result.output))return;
   await authorize();
   await reconcileProgress(state,topic,event.issue);
+  await reconcileIssueArtifacts(state,topic,event.issue);
   const card=event.body===WORKER_ACCEPTANCE_BODY ? undefined : parseTaskCard(event.title,event.body,approval.kind,topic.defaultClass);
   if(!card && event.body!==WORKER_ACCEPTANCE_BODY)throw new Error('Task scope could not be interpreted');
   const journal=new Journal(join(state,'intake.sqlite'));
