@@ -14,6 +14,8 @@ export async function git(cwd:string,...args:string[]) {
 
 interface Request {action:'seed'|'test-head'|'test'|'publish';repo:string;sha?:string;base?:string;expected?:string;cards?:{issue:number;approval:TaskApproval}[]}
 export interface BrokerResult {sha:string;dev?:string;tests?:string[];log?:string;alreadyPublished?:boolean}
+export class PublisherSeedUnavailable extends Error {}
+
 export async function exchange(repository:string, request:Request,signal:AbortSignal) {
   const dir=join(process.env.JAM_PROFILE_EXCHANGE ?? '/var/lib/jam-profile-exchange',randomUUID());
   await mkdir(dir,{mode:0o700});
@@ -35,6 +37,8 @@ export async function exchange(repository:string, request:Request,signal:AbortSi
       if(!reply){await delay(500,undefined,{signal});continue;}
       received=true;
       const result=JSON.parse(reply);
+      if(!result.ok && request.action==='seed' && result.error==='Repository outside publisher scope')
+        throw new PublisherSeedUnavailable('Publisher is not configured for this repository');
       if(!result.ok)throw Error('Profile broker: '+result.error);
       if(request.action==='seed')await git(repository,'fetch','--no-tags',join(dir,'seed.bundle'),'+refs/heads/seed:refs/remotes/profile/seed');
       return result.value as BrokerResult;

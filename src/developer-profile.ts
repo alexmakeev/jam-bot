@@ -70,15 +70,32 @@ export async function runDeveloperProfile(p:ProfileRun) {
       await requestFileScope(topic,issue,plan);
       return;
     }
-    const project=await checkout(state,topic.repository,issue,signal);
-    const brief=await projectContext(project.tree,card.files,card.task);
+    const progress=new Journal(join(state,'intake.sqlite'));
     const scope=JSON.stringify({task:card.task,files:card.files});
-    const spec=await stage(p,'architect','Return a compact English Markdown implementation specification, including acceptance tests.\n'+scope+'\n'+brief);
-    await publishSpecification({topic,issue,markdown:spec,signal,authorize:p.authorize});
+    let project:Project;
+    let spec:string;
+    try {
+      const saved=progress.specificationCheckpoint(issue);
+      if(saved) {
+        project=JSON.parse(saved) as Project;
+        if(project.tree!==join(state,'worktrees',String(issue)) || project.store!==join(state,'project.git') ||
+            await git(project.tree,'rev-parse','HEAD')!==project.base ||
+            await git(project.tree,'branch','--show-current')!==project.branch ||
+            await git(project.tree,'status','--porcelain'))throw Error('Specification worktree changed during restart');
+        spec=(await readJson<{output:string}>(join(dir,'architect.json'))).output;
+      } else {
+        project=await checkout(state,topic.repository,issue,signal);
+        const brief=await projectContext(project.tree,card.files,card.task);
+        spec=await stage(p,'architect','Return a compact English Markdown implementation specification, including acceptance tests.\n'+scope+'\n'+brief);
+        progress.checkpointSpecification(issue,JSON.stringify(project));
+      }
+      await publishSpecification({topic,issue,markdown:spec,signal,authorize:p.authorize});
+      progress.checkpointSpecification(issue,null);
+    } finally { progress.db.close(); }
     await setCardProgress(topic,issue,'in progress');
     const assignment=await stage(p,'assignment','Prepare the developer handoff from this approved scope and specification.\n'+scope+'\n'+spec);
     const implementationContext=await projectContext(project.tree,card.files,card.task+'\n'+spec+'\n'+assignment);
-    const output=await stage(p,'developer','Implement the approved task. Return raw JSON {"files":[{"path":"approved/path","content":"entire file text"}]}. For tests use node:test and node:assert/strict, with explicit .ts imports for local TS modules, no dependencies.\n'+scope+'\n'+spec+'\n'+assignment+'\n'+implementationContext);
+    const output=await stage(p,'developer','Implement the approved task. Return raw JSON {"files":[{"path":"approved/path","content":"entire file text"}]}. For tests use the existing project build and import conventions, node:test and node:assert/strict, no new dependencies.\n'+scope+'\n'+spec+'\n'+assignment+'\n'+implementationContext);
     for(const file of card.files){
       let parent=project.tree;
       for(const part of file.split('/').slice(0,-1)){

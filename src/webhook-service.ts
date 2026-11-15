@@ -1,6 +1,7 @@
 import { readdir, readFile, readlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { PublisherSeedUnavailable } from './profile-checkout.js';
 import { Journal } from './intake-journal.js';
 import { withoutEnvironmentAuthority } from './environment-runner.js';
 import { TaskAdmission } from './task-admission.js';
@@ -44,6 +45,11 @@ async function consume({journal,topic,state}: TopicRuntime, signal: AbortSignal)
           await dispatchApprovedWorker(execution,topic,state,signal,journal.lead().id);
           journal.finishWorker(execution.delivery);
         } catch (err) {
+          if(err instanceof PublisherSeedUnavailable) {
+            journal.deferPublisherSeed(execution.delivery);
+            continue;
+          }
+          if(signal.aborted && journal.specificationCheckpoint(execution.issue))return;
           journal.finishWorker(execution.delivery,err instanceof Error ? err.message : 'Worker dispatch failed');
           console.error('Worker dispatch requires review',topic.repository,execution.issue);
         }
@@ -75,6 +81,14 @@ async function main() {
       if (action==='list') console.log(JSON.stringify({repository:selector, session:journal.lead(), deliveries:journal.list()},null,2));
       else if (action==='retry-integration' && id && decision && operator) new IntegrationQueue(journal.db).retryFailed(id,operator,decision);
       else if (action==='resolve' && id && decision && operator && session) journal.resolve(id,decision,operator,session);
+      else if (action==='retry-seed' && id && decision) {
+        const row=journal.list().find(r=>r.delivery===id);
+        if(!row)throw Error('Unknown delivery');
+        const assignment=join(route.state,'assignments',String(row.issue));
+        if ((await readdir(assignment)).length || (await readdir(join(route.state,'worktrees')).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;return [] as string[];})).includes(String(row.issue)))
+          throw Error('Existing task work requires reconciliation');
+        journal.retryDeniedSeed(id,decision);
+      }
       else if (action==='resolve-worker' && id && decision && operator) journal.resolveWorker(id,decision,operator);
       else throw new Error('Expected review list, review resolve DELIVERY acked|abandon|requeue OPERATOR resume|unused, or review resolve-worker DELIVERY complete|abandon OPERATOR');
     } finally { journal.db.close(); }

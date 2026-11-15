@@ -63,6 +63,10 @@ export class Journal {
         this.db.exec('INSERT INTO intake(rowid,'+previous+') SELECT rowid,'+previous+' FROM legacy_intake; DROP TABLE legacy_intake');
         this.db.exec("UPDATE intake SET workerState='abandoned', workerReason='Native Task approval required' WHERE action='locked' AND workerState='pending'");
       }
+      if (!columns.some(col=>col.name==='seedRetryAt'))
+        this.db.exec('ALTER TABLE intake ADD COLUMN seedRetryAt INTEGER NOT NULL DEFAULT 0');
+      if (!this.db.prepare("SELECT 1 FROM pragma_table_info('intake') WHERE name='specCheckpoint'").get())
+        this.db.exec('ALTER TABLE intake ADD COLUMN specCheckpoint TEXT');
       if (!this.db.prepare("SELECT 1 FROM pragma_table_info('intake') WHERE name='lockVerified'").get()) {
         this.db.exec("ALTER TABLE intake ADD COLUMN lockVerified INTEGER NOT NULL DEFAULT 0");
         // Previous versions left the lock to the consumer. Recover their queued signed approvals at startup.
@@ -83,6 +87,7 @@ export class Journal {
       this.db.prepare('INSERT OR IGNORE INTO topic VALUES (1,?,?,0)').run(binding, randomUUID());
       if (this.db.prepare('SELECT binding FROM topic').get()?.binding !== binding) throw new Error('Topic binding changed');
       this.db.exec(`UPDATE intake SET state='review', reason='Service stopped during dispatch' WHERE state='running';
+        UPDATE intake SET workerState='pending' WHERE workerState='running' AND specCheckpoint IS NOT NULL;
         UPDATE intake SET workerState='review', workerReason='Service stopped during worker dispatch' WHERE workerState='running'`);
     });
   }
@@ -143,12 +148,36 @@ export class Journal {
 
   nextWorker(): Intake | undefined {
     return this.transaction(() => {
-      const row = this.db.prepare(`SELECT * FROM intake WHERE action='task' AND workerState='pending'
+      const row = this.db.prepare(`SELECT * FROM intake WHERE action='task' AND workerState='pending' AND seedRetryAt<=unixepoch()
         AND NOT EXISTS(SELECT 1 FROM intake WHERE workerState IN ('running','review') OR state IN ('running','review'))
         ORDER BY rowid LIMIT 1`).get();
       if (!row) return;
       this.db.prepare("UPDATE intake SET workerState='running' WHERE delivery=?").run(row.delivery!);
       return intake(row);
+    });
+  }
+
+  specificationCheckpoint(issue: number): string | null {
+    const row=this.db.prepare("SELECT specCheckpoint FROM intake WHERE issue=? AND action='task' AND workerState='running'").get(issue);
+    return row?.specCheckpoint == null ? null : String(row.specCheckpoint);
+  }
+
+  checkpointSpecification(issue:number, checkpoint:string|null) {
+    const result=this.db.prepare("UPDATE intake SET specCheckpoint=? WHERE issue=? AND action='task' AND workerState='running'").run(checkpoint,issue);
+    if(result.changes!==1) throw Error('Missing active worker for specification handoff');
+  }
+
+  deferPublisherSeed(delivery:string) {
+    const result=this.db.prepare("UPDATE intake SET workerState='pending',seedRetryAt=unixepoch()+60,workerReason='Waiting for publisher configuration' WHERE delivery=? AND workerState='running'").run(delivery);
+    if(result.changes!==1)throw Error('No active delivery to defer');
+  }
+
+  retryDeniedSeed(delivery:string, operator:string) {
+    if(!operator.trim())throw Error('Expected operator');
+    this.transaction(()=>{
+      const result=this.db.prepare("UPDATE intake SET workerState='pending',workerReason=NULL WHERE delivery=? AND workerState='review' AND workerReason='Profile broker: Repository outside publisher scope' AND specCheckpoint IS NULL").run(delivery);
+      if(result.changes!==1)throw Error('Worker was not stopped by publisher scope');
+      this.db.prepare('INSERT INTO resolutions(delivery,operator,decision,session_state) VALUES(?,?,?,?)').run(delivery,operator,'retry-seed','worker');
     });
   }
 
