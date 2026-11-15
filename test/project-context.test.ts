@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, rm, writeFile, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { projectContext } from '../src/developer-profile.js';
+import { projectContext, implementationInput } from '../src/developer-profile.js';
 import { applyRoleFiles } from '../src/role-files.js';
 
 test('architect-referenced implementation and adjacent tests are readable without granting edits', async () => {
@@ -20,5 +20,18 @@ test('architect-referenced implementation and adjacent tests are readable withou
     assert.match(brief,/export const sum =/);assert.match(brief,/import \{ sum \} from/);
     assert.doesNotMatch(brief,/private-unrelated-source/);
     await assert.rejects(applyRoleFiles(tree,files,JSON.stringify({files:[{path:'src/sum.ts',content:'unexpected edit'}]})));
+  } finally {await rm(tree,{recursive:true,force:true});}
+});
+
+test('a developer can read its whole previous output when correcting a larger approved source file', async () => {
+  const tree=await realpath(await mkdtemp(join(tmpdir(),'jam-project-revision-')));
+  try {
+    const source='a'.repeat(16000)+'retain-this-middle-line'+'b'.repeat(16000);
+    await writeFile(join(tree,'page.html'),source);
+    execFileSync('git',['init','--quiet',tree]);execFileSync('git',['-C',tree,'add','.']);
+    const context=await projectContext(tree,['page.html'],'');
+    const input=implementationInput(context,'approved edit','s'.repeat(30000),'a'.repeat(30000),'fix alignment');
+    assert.ok(input.includes(source));
+    assert.ok(Buffer.byteLength(input)<=80000);
   } finally {await rm(tree,{recursive:true,force:true});}
 });

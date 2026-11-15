@@ -23,7 +23,7 @@ export interface RoleStage {
 
 export async function runRoleStage({role,state,cwd,session,issue,input,signal}: RoleStage) {
   if (!Object.hasOwn(responsibilities,role) || !Number.isSafeInteger(issue) || issue<1 ||
-      !input.trim() || Buffer.byteLength(input)>48000) throw new Error('Invalid role stage or oversized input');
+      !input.trim() || Buffer.byteLength(input)>80000) throw new Error('Invalid role stage or oversized input');
   const challenge = randomUUID();
   const agentType='jam-'+role;
   const name=role+'-'+issue+'-'+challenge.slice(0,6);
