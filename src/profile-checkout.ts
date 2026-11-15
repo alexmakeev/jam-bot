@@ -12,8 +12,10 @@ export async function git(cwd:string,...args:string[]) {
     {cwd,timeout:30000,maxBuffer:2**20})).stdout.trimEnd();
 }
 
-interface Request {action:'seed'|'test-head'|'test'|'publish';repo:string;sha?:string;base?:string;expected?:string;cards?:{issue:number;approval:TaskApproval}[]}
-export interface BrokerResult {sha:string;dev?:string;tests?:string[];log?:string;alreadyPublished?:boolean}
+export type ReviewPhase='architecture'|'implementation'|'diagnosis';
+export interface Advice {name:string;provider:string;status:'ok'|'unavailable'|'error';text:string}
+interface Request {action:'seed'|'test-head'|'test'|'publish'|'consult';phase?:ReviewPhase;packet?:string;repo:string;sha?:string;base?:string;expected?:string;cards?:{issue:number;approval:TaskApproval}[]}
+export interface BrokerResult {sha:string;advice?:Advice[];dev?:string;tests?:string[];log?:string;alreadyPublished?:boolean}
 export class PublisherSeedUnavailable extends Error {}
 
 export async function exchange(repository:string, request:Request,signal:AbortSignal) {
@@ -30,7 +32,7 @@ export async function exchange(repository:string, request:Request,signal:AbortSi
     }
     await writeFile(join(dir,'request.tmp'),JSON.stringify(request),{mode:0o600});
     await rename(join(dir,'request.tmp'),join(dir,'request.ready'));
-    const until=Date.now()+240000;
+    const until=Date.now()+(request.action==='consult'?35*60_000:240_000);
     while(Date.now()<until){
       signal.throwIfAborted();
       const reply=await readFile(join(dir,'answer.json'),'utf8').catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;return '';});
