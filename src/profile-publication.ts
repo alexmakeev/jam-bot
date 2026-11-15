@@ -1,3 +1,4 @@
+import {DatabaseSync} from 'node:sqlite';
 import { issueComment } from './issue-comment.js';
 import { digestOf, specName } from './specification-upload.js';
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -33,15 +34,35 @@ export async function markApproved(topic: Topic, issue: number) {
 async function authenticatedComment(topic:Topic,issue:number,body:string,lookupOnly=false){
   const [api,publisher]=await Promise.all([issueClient(topic.repository,topic.installation),publisherIdentity(topic.repository,topic.installation)]);
   const path='/issues/'+issue+'/comments';
-  for(let page=1;;page++){
-    const rows:{user:{id:number};body:string}[]=await api(path+'?per_page=100&page='+page);
-    if(rows.some(c=>c.user?.id===publisher && c.body===body))return true;
-    if(rows.length<100)break;
-  }
-  if(lookupOnly)return false;
-  const published=await api(path,'POST',{body});
-  if(published.user?.id!==publisher || published.body!==body)throw Error('Work card publication could not be verified');
-  return true;
+  const target='https://api.github.com/repos/'+topic.repository+'/issues/'+issue;
+  if((await api('')).id!==topic.repoId)throw Error('Work card repository identity changed');
+  const db=new DatabaseSync(join(dirname(topic.cwd),'issue-actions.sqlite'));
+  try{
+    db.exec('PRAGMA busy_timeout=5000; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS comments(issue INTEGER,digest TEXT,receipt INTEGER,PRIMARY KEY(issue,digest))');
+    const digest=digestOf(body);
+    for(let page=1;;page++){
+      const rows:{id:number;user:{id:number};body:string;issue_url:string}[]=await api(path+'?per_page=100&page='+page);
+      const found=rows.find(c=>c.user?.id===publisher && c.body===body && c.issue_url===target);
+      if(found){
+        db.prepare('INSERT INTO comments VALUES(?,?,?) ON CONFLICT(issue,digest) DO UPDATE SET receipt=excluded.receipt').run(issue,digest,found.id);
+        return true;
+      }
+      if(rows.length<100)break;
+    }
+    if(lookupOnly)return false;
+    if(!db.prepare('INSERT OR IGNORE INTO comments(issue,digest) VALUES(?,?)').run(issue,digest).changes)
+      throw Error('Work card publication is awaiting reconciliation');
+    try{
+      const published=await api(path,'POST',{body});
+      if(published.user?.id!==publisher || published.body!==body || published.issue_url!==target || !Number.isSafeInteger(published.id))throw Error('Work card publication could not be verified');
+      db.prepare('UPDATE comments SET receipt=? WHERE issue=? AND digest=?').run(published.id,issue,digest);
+    }catch(err){
+      if(err instanceof GitHubRequestError && [400,401,403,404,422,429].includes(err.status))
+        db.prepare('DELETE FROM comments WHERE issue=? AND digest=? AND receipt IS NULL').run(issue,digest);
+      throw err;
+    }
+    return true;
+  }finally{db.close();}
 }
 export async function requestFileScope(topic:Topic,issue:number,plan:string) {
   await authenticatedComment(topic,issue,issueComment('needs-files',plan));

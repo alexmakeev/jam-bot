@@ -1,3 +1,4 @@
+import {recordProgress} from './work-progress.js';
 import {randomUUID} from 'node:crypto';
 import {homedir} from 'node:os';
 import {join} from 'node:path';
@@ -45,7 +46,10 @@ export async function mandatoryReview(job:MandatoryReview,escalate:(reason:strin
   if(saved.session!==job.session)throw Error('Mandatory review lead identity changed');
   const checkpoint=saved;
   const stop=async(reason:string):Promise<never>=>{
-    checkpoint.failure=reason;await atomicJson(path,checkpoint);await escalate(reason);throw Error(reason);
+    checkpoint.failure=reason;await atomicJson(path,checkpoint);
+    for(const issue of job.issues)recordProgress(job.state,issue,'review-blocked:'+job.role+':'+job.revision,
+      'Mandatory '+job.role+' review of `'+job.revision+'` is blocked. '+reason+'. Leo will deliver the evidence to the architect for diagnosis.');
+    await escalate(reason);throw Error(reason);
   };
   const done=async(receipt:Receipt)=>{
     checkpoint.receipt=receipt;await atomicJson(path,checkpoint);return receipt;
@@ -71,6 +75,8 @@ export async function mandatoryReview(job:MandatoryReview,escalate:(reason:strin
     if(saved.attempts.length>=2)return stop(unavailable);
     const attempt={challenge:randomUUID(),startedAt:Date.now()} as Attempt;
     saved.attempts.push(attempt);await atomicJson(path,saved);
+    if(saved.attempts.length>1)for(const issue of job.issues)recordProgress(job.state,issue,'review-retry:'+job.role+':'+job.revision,
+      'Leo reconciled the original '+job.role+' assignment for `'+job.revision+'` and found no verified review. One bounded native review retry has been assigned.');
     try{return await done(await deps.run({...job,input:saved.input},attempt.challenge));}
     catch(error){
       if(job.signal.aborted)throw error;

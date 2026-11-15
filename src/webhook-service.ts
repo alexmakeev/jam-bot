@@ -39,7 +39,7 @@ async function consume({journal,topic,state}: TopicRuntime, signal: AbortSignal)
   prepareReviewNotices(journal.db);
   try {
     await migrateReviewNotices(runtime);
-    for(const row of journal.list().filter(r=>r.state==='review' && r.reason==='Service stopped during dispatch')){
+    for(const row of journal.db.prepare("SELECT delivery,issue FROM intake WHERE state='review' AND reason='Service stopped during dispatch'").all()){
       const receipt=await recoveredIntake({issue:Number(row.issue),delivery:String(row.delivery)},journal.lead(),topic.cwd,topic.repository);
       if(receipt)journal.complete(receipt,true);
     }

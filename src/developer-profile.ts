@@ -183,6 +183,7 @@ export async function runDeveloperProfile(p:ProfileRun) {
     let project:Project;
     let spec:string;
     let correction:Correction|undefined;
+    let specificationPublished=false;
     try {
       const saved=progress.specificationCheckpoint(issue);
       if(saved==='ready'){
@@ -212,7 +213,7 @@ export async function runDeveloperProfile(p:ProfileRun) {
             (!(project as Project&{implementing?:boolean}).implementing && !correction && await git(project.tree,'rev-parse','HEAD')!==project.base) ||
             await git(project.tree,'branch','--show-current')!==project.branch ||
             (!(project as Project&{implementing?:boolean}).implementing && !correction && await git(project.tree,'status','--porcelain')))throw Error('Specification worktree changed during restart');
-        const restored=project as Project&{implementing?:boolean};delete restored.implementing;
+        const restored=project as Project&{implementing?:boolean};specificationPublished=restored.implementing===true;delete restored.implementing;
         if((project as Project&{awaitingAdvice?:boolean}).awaitingAdvice) {
           const input=await readJson<{requirements:string;architectDraft:string;projectEvidence:string}>(join(dir,'architecture-input.json'));
           if(input.requirements!==scope || input.architectDraft!==(await readJson<{output:string}>(join(dir,'architect-draft.json'))).output)
@@ -236,7 +237,7 @@ export async function runDeveloperProfile(p:ProfileRun) {
         spec=await reviewedDesign(p,scope,brief,draft);
         progress.checkpointSpecification(issue,JSON.stringify(project));
       }
-      if(!correction && !saved?.includes('"implementing":true'))await publishSpecification({topic,issue,markdown:spec,signal,authorize:p.authorize});
+      if(!correction && !specificationPublished)await publishSpecification({topic,issue,markdown:spec,signal,authorize:p.authorize});
       if(!correction)progress.checkpointSpecification(issue,JSON.stringify({...project,implementing:true}));
     } finally { progress.db.close(); }
     await setCardProgress(topic,issue,'in progress');
