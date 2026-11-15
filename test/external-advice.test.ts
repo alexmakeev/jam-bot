@@ -55,3 +55,20 @@ test('retry only the failed independent adviser and retain both original and sub
     assert.equal(saved.attempts[0][1].status,'error');assert.equal(saved.attempts[1][0].status,'ok');
   }finally{await rm(dir,{recursive:true,force:true});}
 });
+test('the owner sees the live request and can wait without starting another consultation',async()=>{
+  const dir=await mkdtemp(join(tmpdir(),'jam-consult-active-'));
+  const seen:string[]=[];let calls=0;
+  try{
+    const broker:typeof exchange=async(_dir,req,_signal,slow)=>{
+      calls++;assert.equal(req.only,undefined);
+      const now=new Date().toISOString();
+      await slow?.({phase:'architecture',updatedAt:now,providers:[{name:'active',provider:'codex',status:'running',startedAt:now,updatedAt:now}]});
+      return {sha:'',advice:[{name:'active',provider:'codex',status:'ok',text:'Complete'}]};
+    };
+    const result=await externalReview(dir,topic,[{issue:2,approval}],'architecture',{draft:'approved'},new AbortController().signal,
+      async input=>{seen.push(input.kind);return 'WAIT The original review is still running.';},broker,async()=>{});
+    assert.equal(calls,1);assert.deepEqual(seen,['in_flight']);assert.equal(result.advice[0]?.status,'ok');
+    const persisted=JSON.parse(await readFile(join(dir,'consultations',result.inputDigest+'.in_flight.json'),'utf8'));
+    assert.equal(persisted.decision,'WAIT');
+  }finally{await rm(dir,{recursive:true,force:true});}
+});
