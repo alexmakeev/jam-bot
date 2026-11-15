@@ -9,6 +9,8 @@ interface VerifiedSite {
   evidence?:{url:string;htmlDigest:string;screenshots:{width:number;sha256:string}[];report:string};
 }
 
+function identity(site:VerifiedSite){return 'deployment:'+site.environment+':'+site.revision;}
+
 // The host writes after checking the actual running image, endpoint and revision.
 // Require the original issue's local integration receipt before announcing its deployment.
 export async function collectDeploymentProgress(state:string,topic:Topic,exchange=process.env.JAM_PROFILE_EXCHANGE??'/var/lib/jam-profile-exchange') {
@@ -28,7 +30,7 @@ export async function collectDeploymentProgress(state:string,topic:Topic,exchang
         .catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;});
       if(!result || result.issue!==issue || result.dev!==site.revision){complete=false;continue;}
       if(site.acceptance==='failed'){
-        recordProgress(state,issue,'deployment-failed:'+site.revision,'The development host found a deployed acceptance failure for tested commit `'+site.revision+'`. The integrator must review the host report before closure.');
+        recordProgress(state,issue,identity(site),'The development host found a deployed acceptance failure for tested commit `'+site.revision+'`. The integrator must review the host report before closure.');
         continue;
       }
       const proof=site.evidence;
@@ -36,7 +38,7 @@ export async function collectDeploymentProgress(state:string,topic:Topic,exchang
         Array.isArray(proof.screenshots) && proof.screenshots.every(s=>Number.isSafeInteger(s.width) && /^[0-9a-f]{64}$/.test(s.sha256))
         ? {purpose:'tests' as const,markdown:'# Deployed browser acceptance\n\nRevision `'+site.revision+'`. Local site `http://127.0.0.1:'+site.port+'/`.\n\nHTML SHA-256 `'+proof.htmlDigest+'`.\n\n'+
           proof.screenshots.map(s=>'- '+s.width+' px screenshot SHA-256 `'+s.sha256+'`').join('\n')+'\n\n'+proof.report} : undefined;
-      recordProgress(state,issue,'deployment:'+site.environment+':'+site.revision,
+      recordProgress(state,issue,identity(site),
         'The development host verified tested commit `'+site.revision+'` running healthy in `'+site.environment+'` at '+
         '`http://127.0.0.1:'+site.port+'/` on '+new Date(site.verifiedAt).toISOString()+'. Image `'+site.image+'`. Deployment complete.',report);
     }
@@ -44,10 +46,20 @@ export async function collectDeploymentProgress(state:string,topic:Topic,exchang
   }
 }
 
-export async function deploymentVerified(state:string,repoId:number,sha:string,issue:number):Promise<boolean>{
+async function matchedDeployment(state:string,repoId:number,sha:string,issue:number){
   if(!/^[a-f0-9]{40}$/.test(sha))throw Error('Invalid deployment revision');
   const site=await readJson<VerifiedSite>(join(state,'deployments',sha+'.json')).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;});
-  if(!site || site.revision!==sha || site.repoId!==repoId || !site.issues.includes(issue))return false;
+  if(!site || site.revision!==sha || site.repoId!==repoId || !site.issues.includes(issue))return undefined;
   if(site.acceptance==='failed')throw Error('Deployed acceptance failed for '+sha+'; inspect the host report');
-  return site.acceptance==='passed';
+  return site;
+}
+
+export async function verifiedDeploymentIdentity(state:string,repoId:number,sha:string,issue:number){
+  const site=await matchedDeployment(state,repoId,sha,issue);
+  return site?identity(site):undefined;
+}
+
+export async function deploymentVerified(state:string,repoId:number,sha:string,issue:number){
+  const site=await matchedDeployment(state,repoId,sha,issue);
+  return site?.acceptance==='passed';
 }

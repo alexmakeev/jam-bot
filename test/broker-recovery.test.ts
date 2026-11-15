@@ -8,7 +8,7 @@ import {tmpdir} from 'node:os';
 import {setTimeout as delay} from 'node:timers/promises';
 import {DatabaseSync} from 'node:sqlite';
 import {exchange} from '../src/profile-checkout.js';
-import {collectDeploymentProgress,deploymentVerified} from '../src/deployment-progress.js';
+import {collectDeploymentProgress,deploymentVerified,verifiedDeploymentIdentity} from '../src/deployment-progress.js';
 
 test('a killed receiver reattaches to the claimed request and reuses the confirmed response',async t=>{
   const state=await mkdtemp(join(tmpdir(),'jam-exchange-')),root=join(state,'exchange'),repo=join(state,'project.git');
@@ -57,6 +57,7 @@ test('only a matching integrated task may announce a healthy host deployment onc
   assert.ok(String(db.prepare('SELECT body FROM events').get()!.body).includes(revision));
   db.close();
   assert.ok(await deploymentVerified(state,15,revision,3));
+  assert.equal(await verifiedDeploymentIdentity(state,15,revision,3),'deployment:sum:'+revision);
   assert.equal(await deploymentVerified(state,15,revision,99),false);
   assert.deepEqual(await readdir(dir),[]);
 });
