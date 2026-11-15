@@ -40,6 +40,7 @@ async function calculatorPreview({tree,sha,image,name,checks,site}) {
     return (await run('git',['cat-file','blob',match[1]],options)).stdout;
   };
   const [html,source]=await Promise.all([blob('web/index.html'),blob(site==='sum'?'src/sum.ts':'src/triangular.ts')]);
+  const server=site==='sum'?await blob('web/server.mjs'):undefined;
   const container=name+'-browser';
   const args=['run','--rm','-i','--name',container,'--network','none','--read-only','--cap-drop','ALL',
     '--security-opt','no-new-privileges','--pids-limit','128','--memory','768m','--cpus','1','--user','1000:1000',
@@ -51,7 +52,7 @@ async function calculatorPreview({tree,sha,image,name,checks,site}) {
         else resolve({stdout});
       });
       child.stdin.on('error',()=>{}); // A container startup failure is reported by execFile.
-      child.stdin.end(JSON.stringify({sha,html,source,checks,site}));
+      child.stdin.end(JSON.stringify({sha,html,source,checks,site,server}));
     });
     return stdout;
   } finally {await run('docker',['rm','-f',container]).catch(()=>{});}

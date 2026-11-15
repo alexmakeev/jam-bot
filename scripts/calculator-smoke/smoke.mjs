@@ -7,12 +7,12 @@ import {checkDragonSpec} from './dragon-acceptance.mjs';
 
 let payload='';
 for await (const chunk of process.stdin) payload+=chunk;
-const {html,source,sha,checks=[],site}=JSON.parse(payload);
+const {html,source,sha,checks=[],site,server}=JSON.parse(payload);
 const module=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.ES2022,target:ts.ScriptTarget.ES2022}}).outputText;
 const base='http://calculator.test/';
 const browser=await chromium.launch({args:['--disable-dev-shm-usage']});
 try {
-  if(site==='sum')await checkSumPage(browser,base,html,module,checks);
+  if(site==='sum')await checkSumPage(browser,html,module,server,checks);
   else for(const [width,height] of [[1440,900],[390,844],[320,740]]){
     const context=await browser.newContext({viewport:{width,height},serviceWorkers:'block',reducedMotion:'reduce'});
     const errors=[];
