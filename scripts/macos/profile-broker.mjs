@@ -1,5 +1,5 @@
 // Local dev publisher for explicitly selected repositories. The service only exchanges Git bundles.
-import {consultAll} from './consultants.mjs';
+import {consultAll,selectedConsultants} from './consultants.mjs';
 import {setTimeout as delay} from 'node:timers/promises';
 import {calculatorRepo,queueCalculator,reconcileCalculator} from './calculator-deployment.mjs';
 import {projectRecipes,testCandidate} from './profile-recipes.mjs';
@@ -42,7 +42,7 @@ async function execute(dir) {
   if (!Object.hasOwn(projects,req.repo) || !/^[\w.-]+\/[\w.-]+$/.test(req.repo)) throw Error('Repository outside publisher scope');
   if(req.action==='consult'){
     await authorizedFiles(req);
-    return consultAll(projects[req.repo].consultants,req.phase,req.packet);
+    return consultAll(selectedConsultants(projects[req.repo].consultants,req.only),req.phase,req.packet);
   }
   const url='https://github.com/'+req.repo+'.git';
   const temp=await mkdtemp(join(tmpdir(),'jam-broker-'));

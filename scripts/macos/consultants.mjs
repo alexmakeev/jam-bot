@@ -25,6 +25,14 @@ const phaseBrief={
   diagnosis:'Use the failing test and integration evidence to locate the likely cause and recommend a durable correction.'
 };
 
+export function selectedConsultants(entries,only){
+  const profiles=consultantProfiles(entries);
+  if(only===undefined)return profiles;
+  if(!Array.isArray(only)||!only.length||new Set(only).size!==only.length ||
+    only.some(name=>!profiles.some(p=>p.name===name)))throw Error('Retry targets must be configured consultant names');
+  return profiles.filter(p=>only.includes(p.name));
+}
+
 async function consultCodex({profile,packet,signal,phase}) {
   const name='jam-advice-'+randomUUID();
   const args=['run','--rm','-i','--pull=never','--entrypoint','/bin/codex','--name',name,'--read-only','--cap-drop','ALL','--security-opt','no-new-privileges',
@@ -63,7 +71,12 @@ export async function consultAll(entries,phase,packet,adapters={codex:consultCod
     const identity={name:profile.name,provider:profile.provider,...(profile.model?{model:profile.model}:{})};
     const signal=AbortSignal.timeout((profile.timeoutMinutes??30)*60_000);
     try{
-      const reply=await adapters[profile.provider]({profile,packet,signal,phase});
+      const run=()=>adapters[profile.provider]({profile,packet,signal,phase});
+      let reply;
+      try {reply=await run();} catch(error){
+        if(!error.transient || signal.aborted)throw error;
+        reply=await run();
+      }
       if(typeof reply!=='string'||!reply.trim())throw Error('Empty consultant response');
       return {...identity,status:'ok',text:reply.trim().slice(0,6000)};
     } catch(error){

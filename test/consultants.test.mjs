@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {consultAll,consultantProfiles} from '../scripts/macos/consultants.mjs';
+import {consultAll,consultantProfiles,selectedConsultants} from '../scripts/macos/consultants.mjs';
 const profile={name:'Codex',provider:'codex',image:'sha256:'+'1'.repeat(64),volume:'jam-codex-consultant-home'};
 const packet=JSON.stringify({role:'architect',task:'Review idempotency'});
 test('optional operator profiles are called concurrently and all receipts are returned',async()=>{
@@ -22,4 +22,15 @@ test('runtime and profiles are constrained by the operator catalog',async()=>{
     assert.throws(()=>consultantProfiles([{...profile,...field}]));
   }
   await assert.rejects(consultAll([profile],'diagnosis','not json'));
+});
+
+test('retries are limited to existing named subscriptions and transient failures',async()=>{
+  assert.throws(()=>selectedConsultants([profile],['unknown']));
+  assert.throws(()=>selectedConsultants([profile],[]));
+  assert.deepEqual(selectedConsultants([profile],['Codex']),[profile]);
+  let attempts=0;
+  const {advice}=await consultAll([profile],'diagnosis',packet,{codex:async()=>{
+    attempts++;if(attempts===1)throw Object.assign(Error('retry'),{transient:true});return 'Use the failing seed';
+  }});
+  assert.equal(attempts,2);assert.equal(advice[0].status,'ok');
 });
