@@ -28,7 +28,9 @@ function developmentSite({repo,repoId,environment,port,moduleName,enabled}){
     const file=join(dir,req.sha+'.json');
     // The publisher is the sole queue writer. Its service lock serializes publication and deployment.
     try{await json(file);return;}catch(e){if(e.code!=='ENOENT')throw e;}
-    await atomic(file,{revision:req.sha,base:req.expected,attempts:0,queuedAt:Date.now()});
+    const issues=req.cards?.map(card=>card.issue)??[];
+    if(issues.some(id=>!Number.isSafeInteger(id)||id<1)||issues.length>15)throw Error('Invalid deployment work cards');
+    await atomic(file,{revision:req.sha,base:req.expected,issues,attempts:0,queuedAt:Date.now()});
   }
   async function command(file,args,opts={}){
     return (await exec(file,args,{timeout:90000,maxBuffer:4*1024*1024,...opts})).stdout;
@@ -73,7 +75,7 @@ function developmentSite({repo,repoId,environment,port,moduleName,enabled}){
     } finally {await rm(temp,{recursive:true,force:true});}
   }
   async function reconcileCalculator(project,{
-    queue=stateDir,registry=join(management,environment+'-dev-releases.json'),remoteHead=head,managementCall=manage,build=buildCalculator,
+    queue=stateDir,exchange,registry=join(management,environment+'-dev-releases.json'),remoteHead=head,managementCall=manage,build=buildCalculator,
     repositoryId=async()=>JSON.parse(await command('gh',['api','repos/'+repo])).id
   }={}){
     if(project?.[enabled]!==true)return;
@@ -81,6 +83,13 @@ function developmentSite({repo,repoId,environment,port,moduleName,enabled}){
     const orders=(await readdir(queue)).filter(name=>/^[0-9a-f]{40}\.json$/.test(name));
     for(const name of orders){
       const file=join(queue,name),job=await json(file);
+      if(job.done==='deployed' && job.issues?.length && exchange && !job.noticeDelivered){
+        const delivery=join(exchange,'deployments',String(repoId));
+        await mkdir(delivery,{recursive:true,mode:0o700});
+        await atomic(join(delivery,name),{repoId,repository:repo,environment,port,issues:job.issues,
+          revision:job.revision,image:job.image,verifiedAt:job.verifiedAt});
+        job.noticeDelivered=true;await atomic(file,job);
+      }
       if(job.done||job.after>Date.now())continue;
       try{
         if(job.revision+'.json'!==name||!commit.test(job.base))throw Error('Invalid calculator queue record');

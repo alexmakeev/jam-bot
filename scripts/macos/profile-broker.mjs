@@ -108,8 +108,38 @@ async function reply(dir) {
   await rename(join(dir,'answer.tmp'),join(dir,'answer.json'));
 }
 
+// A service restart may occur after claim or after writing the result but before renaming it.
+// This path observes existing evidence without issuing another consultation or push.
+async function recoverClaim(dir,id){
+  if(await lstat(join(dir,'answer.json')).catch(()=>null))return;
+  const claimed=join(dir,'request.json');
+  try{await regular(claimed,1024*1024);}catch(e){if(e.code==='ENOENT')return;throw e;}
+  const req=JSON.parse(await readFile(claimed,'utf8'));
+  if(req.brokerRequestId!==id)return;
+  const staged=join(dir,'answer.tmp');
+  const pending=await readFile(staged,'utf8').catch(e=>{if(e.code!=='ENOENT')throw e;});
+  if(pending){
+    try{const result=JSON.parse(pending);if(typeof result.ok!=='boolean')throw Error('Incomplete answer');}
+    catch{return storeUncertain(dir);}
+    await rename(staged,join(dir,'answer.json'));return;
+  }
+  if(req.action==='publish' && Object.hasOwn(projects,req.repo) && sha(req.sha)){
+    const current=await gh('repos/'+req.repo+'/git/ref/heads/dev');
+    if(current.object?.sha===req.sha){
+      await writeFile(staged,JSON.stringify({ok:true,value:{sha:req.sha,alreadyPublished:true}}),{mode:0o600,flag:'wx'});
+      await rename(staged,join(dir,'answer.json'));return;
+    }
+  }
+  await storeUncertain(dir);
+}
+async function storeUncertain(dir){
+  const file=join(dir,'uncertain.tmp');
+  await writeFile(file,JSON.stringify({ok:false,uncertain:true,error:'Host restarted after claiming the request and has no confirmed result.'}),{mode:0o600});
+  await rename(file,join(dir,'answer.json'));
+}
+
 await mkdir(root,{recursive:true});
-const consultations=new Set();
+const consultations=new Set(),running=new Set();
 do {
   for(const id of await readdir(root)){
     if(!/^[a-f0-9-]{36}$/.test(id))continue;
@@ -120,15 +150,19 @@ do {
     try{
       await regular(pending,1024*1024);
       consult=JSON.parse(await readFile(pending,'utf8')).action==='consult';
-    }catch(error){if(error.code==='ENOENT')continue;}
+    }catch(error){if(error.code==='ENOENT'){
+      if(!running.has(id))await recoverClaim(dir,id).catch(error=>console.error('Cannot reconcile publisher request',id,error.code??error.name));
+      continue;
+    }throw error;}
     if(consult && consultations.size>=4)continue;
     try{await rename(pending,join(dir,'request.json'));}catch{continue;}
     if(consult){
-      const active=reply(dir).catch(()=>console.error('Could not store consultation reply')).finally(()=>consultations.delete(active));
+      running.add(id);
+      const active=reply(dir).catch(()=>console.error('Could not store consultation reply')).finally(()=>{running.delete(id);consultations.delete(active);});
       consultations.add(active);
     }else await reply(dir);
   }
-  await reconcileCalculator(projects[calculatorRepo]);
-  await reconcileSandbox(projects[sandboxRepo]);
+  await reconcileCalculator(projects[calculatorRepo],{exchange:root});
+  await reconcileSandbox(projects[sandboxRepo],{exchange:root});
   if(consultations.size)await Promise.race([...consultations,delay(1000)]);
 }while(consultations.size);
