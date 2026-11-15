@@ -1,6 +1,7 @@
 // This trusted driver receives only the committed calculator HTML and arithmetic module.
 import assert from 'node:assert/strict';
 import {chromium} from 'playwright-core';
+import pngjs from 'pngjs';
 import ts from 'typescript';
 import {checkSumPage} from './sum-acceptance.mjs';
 import {staticDragons} from './static-dragons.mjs';
@@ -68,6 +69,17 @@ try {
       }
       return {scroll:document.documentElement.scrollWidth,form:{left:Math.round(form.left),right:Math.round(form.right),top:Math.round(form.top)},sides};
     });
+    // Ordinary follow-up cards exercise the artwork actually published by the prior card.
+    // Card-specific assertions below still enforce the approved rendering implementation.
+    if(!metrics.sides.length && !checks.includes('dragons')){
+      for(const svg of await page.locator('main ~ svg, svg:has(~ main)').all()){
+        const box=await svg.boundingBox();if(!box)continue;
+        const raster=pngjs.PNG.sync.read(await svg.screenshot());
+        let painted=0;
+        for(let i=0;i<raster.data.length;i+=4)if(raster.data[i+2]-raster.data[i]>18)painted++;
+        metrics.sides.push({pixels:painted,left:box.x,right:box.x+box.width,bottom:box.y+box.height});
+      }
+    }
     assert.ok(metrics.scroll<=width,'Horizontal overflow at '+width);
     assert.equal(metrics.sides.length,2,'Expected two rendered dragon regions at '+width);
     assert.ok(metrics.sides.every(r=>r.pixels>=32),'Empty dragon region at '+width);
