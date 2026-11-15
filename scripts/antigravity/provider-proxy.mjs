@@ -23,7 +23,8 @@ proxy.on('connect',(req,client,head)=>{
     client.pipe(upstream);upstream.pipe(client);
   });
   const close=()=>{upstream.destroy();client.destroy();};
-  upstream.setTimeout(180000,close);
+  // Quiet provider inference may outlast three minutes. Let the owning review enforce its deadline.
+  upstream.setTimeout(32*60*1000,close);
   upstream.on('error',close);client.on('error',close);client.on('close',()=>upstream.destroy());upstream.on('close',()=>client.destroy());
 });
 proxy.listen(3130,address);

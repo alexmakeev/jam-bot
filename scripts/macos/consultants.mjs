@@ -62,7 +62,7 @@ async function consultCodex({profile,packet,signal,phase}) {
 }
 async function consultAntigravity(args){
   const adapter=await import('./antigravity-consultant.mjs');
-  return adapter.consultAntigravity({...args,question:phaseBrief[args.phase]});
+  return adapter.consultAntigravity({...args,question:phaseBrief[args.phase]+' Return up to three actionable findings, in at most 350 words.'});
 }
 export async function consultAll(entries,phase,packet,adapters={codex:consultCodex,antigravity:consultAntigravity},progress) {
   if(!['architecture','implementation','diagnosis'].includes(phase)||typeof packet!=='string'||Buffer.byteLength(packet)>65536)throw Error('Invalid consultation packet');
