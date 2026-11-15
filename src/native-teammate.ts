@@ -10,7 +10,7 @@ interface Block {
   input?: {name?: string; subagent_type?: string; to?: string; message?: string; prompt?: string};
   is_error?:boolean; content?: string | {text?: string}[];
 }
-interface Row { sessionId?: string; type:string; message?: {content?: string | Block[];stop_reason?:string} }
+interface Row { sessionId?: string; cwd?:string; agentId?:string; type:string; message?: {content?: string | Block[];stop_reason?:string} }
 interface Roster { leadSessionId:string; members:{name:string;agentId:string;cwd:string;backendType:string}[] }
 
 async function optionalText(path: string): Promise<string> {
@@ -61,11 +61,12 @@ interface ReceiptQuery {
 export async function mailboxReceipt({config,cwd,session,name,agentType,challenge,expected}: ReceiptQuery) {
   const team='session-'+session.slice(0,8);
   const raw=await optionalText(join(config,'teams',team,'config.json'));
-  if (!raw) return;
-  let roster: Roster;
-  try { roster=JSON.parse(raw); } catch { return; }
-  const member=roster.members?.find(m=>m.name===name && m.backendType==='in-process' && m.cwd===cwd);
-  if (roster.leadSessionId!==session || member?.agentId!==name+'@'+team) return;
+  if(raw){
+    let roster:Roster;
+    try{roster=JSON.parse(raw);}catch{return;}
+    const member=roster.members?.find(m=>m.name===name && m.backendType==='in-process' && m.cwd===cwd);
+    if(roster.leadSessionId!==session || member?.agentId!==name+'@'+team)return;
+  }
 
   const prefix=join(config,'projects',cwd.replace(/[^a-zA-Z0-9-]/g,'-'),session);
   const leadRows=(await rows(prefix+'.jsonl')).filter(r=>r.sessionId===session);
@@ -81,6 +82,16 @@ export async function mailboxReceipt({config,cwd,session,name,agentType,challeng
   if (!handle) return;
 
   const workerRows=await rows(join(prefix,'subagents','agent-'+handle+'.jsonl'));
+  if(!raw){
+    // Closing the native team retires its roster. The per-member harness metadata survives.
+    const archived=await optionalText(join(prefix,'subagents','agent-'+handle+'.meta.json'));
+    if(!archived)return;
+    let meta;
+    try{meta=JSON.parse(archived);}catch{return;}
+    if(meta.name!==name || meta.teamName!==team || meta.taskKind!=='in_process_teammate' ||
+        meta.customAgentType!==agentType || meta.spawnedAgentType!==agentType ||
+        !workerRows.some(row=>row.agentId===handle && row.sessionId===session && row.cwd===cwd))return;
+  }
   const messages=new Set<string>();
   const finalOutputs=new Set<string>();
   const valid=(value:unknown):value is string=>typeof value==='string' && value.length<=65536 &&
@@ -113,7 +124,7 @@ export async function mailboxReceipt({config,cwd,session,name,agentType,challeng
   }
   const deliveries=[...delivered];
   if (deliveries.length>1) throw new Error('Ambiguous native teammate output');
-  if (deliveries.length===1) return { developer:handle, nativeMember:member.agentId, backend:member.backendType, team,
+  if (deliveries.length===1) return { developer:handle, nativeMember:name+'@'+team, backend:'in-process', team,
     output:expected===undefined ? deliveries[0]!.trimStart().slice(challenge.length+1) : deliveries[0]!.trim() };
 }
 

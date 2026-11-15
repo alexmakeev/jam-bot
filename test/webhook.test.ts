@@ -217,6 +217,12 @@ test('a text-producing subagent cannot satisfy native teammate evidence',async t
   await writeFile(worker,resultTurn(long));
   await writeFile(prefix+'.jsonl',teamInit+idle(name,clipped));
   assert.equal((await mailboxReceipt(query))?.output,long.slice(challenge.length+1));
+  await rm(join(root,'teams',team),{recursive:true});
+  const meta={name,teamName:team,taskKind:'in_process_teammate',customAgentType:'jam-developer',spawnedAgentType:'jam-developer'};
+  await writeFile(worker.replace(/\.jsonl$/,'.meta.json'),JSON.stringify(meta));
+  assert.equal(await mailboxReceipt(query),undefined);
+  await appendFile(worker,JSON.stringify({type:'system',sessionId:session,cwd,agentId:handle})+'\n');
+  assert.equal((await mailboxReceipt(query))?.output,long.slice(challenge.length+1));
   await appendFile(worker,resultTurn(long+'ambiguous'));
   await assert.rejects(mailboxReceipt(query),/Ambiguous/);
   await writeFile(prefix+'.jsonl',msg('assistant',[{type:'tool_use',name:'Agent',id:'call',input:{name,subagent_type:'jam-developer',prompt:challenge}}])+
