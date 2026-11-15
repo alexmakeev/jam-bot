@@ -1,4 +1,5 @@
 // Local dev publisher for explicitly selected repositories. The service only exchanges Git bundles.
+import {projectRecipes,testCandidate} from './profile-recipes.mjs';
 import { brokerFiles } from './runtime/broker-approval.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -9,7 +10,7 @@ import { tmpdir } from 'node:os';
 
 const run = promisify(execFile);
 const root = await realpath(process.argv[2]);
-const config = JSON.parse(await readFile(process.argv[3], 'utf8'));
+const projects = projectRecipes(JSON.parse(await readFile(process.argv[3], 'utf8')));
 const sha = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
 const git = async (cwd,args) => (await run('git',['-c','core.hooksPath=/dev/null','-c','credential.helper=','-c','credential.helper=!gh auth git-credential',...args],
   {cwd,timeout:60000,maxBuffer:2**20,env:{...process.env,GIT_TERMINAL_PROMPT:'0'}})).stdout.trimEnd();
@@ -22,7 +23,7 @@ async function regular(path,limit) {
 async function execute(dir) {
   await regular(join(dir,'request.json'),65536);
   const req=JSON.parse(await readFile(join(dir,'request.json'),'utf8'));
-  if (!config.repositories.includes(req.repo) || !/^[\w.-]+\/[\w.-]+$/.test(req.repo)) throw Error('Repository outside publisher scope');
+  if (!Object.hasOwn(projects,req.repo) || !/^[\w.-]+\/[\w.-]+$/.test(req.repo)) throw Error('Repository outside publisher scope');
   const url='https://github.com/'+req.repo+'.git';
   const temp=await mkdtemp(join(tmpdir(),'jam-broker-'));
   try {
@@ -68,20 +69,9 @@ async function execute(dir) {
       if(paths.some(path=>!files.has(path)))throw Error('Commit outside approved file scope');
     }
     const tree=join(temp,'code');await git(temp,['worktree','add','--detach',tree,req.sha]);
-    const tests=(await git(tree,['ls-files','-z'])).split('\0').filter(file=>/^tests\/.*\.test\.[cm]?[jt]s$/.test(file));
-    if(!tests.length)throw Error('No tests found for the configured Node test recipe');
-    const name='jam-check-'+basename(dir);
-    let log;
-    try {
-      const result=await run('docker',['run','--rm','--name',name,'--network','none','--read-only','--cap-drop','ALL',
-        '--security-opt','no-new-privileges','--pids-limit','100','--memory','384m','--cpus','1','--tmpfs','/tmp:rw,noexec,nosuid,size=32m',
-        '--mount','type=bind,src='+tree+',dst=/code,readonly','-w','/code','--entrypoint','node',config.image,
-        '--experimental-strip-types','--test','--test-concurrency=1',...tests],
-        {timeout:60000,maxBuffer:256*1024});
-      const version=(await run('docker',['run','--rm','--network','none','--read-only','--entrypoint','node',config.image,'--version'])).stdout.trim();
-      log='Node '+version+'\nCommand: node --experimental-strip-types --test --test-concurrency=1 '+tests.join(' ')+'\nExit code: 0\nRevision: '+req.sha+'\n'+result.stdout;
-    } catch(error) {throw Error(String(error.stdout||error.message).slice(-8000));}
-    finally {await run('docker',['rm','-f',name]).catch(()=>{});}
+    const filesForCandidate=(await git(tree,['ls-files','-z'])).split('\0').filter(Boolean);
+    const {tests,log}=await testCandidate({project:projects[req.repo],tree,files:filesForCandidate,
+      sha:req.sha,name:'jam-check-'+basename(dir)});
     if(req.action==='publish') {
       await authorizedFiles();
       await git(temp,['push','--force-with-lease=refs/heads/dev:'+req.expected,'origin',req.sha+':refs/heads/dev']);

@@ -1,11 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 umask 077
-if [[ $# != 2 ]]; then
-  echo "Usage: $0 OWNER/REPO IMAGE_FOR_ISOLATED_TESTS" >&2; exit 2
+if [[ $# -lt 2 || $# -gt 3 ]]; then
+  echo "Usage: $0 OWNER/REPO IMAGE_FOR_ISOLATED_TESTS [node-strip|typescript-build]" >&2; exit 2
 fi
 repo=$1
-image=$2
+image=$(docker image inspect --format '{{.Id}}' "$2")
+recipe=${3:-node-strip}
+[[ "$recipe" == node-strip || "$recipe" == typescript-build ]]
 [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
 docker image inspect "$image" >/dev/null
 gh api "repos/$repo" --jq '.permissions.push' | grep -qx true
@@ -19,8 +21,21 @@ src=$(cd "$(dirname "$0")/../.." && pwd)
 mkdir -p "$dir/runtime"
 printf '%s\n' '{"type":"module"}' > "$dir/runtime/package.json"
 install -m 600 "$src/dist/src/profile-card.js" "$src/dist/src/broker-approval.js" "$dir/runtime/"
-install -m 700 "$(dirname "$0")/profile-broker.mjs" "$dir/profile-broker.mjs"
-node -e "require('fs').writeFileSync(process.argv[1],JSON.stringify({repositories:[process.argv[2]],image:process.argv[3]}))" "$dir/config.json" "$repo" "$image"
+install -m 700 "$(dirname "$0")/profile-broker.mjs" "$(dirname "$0")/profile-recipes.mjs" "$dir/"
+node --input-type=module - "$dir" "$repo" "$image" "$recipe" <<'NODE'
+import {readFileSync,writeFileSync,renameSync} from 'node:fs';
+import {pathToFileURL} from 'node:url';
+import {randomUUID} from 'node:crypto';
+const [dir,repo,image,recipe]=process.argv.slice(2);
+const {projectRecipes}=await import(pathToFileURL(dir+'/profile-recipes.mjs'));
+const file=dir+'/config.json';
+let projects={};
+try { projects=projectRecipes(JSON.parse(readFileSync(file,'utf8'))); } catch(error) { if(error.code!=='ENOENT') throw error; }
+projects[repo]={image,recipe};
+const tmp=file+'.'+randomUUID()+'.tmp';
+writeFileSync(tmp,JSON.stringify({projects},null,2)+'\n',{flag:'wx',mode:0o600});
+renameSync(tmp,file);
+NODE
 launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
 plutil -create xml1 "$plist"
 plutil -insert Label -string "$label" "$plist"

@@ -31,3 +31,14 @@ The test profile targets TypeScript using the Node test runner. The publisher re
 The [assignment](https://github.com/alexmakeev/jam-bot-test/issues/10) and [consultation](https://github.com/alexmakeev/jam-bot-sandbox/issues/3) closed with their respective teammate outputs. The [development issue](https://github.com/alexmakeev/jam-bot-sandbox/issues/4) recorded planning, active work, waiting for integration, validation, a blocked review, resumed validation and closure. The architect's specification was attached through GitHub's web form. The operator verified its bytes and recorded the receipt. The integrator initially rejected the test evidence. After the runner supplied a fuller report, the operator retried the same revision. Eight candidate tests passed. The [verified revision](https://github.com/alexmakeev/jam-bot-sandbox/commit/d90b1aa26aa344c2bbc1539932eb8fc672857ab0) reached dev and the clean feature worktree and branch were removed.
 
 The live integration contained one ready task. The scheduler tests cover larger batches, including sixteen readying branches processed as ten followed by six, the fifteen-branch cap and restart recovery. The one-minute maximum intentional wait is measured at scheduling decisions. Already-running native stages can affect elapsed time.
+
+### Host-pinned recipes for multiple development repositories
+
+Run `scripts/macos/install-profile-broker.sh OWNER/REPO IMAGE RECIPE` for each managed project. Installing an entry preserves the other projects. The installed configuration pins the image ID at setup. The worker sends an issue, repository and candidate revision. The host chooses the configured recipe and rechecks the approved file scope independently before publishing.
+
+| Recipe | Candidate validation |
+| --- | --- |
+| `node-strip` | Discover all tracked JavaScript or TypeScript Node tests named `*.test.*` under `tests/` and run them using Node's built-in runner with type stripping. |
+| `typescript-build` | Copy the tracked candidate checkout to private temporary container storage, clear existing `dist/`, compile the project with the image's `/opt/jam-bot/node_modules/.bin/tsc -p tsconfig.json`, then run all tracked Node tests under `test/`. Tests may import the fresh build from `dist/`. |
+
+Both recipes require at least one matching test, use the pinned offline toolchain, disable network access, drop capabilities, impose resource limits and mount the candidate read-only. The build profile supports projects that compile with the image's available tooling and dependencies. Image preparation is an operator action. The test run never installs project packages. Check the recipe contract with `node --test test/profile-recipes.test.mjs`.

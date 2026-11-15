@@ -1,0 +1,22 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {projectRecipes,testCandidate} from '../scripts/macos/profile-recipes.mjs';
+
+test('legacy operator settings retain direct Node tests for every configured repository',()=>{
+  const result=projectRecipes({repositories:['o/a','o/b'],image:'sha256:pinned'});
+  assert.deepEqual(result,{
+    'o/a':{image:'sha256:pinned',recipe:'node-strip'},
+    'o/b':{image:'sha256:pinned',recipe:'node-strip'},
+  });
+});
+
+test('mixed repository recipes preserve their separate discovery roots',async()=>{
+  const projects=projectRecipes({projects:{
+    'o/a':{image:'image-a',recipe:'node-strip'},
+    'o/b':{image:'image-b',recipe:'typescript-build'}
+  }});
+  await assert.rejects(testCandidate({project:projects['o/a'],files:['test/a.test.mjs']}),/No tracked tests/);
+  await assert.rejects(testCandidate({project:projects['o/b'],files:['test/a.test.mjs']}),/Missing tsconfig/);
+  await assert.rejects(testCandidate({project:projects['o/b'],files:['tsconfig.json','tests/a.test.ts']}),/No tracked tests/);
+  assert.throws(()=>projectRecipes({projects:{'o/a':{image:'image-a',recipe:'npm-from-card'}}}),/Invalid trusted/);
+});
