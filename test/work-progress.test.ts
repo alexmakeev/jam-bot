@@ -120,6 +120,7 @@ test('one authenticated result gains multiple late Markdown files in-place and r
     if(path==='/issues/6/comments' && method==='POST'){
       posts++;const c={id:81,issue_url:'https://api.github.com/repos/owner/repo/issues/6',user:{id:40},body:data.body};comments.push(c);return c;
     }
+    if(path==='/issues/comments/81' && method==='GET')return comments[0];
     if(path==='/issues/comments/81' && method==='PATCH'){
       patches++;comments[0]!.body=data.body;if(loseEdit){loseEdit=false;throw Error('lost PATCH response');}return comments[0];
     }
@@ -137,4 +138,28 @@ test('one authenticated result gains multiple late Markdown files in-place and r
   assert.equal(posts,1);assert.equal(patches,1);assert.equal(artifacts.length,2);
   assert.equal(comments.length,1);assert.match(comments[0]!.body,/The integrator passed this candidate\. \[review-6-/);
   assert.match(comments[0]!.body,/\[tests-6-/);assert.equal(db.prepare('select receipt from events').get()!.receipt,81);
+});
+
+test('adopting a verified legacy specification comment preserves its original ID and other issue history',async t=>{
+  const {adoptVerifiedLegacyResult}=await import('../src/work-progress.js');
+  const state=await mkdtemp(join(tmpdir(),'legacy-spec-'));t.after(()=>rm(state,{recursive:true,force:true}));
+  const url='https://github.com/owner/repo/issues/6/artifacts/1',name='spec-6-a01.md';
+  const original='['+name+']('+url+')';
+  const owned={id:90,body:original,user:{id:42},issue_url:'https://api.github.com/repos/owner/repo/issues/6'};
+  let patches=0;
+  const api=async(path:string,method?:string,data?:object)=>{
+    if(!path)return {id:10};
+    if(path==='/issues/comments/90' && !method)return owned;
+    if(path==='/issues/comments/90' && method==='PATCH'){
+      patches++;owned.body=(data as {body:string}).body;return owned;
+    }
+    throw Error('Unexpected request '+path);
+  };
+  recordProgress(state,6,'spec','Architect handed off the specification.',undefined,[{name,url}]);
+  adoptVerifiedLegacyResult(state,6,'spec',90,original);
+  const creds=async():Promise<[typeof api,number]>=>[api,42];
+  await publishProgress(state,topic,creds);
+  assert.match(owned.body,/Architect handed off the specification\. \[spec-6/);
+  assert.equal(await publishProgress(state,topic,creds),false);
+  assert.equal(patches,1);assert.equal(owned.id,90);
 });

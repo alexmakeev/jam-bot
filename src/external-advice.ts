@@ -91,7 +91,7 @@ export async function externalReview(state:string,topic:Topic,cards:Card[],phase
   if(record.repository!==topic.repository || record.inputDigest!==inputDigest || record.phase!==phase ||
      JSON.stringify(record.cards)!==JSON.stringify(ids))throw Error('Consultation evidence identity changed');
   let advice=adviceSchema.parse(record.advice);
-  for(const result of advice)notify(result.name+result.status,result.name+' returned '+result.status+' for '+phase+' consultation '+version+'. Next: '+owner+' evaluates the response.');
+  for(const result of (record.attempts?.[0]??advice))notify(result.name+result.status,result.name+' returned '+result.status+' for '+phase+' consultation '+version+'. Next: '+owner+' evaluates the response.');
   const retry=advice.filter(a=>a.status==='error').map(a=>a.name);
   let decision:string|undefined;
   if(retry.length)decision=await choose({kind:'confirmed_failure',evidence:advice});

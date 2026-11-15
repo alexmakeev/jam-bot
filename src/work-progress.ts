@@ -76,7 +76,11 @@ export async function publishProgress(state:string,topic:Topic,credentials=()=>s
       const body=files.length?base.slice(0,-marker.length).trimEnd()+' '+files.map(f=>'['+f.name+']('+f.url+')').join(' · ')+'\n\n'+marker:base;
       db.prepare('INSERT OR IGNORE INTO event_versions VALUES(?,?,?)').run(issue,key,body);
       let received:Comment|undefined;
-      for(let page=1;;page++){
+      if(event.receipt!==null){
+        received=await api('/issues/comments/'+event.receipt);
+        if(!received || received.id!==event.receipt || received.user?.id!==bot || received.issue_url!==issueUrl)throw Error('Saved result belongs to another issue or publisher');
+      }
+      for(let page=1;event.receipt===null;page++){
         const rows:Comment[]=await api(path+'?per_page=100&page='+page);
         const matching=rows.filter(c=>c.user?.id===bot && c.body?.endsWith(marker) && c.issue_url===issueUrl);
         if(matching.length+(received?1:0)>1)throw Error('Duplicate work progress evidence');
@@ -126,7 +130,7 @@ export async function reconcileProgress(state:string,topic:Topic,issue:number,cr
   try{
     const [api,bot]=await credentials();
     if((await api('')).id!==topic.repoId)throw Error('Timeline reconciliation repository mismatch');
-    const rows=db.prepare('SELECT key,body,receipt FROM events WHERE issue=?').all(issue);
+    const rows=db.prepare('SELECT key,body,receipt,status FROM events WHERE issue=?').all(issue);
     const local=new Map(rows.map(r=>[String(r.key),r]));
     const confirmed=new Set<string>();
     const target='https://api.github.com/repos/'+topic.repository+'/issues/'+issue;
@@ -144,7 +148,13 @@ export async function reconcileProgress(state:string,topic:Topic,issue:number,cr
       }
       if(comments.length<100)break;
     }
-    if(rows.some(r=>r.receipt!==null && !confirmed.has(String(r.key))))throw Error('A confirmed work card handoff is missing; reconcile before dispatch');
+    for(const row of rows.filter(r=>r.receipt!==null && !confirmed.has(String(r.key)))){
+      if(row.status==='dirty'){
+        const old=await api('/issues/comments/'+row.receipt);
+        if(old?.id===row.receipt && old.user?.id===bot && old.issue_url===target && db.prepare('SELECT 1 FROM event_versions WHERE issue=? AND key=? AND body=?').get(issue,String(row.key),String(old.body)))continue;
+      }
+      throw Error('A confirmed work card handoff is missing; reconcile before dispatch');
+    }
   }finally{db.close();}
 }
 
@@ -166,4 +176,14 @@ export function storedResultComment(state:string,issue:number,identity:string) {
   const db=open(state);
   try{return Number(db.prepare("SELECT receipt FROM events WHERE issue=? AND key=? AND status='sent'").get(issue,fingerprint(identity))?.receipt??0);}
   finally{db.close();}
+}
+
+export function adoptVerifiedLegacyResult(state:string,issue:number,identity:string,id:number,body:string){
+  const db=open(state),key=fingerprint(identity);
+  try{
+    db.exec('BEGIN IMMEDIATE');
+    db.prepare('INSERT OR IGNORE INTO event_versions VALUES(?,?,?)').run(issue,key,body);
+    db.prepare("UPDATE events SET receipt=?,status='dirty' WHERE issue=? AND key=? AND receipt IS NULL AND status='pending'").run(id,issue,key);
+    db.exec('COMMIT');
+  }finally{db.close();}
 }

@@ -4,7 +4,7 @@ import { digestOf, specName } from './specification-upload.js';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import {publishIssueSpec} from './issue-specification.js';
-import {recordProgress,confirmedProgress,fingerprint,storedResultComment,reconcileProgress} from './work-progress.js';
+import {adoptVerifiedLegacyResult,recordProgress,confirmedProgress,fingerprint,storedResultComment,reconcileProgress} from './work-progress.js';
 import {atomicJson,readJson} from './storage.js';
 import { GitHubRequestError, issueClient, publisherIdentity } from './github-app.js';
 import type { Topic } from './intake-journal.js';
@@ -101,6 +101,13 @@ export async function publishSpecification({topic,issue,markdown,signal,authoriz
   const handoff=await readJson<{identity:string;role:string}>(join(state,'assignments',String(issue),'handoffs',fingerprint(markdown)+'.json')).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;});
   const key=handoff?.role==='architect'?handoff.identity:'specification:'+artifact.sha256;
   recordProgress(state,issue,key,'The '+(markdown.startsWith('# Correction for issue ')?'integrator delivered correction guidance':'architect delivered the specification')+' for this work card.',undefined,[artifact]);
+  const prior=await readJson<{commentId?:number;sha256?:string;url?:string}>(join(directory,name+'.artifact-receipt.json')).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;});
+  if(prior?.commentId && prior.sha256===artifact.sha256 && prior.url===artifact.url && !storedResultComment(state,issue,key)){
+    const old=await api('/issues/comments/'+prior.commentId);
+    const link='['+name+']('+artifact.url+')';
+    if(old.id===prior.commentId && old.user?.id===bot && old.issue_url==='https://api.github.com/repos/'+topic.repository+'/issues/'+issue && old.body===link)
+      adoptVerifiedLegacyResult(state,issue,key,old.id,link);
+  }
   const commentId=await confirmedProgress(state,topic,issue,key);
   const receipt={...artifact,commentId};
   await atomicJson(join(directory,name+'.artifact-receipt.json'),receipt);
