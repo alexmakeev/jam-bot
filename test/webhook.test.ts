@@ -206,11 +206,19 @@ test('a text-producing subagent cannot satisfy native teammate evidence',async t
     msg('user',[{type:'tool_result',tool_use_id:'call',content:[{text:'agent_id: '+handle}]}]);
   const idle=(from:string,result:string)=>msg('user','Another Claude session sent a message:\n<teammate-message teammate_id="'+from+'" color="blue">\n'+
     JSON.stringify({type:'idle_notification',from,idleReason:'available',result})+'\n</teammate-message>');
-  await writeFile(worker,msg('assistant',[{type:'text',text:roleAnswer}]));
+  const resultTurn=(text:string)=>JSON.stringify({type:'assistant',sessionId:session,message:{content:[{type:'text',text}],stop_reason:'end_turn'}})+'\n';
+  await writeFile(worker,resultTurn(roleAnswer));
   await writeFile(prefix+'.jsonl',teamInit+idle('other',roleAnswer)+idle(name,roleAnswer+'modified'));
   assert.equal(await mailboxReceipt(query),undefined);
   await appendFile(prefix+'.jsonl',idle(name,roleAnswer));
   assert.equal((await mailboxReceipt(query))?.output,markdown);
+  const long=roleAnswer+'z'.repeat(8000);
+  const clipped=long.slice(0,4000)+'\n[result truncated — ask the agent for the rest via SendMessage]';
+  await writeFile(worker,resultTurn(long));
+  await writeFile(prefix+'.jsonl',teamInit+idle(name,clipped));
+  assert.equal((await mailboxReceipt(query))?.output,long.slice(challenge.length+1));
+  await appendFile(worker,resultTurn(long+'ambiguous'));
+  await assert.rejects(mailboxReceipt(query),/Ambiguous/);
   await writeFile(prefix+'.jsonl',msg('assistant',[{type:'tool_use',name:'Agent',id:'call',input:{name,subagent_type:'jam-developer',prompt:challenge}}])+
     msg('user',[{type:'tool_result',tool_use_id:'call',is_error:true,content:'An interrupted invocation with private text'}]));
   await assert.rejects(mailboxReceipt(query),/declined or interrupted by the harness; reconcile before another execution/);

@@ -10,7 +10,7 @@ interface Block {
   input?: {name?: string; subagent_type?: string; to?: string; message?: string; prompt?: string};
   is_error?:boolean; content?: string | {text?: string}[];
 }
-interface Row { sessionId?: string; type:string; message?: {content?: string | Block[]} }
+interface Row { sessionId?: string; type:string; message?: {content?: string | Block[];stop_reason?:string} }
 interface Roster { leadSessionId:string; members:{name:string;agentId:string;cwd:string;backendType:string}[] }
 
 async function optionalText(path: string): Promise<string> {
@@ -90,7 +90,7 @@ export async function mailboxReceipt({config,cwd,session,name,agentType,challeng
     for(const block of row.message.content){
       if(block.type==='tool_use' && block.name==='SendMessage' && ['main','team-lead'].includes(block.input?.to??'') &&
           valid(block.input?.message))messages.add(block.input.message);
-      if(block.type==='text' && valid(block.text))finalOutputs.add(block.text);
+      if(block.type==='text' && row.message.stop_reason==='end_turn' && valid(block.text))finalOutputs.add(block.text);
     }
   }
   const delivered=new Set<string>();
@@ -100,12 +100,16 @@ export async function mailboxReceipt({config,cwd,session,name,agentType,challeng
     for(const answer of messages)if([answer,answer.trim()].some(text=>
       body.includes('<agent-message from="'+name+'">\n'+text+'\n</agent-message>') ||
       (body.includes('<teammate-message teammate_id="'+name+'"') && body.includes('>\n'+text+'\n</teammate-message>'))))delivered.add(answer);
-    const envelope=/^Another Claude session sent a message:\n<teammate-message teammate_id="([^"]+)"[^>]*>\n([\s\S]*)\n<\/teammate-message>\s*$/.exec(body);
+    const envelope=/^Another Claude session sent a message:\n<teammate-message teammate_id="([^"]+)"[^>]*>\n([^\n]*)\n<\/teammate-message>(?:\n|$)/.exec(body);
     if(!envelope || envelope[1]!==name)continue;
     let notice;
     try{notice=JSON.parse(envelope[2]!);}catch{continue;}
-    if(notice?.type==='idle_notification' && notice.from===name && notice.idleReason==='available' &&
-        valid(notice.result) && finalOutputs.has(notice.result))delivered.add(notice.result);
+    if(notice?.type!=='idle_notification' || notice.from!==name || notice.idleReason!=='available' || !valid(notice.result))continue;
+    // The harness retains the complete turn locally, but abbreviates its automatic mailbox preview.
+    for(const full of finalOutputs){
+      const preview=full.length>4000?full.slice(0,4000)+'\n[result truncated — ask the agent for the rest via SendMessage]':full;
+      if(notice.result===full || notice.result===preview)delivered.add(full);
+    }
   }
   const deliveries=[...delivered];
   if (deliveries.length>1) throw new Error('Ambiguous native teammate output');
