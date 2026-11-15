@@ -1,7 +1,8 @@
 name: jam-bot-service
 services:
   receiver:
-    image: jam-bot-local-service:latest
+    image: ${JAM_RECEIVER_IMAGE:-jam-bot-local-service:latest}
+    user: "${JAM_RUNTIME_UID:-1000}:${JAM_RUNTIME_GID:-1000}"
     init: true
     restart: unless-stopped
     stop_grace_period: 30s

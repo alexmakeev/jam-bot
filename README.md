@@ -33,6 +33,8 @@ The compact file journal avoids a database dependency for the experiment. It is 
 
 See [prototype validation](docs/PROTOTYPE.md) for executed checks and limitations. The fixture adapter trusts local test data; it does not verify GitHub approval or signatures. It has no REST/OpenAPI service, remote management MCP, webhook receiver, upload API, real Claude team adapter, sandbox, or cross-host fencing. Do not expose it or use it for untrusted work.
 
+For an unattended Linux host, follow the [receiver and publisher installation](docs/LINUX-SERVICE.md).
+
 ## Local Ubuntu 22.04 experiment
 
 With Docker Desktop running, use `docker compose run --rm jam` to build the image and open Claude Code. Claude Code uses the Mac's existing `~/.claude` directory mounted read/write at `/home/jam/.claude`. This directory mount allows atomic credential-file replacement. Set `JAM_CLAUDE_DIR` to select a different existing Claude directory. Other container home files persist separately under `~/.jam-bot/container-home` (override with `JAM_CONTAINER_HOME`). Check login inside the container: macOS Keychain credentials are separate from the mounted files.
