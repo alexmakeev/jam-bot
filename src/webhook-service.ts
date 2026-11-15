@@ -2,6 +2,7 @@ import { readdir, readFile, readlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { PublisherSeedUnavailable } from './profile-checkout.js';
+import {prepareReviewNotices,migrateReviewNotices,deliverReviewNotice} from './review-escalation.js';
 import { Journal } from './intake-journal.js';
 import { withoutEnvironmentAuthority } from './environment-runner.js';
 import { TaskAdmission } from './task-admission.js';
@@ -34,8 +35,11 @@ async function consume({journal,topic,state}: TopicRuntime, signal: AbortSignal)
   const validations=new BranchValidation(journal.db);
   validations.recover();
   const runtime={journal,topic,state};
+  prepareReviewNotices(journal.db);
   try {
+    await migrateReviewNotices(runtime);
     while (!signal.aborted) {
+      await deliverReviewNotice(runtime,signal);
       const decision=validations.tick(integrations,head=>validateReviewedHead(runtime,head,signal),signal);
       if(decision.batch) {await integrateReady(runtime,signal,integrations,decision.batch);continue;}
       if(decision.waiting) {await delay(250);continue;}
