@@ -6,22 +6,22 @@ const exec=promisify(execFile);
 const denied=['read_file','write_file','read_url','execute_url','command','unsandboxed','mcp'].map(action=>action+'(*)');
 const settings=JSON.stringify({agentMode:'plan',allowNonWorkspaceAccess:false,permissions:{deny:denied}});
 const endpoint='http://jam-antigravity-provider-proxy:3130';
-export function antigravityArgs(profile,name){
+export function antigravityArgs(profile,name,question='Give concise independent technical advice.'){
   if(!/^sha256:[a-f0-9]{64}$/.test(profile.image)||profile.volume!=='jam-antigravity-home')throw Error('Invalid isolated Antigravity profile');
   if(profile.model!==undefined&&!/^[a-zA-Z0-9][a-zA-Z0-9 ._()/-]{0,99}$/.test(profile.model))throw Error('Invalid Antigravity model');
   return ['run','--rm','--interactive','--pull=never','--name',name,'--network','jam-antigravity-private','--read-only',
     '--cap-drop','ALL','--security-opt','no-new-privileges','--pids-limit','150','--memory','1536m','--cpus','2','--user','1000:1000',
     '--mount','type=volume,src='+profile.volume+',dst=/home/jam','--tmpfs','/tmp:rw,nosuid,nodev,noexec,size=128m','--workdir','/work',
-    '--env','HOME=/home/jam','--env','HTTPS_PROXY='+endpoint,'--env','HTTP_PROXY='+endpoint,'--env','NO_PROXY=localhost,127.0.0.1',
+    '--env','JAM_REVIEW_QUESTION='+question,'--env','HOME=/home/jam','--env','HTTPS_PROXY='+endpoint,'--env','HTTP_PROXY='+endpoint,'--env','NO_PROXY=localhost,127.0.0.1',
     '--entrypoint','/bin/sh',profile.image,'-ec',
-    'packet=$(cat); exec /usr/local/bin/agy "$@" -p "Give concise independent technical advice using only this review packet.\n$packet"',
+    'packet=$(cat); exec /usr/local/bin/agy "$@" -p "${JAM_REVIEW_QUESTION} Use only this review packet.\n$packet"',
     'consult','--mode','plan','--settings',settings,'--disable-slash-commands','--print-timeout','3m',
     ...(profile.model?['--model',profile.model]:[]),'--output-format','text'];
 }
-export async function consultAntigravity({profile,packet,signal}){
+export async function consultAntigravity({profile,packet,signal,question}){
   if(typeof packet!=='string'||Buffer.byteLength(packet)>65536||!packet.trim())throw Error('Invalid Antigravity review packet');
   const name='jam-agy-review-'+randomUUID();
-  const args=antigravityArgs(profile,name);
+  const args=antigravityArgs(profile,name,question);
   signal?.throwIfAborted();
   try{
     const job=exec('docker',args,{signal,timeout:200000,maxBuffer:512*1024});
