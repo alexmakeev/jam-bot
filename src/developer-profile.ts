@@ -5,6 +5,8 @@ import {prepareReviewNotices,queueReviewNotice} from './review-escalation.js';
 import { Journal, type Topic } from './intake-journal.js';
 import { BranchValidation } from './branch-validation.js';
 import { IntegrationQueue, type IntegrationBatch, type ReadyBranch } from './integration-queue.js';
+import {setTimeout as delay} from 'node:timers/promises';
+import {deploymentVerified} from './deployment-progress.js';
 import {assembleCandidate} from './integration-assembly.js';
 import {implementationCommit} from './implementation-checkpoint.js';
 import {fingerprint,recordProgress,reconcileProgress} from './work-progress.js';
@@ -321,7 +323,18 @@ export async function integrateReady(runtime:TopicRuntime,signal:AbortSignal,que
     for(const e of entries)await reconcileProgress(state,topic,e.issue);
     const seed=await exchange(store,{action:'seed',repo:topic.repository},signal);
     let candidate=await readJson<{sha:string;base:string;expected:string}>(marker).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;});
-    if(candidate && seed.dev===candidate.sha)published=true;
+    const publishReceipt=join(dir,'published.json');
+    let publication=await readJson<{sha:string;awaitDeployment?:boolean}>(publishReceipt).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;});
+    if(publication && (!candidate || publication.sha!==candidate.sha))throw Error('Publication receipt differs from integration candidate');
+    if(candidate && (seed.dev===candidate.sha || (publication && seed.dev && await git(store,'merge-base',candidate.sha,seed.dev)===candidate.sha))){
+      published=true;
+      const pending=await readJson<Parameters<typeof exchange>[1]>(join(dir,'publication-intent.json')).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;});
+      if(!publication && pending){
+        if(pending.sha!==candidate.sha || pending.repo!==topic.repository)throw Error('Publication intent differs from the confirmed dev revision');
+        publication=await exchange(store,pending,signal);
+        await atomicJson(publishReceipt,publication);
+      }
+    }
     if(!published){
       const verifyApproval=async()=>{
         for(const entry of entries) {
@@ -366,13 +379,29 @@ export async function integrateReady(runtime:TopicRuntime,signal:AbortSignal,que
         throw Error('Integrator requested a fix: '+review.output.slice(0,500));
       }
       await verifyApproval();
-      await exchange(store,{action:'publish',...req},signal);
+      const publish={action:'publish' as const,...req};
+      await atomicJson(join(dir,'publication-intent.json'),publish);
+      publication=await exchange(store,publish,signal);
+      if(publication.sha!==candidate.sha)throw Error('Publisher returned a different dev revision');
+      await atomicJson(publishReceipt,publication);
       published=true;
     }
     for(const e of entries){
       const summary='Integrated '+e.sha.slice(0,12)+' into dev at '+candidate!.sha.slice(0,12)+'. The full configured test suite passed.';
       await atomicJson(join(directory(state,e.issue),'result.json'),{issue:e.issue,head:e.sha,dev:candidate!.sha,batch:batch.id,summary});
-      await completeCard(topic,e.issue,summary);
+    }
+    for(const e of entries){
+      let confirmed=(await readJson<{summary:string}>(join(directory(state,e.issue),'result.json'))).summary;
+      if(publication?.awaitDeployment){
+        recordProgress(state,e.issue,'await-site:'+candidate!.sha,'Integrator published tested candidate `'+candidate!.sha+'` to dev. Deployment acceptance is pending before closure.');
+        while(!await deploymentVerified(state,topic.repoId,candidate!.sha,e.issue)){
+          signal.throwIfAborted();
+          await delay(2000,undefined,{signal});
+        }
+        confirmed+=' The development host verified this deployed revision against the configured site acceptance checks.';
+        await atomicJson(join(directory(state,e.issue),'result.json'),{issue:e.issue,head:e.sha,dev:candidate!.sha,batch:batch.id,summary:confirmed});
+      }
+      await completeCard(topic,e.issue,confirmed);
       if(await realpath(e.project.tree).catch(()=>undefined)){
         if(await git(e.project.tree,'status','--porcelain'))throw Error('Worktree contains uncommitted changes');
         if(await git(e.project.tree,'rev-parse','HEAD')!==e.sha)throw Error('Worktree advanced after handoff');
@@ -387,6 +416,14 @@ export async function integrateReady(runtime:TopicRuntime,signal:AbortSignal,que
   }catch(err){
     const error=err instanceof Error ? err.message : 'Integration failed';
     await atomicJson(join(dir,'failure.json'),{error,published});
+    if(error.startsWith('Deployed acceptance failed for ')){
+      queue.finish(batch.id,'failed');
+      for(const entry of batch.entries){
+        recordProgress(state,entry.issue,'site-failed:'+batch.id,'Development-site acceptance failed for the published integration batch. The card remains open. The architect must diagnose the recorded host report before another release.');
+        await setCardProgress(topic,entry.issue,'blocked');
+      }
+      return;
+    }
     // Preserve active state on uncertain publication and recover against remote dev after restart.
     if(published || signal.aborted || error.includes('requires reconciliation'))throw err;
     queue.finish(batch.id,'failed');

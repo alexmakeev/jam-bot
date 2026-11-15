@@ -27,8 +27,17 @@ export function recordProgress(state:string,issue:number,identity:string,summary
 
 type Api=Awaited<ReturnType<typeof issueClient>>;
 type Comment={id:number;user:{id:number};body:string;issue_url:string};
-export async function publishProgress(state:string,topic:Topic,credentials=async():Promise<[Api,number]>=>Promise.all([
-  issueClient(topic.repository,topic.installation),publisherIdentity(topic.repository,topic.installation)])){
+const sessions=new Map<string,{expires:number;value:Promise<[Api,number]>}>();
+function session(topic:Topic):Promise<[Api,number]>{
+  const key=topic.installation+'/'+topic.repoId+'/'+topic.repository;
+  const cached=sessions.get(key);
+  if(cached && Date.now()<cached.expires)return cached.value;
+  const value:Promise<[Api,number]>=Promise.all([issueClient(topic.repository,topic.installation),publisherIdentity(topic.repository,topic.installation)]);
+  sessions.set(key,{expires:Date.now()+45*60_000,value});
+  void value.catch(()=>{if(sessions.get(key)?.value===value)sessions.delete(key);});
+  return value;
+}
+export async function publishProgress(state:string,topic:Topic,credentials=()=>session(topic)){
   const db=open(state);
   try{
     const event=db.prepare("SELECT * FROM events WHERE receipt IS NULL AND retryAt<=unixepoch() ORDER BY rowid LIMIT 1").get();
@@ -62,7 +71,8 @@ export async function publishProgress(state:string,topic:Topic,credentials=async
       if(!received || received.body!==body || received.user?.id!==bot || received.issue_url!==issueUrl || !Number.isSafeInteger(received.id))
         throw Error('Unconfirmed timeline entry');
       db.prepare("UPDATE events SET receipt=?,status='sent' WHERE issue=? AND key=?").run(received.id,issue,key);
-    } catch {
+    } catch(error) {
+      if((error as {status?:number}).status===401)sessions.delete(topic.installation+'/'+topic.repoId+'/'+topic.repository);
       db.prepare('UPDATE events SET retryAt=unixepoch()+60 WHERE issue=? AND key=?').run(issue,key);
     }
     return true;
@@ -82,8 +92,7 @@ export function pendingProgress(state:string) {
 }
 
 // A restored database may lag GitHub. A missing or edited authenticated handoff cannot authorize a replay.
-export async function reconcileProgress(state:string,topic:Topic,issue:number,credentials=async():Promise<[Api,number]>=>Promise.all([
-  issueClient(topic.repository,topic.installation),publisherIdentity(topic.repository,topic.installation)])){
+export async function reconcileProgress(state:string,topic:Topic,issue:number,credentials=()=>session(topic)){
   const db=open(state);
   try{
     const [api,bot]=await credentials();

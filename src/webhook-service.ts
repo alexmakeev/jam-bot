@@ -120,7 +120,7 @@ async function main() {
   let failure:unknown;
   const start=(route:TopicRuntime)=>{
     if(stop.signal.aborted)return;
-    const task=withoutEnvironmentAuthority(()=>Promise.all([consume(route,stop.signal),publishTimeline(route.state,route.topic,stop.signal)]).then(()=>{})).catch(err=>{failure=err;stop.abort();});
+    const task=withoutEnvironmentAuthority(()=>Promise.all([consume(route,stop.signal),publishTimeline(route.state,route.topic,stop.signal)]).then(()=>{})).catch(err=>{if(!stop.signal.aborted){failure=err;stop.abort();}});
     consumers.add(task);
     void task.finally(()=>consumers.delete(task));
   };

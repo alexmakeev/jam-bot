@@ -11,13 +11,22 @@ export async function backfillTimeline(runtime:Pick<TopicRuntime,'state'|'topic'
   if(card.number!==issue || card.type?.name!=='Task' || (await api('')).id!==topic.repoId)throw Error('Cannot establish the source work card');
   const dir=join(state,'assignments',String(issue));
   const files=await readdir(dir);
-  for(const [role,next] of [['designer','architecture'],['architect','specification handoff'],['assignment','development'],['developer','candidate validation'],['consultant','branch validation']] as const){
+  for(const [role,next] of [['designer','architecture'],['architect','specification handoff'],['assignment','development'],['developer','candidate validation']] as const){
     if(!files.includes(role+'.json'))continue;
     const saved=JSON.parse(await readFile(join(dir,role+'.json'),'utf8'));
     if(saved.backend!=='in-process'||!String(saved.nativeMember).startsWith(role+'-'+issue+'-')|| typeof saved.output!=='string')continue;
     const digest=fingerprint(saved.output);
     recordProgress(state,issue,'historical:'+saved.nativeMember+':'+digest,
       'Historical checkpoint reconstructed from a saved native receipt. '+role+' ('+saved.nativeMember+') delivered output `'+digest.slice(0,12)+'` for this card. The handoff was to '+next+'.');
+  }
+  const revisions=await readdir(join(dir,'reviews')).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;return [];});
+  for(const file of revisions.filter(name=>/^[0-9a-f]{40}\.json$/.test(name))){
+    const review=JSON.parse(await readFile(join(dir,'reviews',file),'utf8'));
+    if(file!==review.sha+'.json' || typeof review.feedback!=='string' || typeof review.passing!=='boolean')throw Error('Historical review identity mismatch');
+    const decision=/^PASS\b/i.test(review.feedback.trim())?'PASS':'a correction request';
+    recordProgress(state,issue,'historical:review:'+review.sha,
+      'Historical code review of `'+review.sha+'` returned '+decision+'. Candidate tests '+(review.passing?'passed':'failed')+'. Next: '+(decision==='PASS'&&review.passing?'branch validation.':'developer correction.'),
+      {purpose:'review',markdown:'# Code review\n\nCandidate `'+review.sha+'`\n\n'+review.feedback});
   }
   const phases=await readdir(join(dir,'consultations')).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;return [];});
   for(const phase of phases.filter(name=>/^(architecture|implementation|diagnosis)\.json$/.test(name))){
