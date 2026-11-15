@@ -48,10 +48,7 @@ export async function projectContext(tree:string, files:string[], references:str
   return parts.join('\n\n');
 }
 
-async function reviewedDesign(p:ProfileRun,scope:string,context:string) {
-  const draft=await stage(p,'architect','Return a compact English Markdown implementation specification, including acceptance tests.\n'+scope+'\n'+context);
-  const dir=directory(p.state,p.issue);
-  await atomicJson(join(dir,'architect-draft.json'),{output:draft});
+async function reviewedDesign(p:ProfileRun,scope:string,context:string,draft:string) {
   const run=await externalReview(p.state,p.topic,[{issue:p.issue,approval:p.approval}],'architecture',
     {requirements:scope,architectDraft:draft,projectEvidence:context},p.signal);
   const notes=adviserNotes(run);
@@ -141,7 +138,15 @@ export async function runDeveloperProfile(p:ProfileRun) {
             await git(project.tree,'rev-parse','HEAD')!==project.base ||
             await git(project.tree,'branch','--show-current')!==project.branch ||
             await git(project.tree,'status','--porcelain'))throw Error('Specification worktree changed during restart');
-        spec=(await readJson<{output:string}>(join(dir,'architect.json'))).output;
+        if((project as Project&{awaitingAdvice?:boolean}).awaitingAdvice) {
+          const input=await readJson<{requirements:string;architectDraft:string;projectEvidence:string}>(join(dir,'architecture-input.json'));
+          if(input.requirements!==scope || input.architectDraft!==(await readJson<{output:string}>(join(dir,'architect-draft.json'))).output)
+            throw Error('Architecture checkpoint differs from the approved task or original draft');
+          spec=await reviewedDesign(p,scope,input.projectEvidence,input.architectDraft);
+          const {awaitingAdvice:_,...completed}=project as Project&{awaitingAdvice?:boolean};
+          project=completed;
+          progress.checkpointSpecification(issue,JSON.stringify(project));
+        } else spec=(await readJson<{output:string}>(join(dir,'architect.json'))).output;
       } else {
         project=await checkout(state,topic.repository,issue,signal);
         let brief=await projectContext(project.tree,card.files,card.task);
@@ -149,7 +154,11 @@ export async function runDeveloperProfile(p:ProfileRun) {
           const design=await stage(p,'designer','Provide a concise visual design brief with verifiable criteria for desktop and mobile.\n'+scope+'\n'+brief);
           brief+='\n\nDesigner brief:\n'+design;
         }
-        spec=await reviewedDesign(p,scope,brief);
+        const draft=await stage(p,'architect','Return a compact English Markdown implementation specification, including acceptance tests.\n'+scope+'\n'+brief);
+        await atomicJson(join(dir,'architect-draft.json'),{output:draft});
+        await atomicJson(join(dir,'architecture-input.json'),{requirements:scope,architectDraft:draft,projectEvidence:brief});
+        progress.checkpointSpecification(issue,JSON.stringify({...project,awaitingAdvice:true}));
+        spec=await reviewedDesign(p,scope,brief,draft);
         progress.checkpointSpecification(issue,JSON.stringify(project));
       }
       await publishSpecification({topic,issue,markdown:spec,signal,authorize:p.authorize});

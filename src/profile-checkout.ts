@@ -14,7 +14,7 @@ export async function git(cwd:string,...args:string[]) {
 
 export type ReviewPhase='architecture'|'implementation'|'diagnosis';
 export interface Advice {name:string;provider:string;model?:string;status:'ok'|'unavailable'|'error';text:string}
-interface Request {action:'seed'|'test-head'|'test'|'publish'|'consult';phase?:ReviewPhase;packet?:string;repo:string;sha?:string;base?:string;expected?:string;cards?:{issue:number;approval:TaskApproval}[]}
+interface Request {action:'seed'|'test-head'|'test'|'publish'|'consult';phase?:ReviewPhase;packet?:string;only?:string[];repo:string;sha?:string;base?:string;expected?:string;cards?:{issue:number;approval:TaskApproval}[]}
 export interface BrokerResult {sha:string;advice?:Advice[];dev?:string;tests?:string[];log?:string;alreadyPublished?:boolean}
 export class PublisherSeedUnavailable extends Error {}
 

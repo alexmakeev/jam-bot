@@ -39,3 +39,19 @@ test('each original work card retains attributable adviser results and identical
     }
   }finally{await rm(dir,{recursive:true,force:true});}
 });
+test('retry only the failed independent adviser and retain both original and subsequent evidence',async()=>{
+  const dir=await mkdtemp(join(tmpdir(),'jam-consult-retry-'));
+  const requests:(string[]|undefined)[]=[];
+  const provider=(name:string,status:'ok'|'error')=>({name,provider:name,status,text:status==='ok'?'advice':'timeout'});
+  try{
+    const broker:typeof exchange=async(_dir,req)=>{
+      requests.push(req.only);
+      return {sha:'',advice:req.only?[provider('b','ok')]:[provider('a','ok'),provider('b','error')]};
+    };
+    const run=await externalReview(dir,topic,[{issue:2,approval}],'architecture',{draft:'ready'},new AbortController().signal,broker,async()=>{});
+    assert.deepEqual(requests,[undefined,['b']]);
+    assert.deepEqual(run.advice.map(a=>a.status),['ok','ok']);
+    const saved=JSON.parse(await readFile(join(dir,'consultations',run.inputDigest+'.json'),'utf8'));
+    assert.equal(saved.attempts[0][1].status,'error');assert.equal(saved.attempts[1][0].status,'ok');
+  }finally{await rm(dir,{recursive:true,force:true});}
+});
