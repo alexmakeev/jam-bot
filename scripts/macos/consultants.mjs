@@ -72,6 +72,9 @@ export async function consultAll(entries,phase,packet,adapters={codex:consultCod
     const signal=AbortSignal.timeout((profile.timeoutMinutes??30)*60_000);
     const startedAt=new Date().toISOString();
     if(progress)await progress({...identity,status:'running',startedAt,updatedAt:startedAt});
+    // A heartbeat confirms the host still owns the call. It is not a model token/progress estimate.
+    const heartbeat=progress && setInterval(()=>progress({...identity,status:'running',startedAt,updatedAt:new Date().toISOString()})
+      .catch(()=>{}),20000);
     let receipt;
     try{
       const result=await adapters[profile.provider]({profile,packet,signal,phase});
@@ -80,6 +83,7 @@ export async function consultAll(entries,phase,packet,adapters={codex:consultCod
     }catch(error){
       receipt={...identity,status:error.unavailable?'unavailable':'error',text:signal.aborted?'Configured consultation timeout reached':error.unavailable?'Provider subscription unavailable':'Provider could not complete this consultation'};
     }
+    if(heartbeat)clearInterval(heartbeat);
     const finishedAt=new Date().toISOString();
     if(progress)await progress({...identity,status:receipt.status,startedAt,finishedAt,updatedAt:finishedAt});
     return {...receipt,startedAt,finishedAt};
