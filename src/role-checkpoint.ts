@@ -10,7 +10,7 @@ type Receipt=Awaited<ReturnType<typeof runRoleStage>>;
 type Nonce=ReturnType<typeof randomUUID>;
 interface Checkpoint {session:string;input:string;challenge:Nonce;startedAt:number;attempt:number;receipt?:Receipt;failure?:string}
 
-export async function checkpointRole(job:RoleStage,next:string,run=runRoleStage,recover=observe){
+export async function checkpointRole(job:RoleStage,next:string,run=runRoleStage,recover=observe,emitResult=true){
   const digest=fingerprint(job.input);
   const id=job.role+'-'+digest;
   const path=join(job.state,'assignments',String(job.issue),'roles',id+'.json');
@@ -54,6 +54,7 @@ export async function checkpointRole(job:RoleStage,next:string,run=runRoleStage,
     }
   }
   if(!checkpoint.receipt)await atomicJson(path,{...checkpoint,receipt});
-  recordProgress(job.state,job.issue,id+'-received',job.role+' returned verified output `'+fingerprint(receipt.output).slice(0,12)+'` for input `'+version+'`. Next: '+next+'.');
+  await atomicJson(join(job.state,'assignments',String(job.issue),'handoffs',fingerprint(receipt.output)+'.json'),{identity:id+'-received',member:receipt.nativeMember,role:job.role});
+  if(emitResult)recordProgress(job.state,job.issue,id+'-received',job.role+' returned verified output `'+fingerprint(receipt.output).slice(0,12)+'` for input `'+version+'`. Next: '+next+'.',job.role==='designer'?{purpose:'design',markdown:receipt.output}:undefined);
   return receipt;
 }

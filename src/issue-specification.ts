@@ -3,6 +3,7 @@ import {join} from 'node:path';
 import {digestOf,specName} from './specification-upload.js';
 import type {issueClient} from './github-app.js';
 
+export type ArtifactKind='review'|'tests'|'consultation'|'plan'|'assignment'|'design';
 type Api=Awaited<ReturnType<typeof issueClient>>;
 type Item={number:number;id:number;html_url:string;name:string;type:string;body:string;creator:{id:number};updated_by_actor?:{id:number}|null};
 type Comment={id:number;issue_url:string;body:string;user:{id:number}};
@@ -19,7 +20,7 @@ async function find<T>(api:Api,path:string,predicate:(item:T)=>boolean) {
 // The intent is durable before POST. After a lost response use a matching remote record.
 // Never repeat an ambiguous create. Known GitHub validation/rate-limit rejections are retryable.
 export async function publishIssueSpec(state:string,repository:string,repoId:number,issue:number,markdown:string,
-  botId:number,api:Api,authorize:()=>Promise<void>,signal:AbortSignal,purpose?:'review'|'tests'|'consultation') {
+  botId:number,api:Api,authorize:()=>Promise<void>,signal:AbortSignal,purpose?:ArtifactKind,artifactOnly=false) {
   const digest=digestOf(markdown),name=purpose?purpose+'-'+issue+'-'+digest.slice(0,12)+'.md':specName(issue,digest),base='/issues/'+issue,card='https://github.com/'+repository+base;
   const repositoryPath='https://api.github.com/repos/'+repository+base;
   if((await api('')).id!==repoId)throw Error('Repository identity changed before specification publication');
@@ -70,11 +71,14 @@ export async function publishIssueSpec(state:string,repository:string,repoId:num
        (artifact.updated_by_actor && artifact.updated_by_actor.id!==botId) || artifact.html_url!==card+'/artifacts/'+artifact.number ||
        typeof artifact.body!=='string' || !Buffer.from(artifact.body).equals(Buffer.from(markdown)))
       throw Error('GitHub issue artifact failed its original byte, issue or publisher verification');
-    const body='['+name+']('+artifact.html_url+')';
-    const comment=await once<Comment>('comment',()=>find<Comment>(api,base+'/comments',c=>c.user?.id===botId && c.body===body),
+    const receipt={name,sha256:digest,artifact:artifact.number,url:artifact.html_url};
+    if(artifactOnly)return {...receipt,commentId:undefined};
+    const link='['+name+']('+artifact.html_url+')';
+    const body='The architect published the specification for this work card. '+link;
+    const comment=await once<Comment>('comment',()=>find<Comment>(api,base+'/comments',c=>c.user?.id===botId && (c.body===body || c.body===link)),
       ()=>api(base+'/comments','POST',{body}),c=>c.id,n=>api('/issues/comments/'+n));
-    if(comment.issue_url!==repositoryPath || comment.user?.id!==botId || comment.body!==body)
+    if(comment.issue_url!==repositoryPath || comment.user?.id!==botId || (comment.body!==body && comment.body!==link))
       throw Error('GitHub issue comment failed its issue or publisher verification');
-    return {name,sha256:digest,artifact:artifact.number,url:artifact.html_url,commentId:comment.id};
+    return {...receipt,commentId:comment.id};
   }finally{db.close();}
 }

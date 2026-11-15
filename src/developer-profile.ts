@@ -6,14 +6,14 @@ import { Journal, type Topic } from './intake-journal.js';
 import { BranchValidation } from './branch-validation.js';
 import { IntegrationQueue, type IntegrationBatch, type ReadyBranch } from './integration-queue.js';
 import {setTimeout as delay} from 'node:timers/promises';
-import {deploymentVerified} from './deployment-progress.js';
+import {deploymentVerified,verifiedDeploymentIdentity} from './deployment-progress.js';
 import {assembleCandidate} from './integration-assembly.js';
 import {implementationCommit} from './implementation-checkpoint.js';
 import {fingerprint,recordProgress,reconcileProgress} from './work-progress.js';
 import {checkpointRole} from './role-checkpoint.js';
 import { type StageRole } from './role-harness.js';
 import { checkout, exchange, git } from './profile-checkout.js';
-import { completeCard, publishSpecification, requestFileScope, setCardProgress } from './profile-publication.js';
+import { publishDirectResult,completeCard, publishSpecification, requestFileScope, setCardProgress } from './profile-publication.js';
 import type { ProfileCard } from './profile-card.js';
 import { validateTaskApproval, type TaskApproval } from './task-approval.js';
 import { atomicJson, readJson } from './storage.js';
@@ -29,10 +29,10 @@ interface Correction {sha:string;attempt:number;feedback:string;reviewOnly?:bool
 interface Ready {project:Project;sha:string;card:ProfileCard;spec:string;approval:TaskApproval}
 const directory=(state:string,issue:number)=>join(state,'assignments',String(issue));
 
-async function stage(p:ProfileRun,role:StageRole,input:string){
+async function stage(p:ProfileRun,role:StageRole,input:string,emitResult=true){
   await p.authorize();
   const next={designer:'architect draft',architect:'architecture handoff',assignment:'assigned execution or publication',developer:'candidate validation and review',consultant:'result publication',integrator:'publication decision'};
-  const receipt=await checkpointRole({role,state:p.state,cwd:p.topic.cwd,session:p.lead,issue:p.issue,input,signal:p.signal},next[role]);
+  const receipt=await checkpointRole({role,state:p.state,cwd:p.topic.cwd,session:p.lead,issue:p.issue,input,signal:p.signal},next[role],undefined,undefined,emitResult);
   await atomicJson(join(directory(p.state,p.issue),role+'.json'),receipt);
   return receipt.output;
 }
@@ -165,16 +165,16 @@ export async function runDeveloperProfile(p:ProfileRun) {
     if(card.kind!=='development'){
       await setCardProgress(topic,issue,'in progress');
       const output=await stage(p,card.kind==='consultation'?'consultant':'assignment',
-        'Answer this approved request directly in English. Return concise GitHub Markdown suitable for an issue comment. Preserve separate steps as a list.\n'+card.task);
+        'Answer this approved request directly in English. Return concise GitHub Markdown suitable for an issue comment. Preserve separate steps as a list.\n'+card.task,false);
       await atomicJson(join(dir,'result.json'),{kind:card.kind,output});
       await p.authorize();
-      await completeCard(topic,issue,output);
+      await completeCard(topic,issue,output,await publishDirectResult(topic,issue,card.kind,output));
       return;
     }
     if((await readJson(join(dir,'assignment.json')).catch(()=>undefined))===undefined)await setCardProgress(topic,issue,'planning');
     await p.authorize();
     if(!card.files.length) {
-      const plan=await stage(p,'architect','Return only a short numbered Markdown list of two to four steps for this exact task. JAM-Bot development routes are team workflows. Avoid assumptions about application routes or frameworks. Identify the file scope needed before edits.\n'+card.task);
+      const plan=await stage(p,'architect','Return only a short numbered Markdown list of two to four steps for this exact task. JAM-Bot development routes are team workflows. Avoid assumptions about application routes or frameworks. Identify the file scope needed before edits.\n'+card.task,false);
       await atomicJson(join(dir,'plan.json'),{kind:'development',plan,waiting:'file-scope'});
       await p.authorize();
       await requestFileScope(topic,issue,plan);
@@ -401,7 +401,8 @@ export async function integrateReady(runtime:TopicRuntime,signal:AbortSignal,que
         confirmed+=' The development host verified this deployed revision against the configured site acceptance checks.';
         await atomicJson(join(directory(state,e.issue),'result.json'),{issue:e.issue,head:e.sha,dev:candidate!.sha,batch:batch.id,summary:confirmed});
       }
-      await completeCard(topic,e.issue,confirmed);
+      const resultKey=publication?.awaitDeployment?await verifiedDeploymentIdentity(state,topic.repoId,candidate!.sha,e.issue):undefined;
+      await completeCard(topic,e.issue,confirmed,resultKey);
       if(await realpath(e.project.tree).catch(()=>undefined)){
         if(await git(e.project.tree,'status','--porcelain'))throw Error('Worktree contains uncommitted changes');
         if(await git(e.project.tree,'rev-parse','HEAD')!==e.sha)throw Error('Worktree advanced after handoff');

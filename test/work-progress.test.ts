@@ -100,3 +100,41 @@ test('source reconciliation ignores a forged marker and holds a missing or unrec
   comment.user.id=19;comment.body='another outcome'+comment.body.slice(comment.body.indexOf('\n'));
   await assert.rejects(reconcileProgress(dir,topic,6,creds),/disagree/);
 });
+
+test('one authenticated result gains multiple late Markdown files in-place and reconciles a lost edit reply',async t=>{
+  const dir=await mkdtemp(join(tmpdir(),'late-reports-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+  const db=new DatabaseSync(join(dir,'work-progress.sqlite'));t.after(()=>db.close());
+  const comments:{id:number;issue_url:string;user:{id:number};body:string}[]=[];
+  const artifacts:{id:number;number:number;name:string;body:string;type:string;creator:{id:number};html_url:string}[]=[];
+  let posts=0,patches=0,loseEdit=true;
+  const api=async(path:string,method='GET',raw?:object):Promise<any>=>{
+    if(path==='')return {id:topic.repoId};
+    if(path.startsWith('/issues/6/comments?'))return comments;
+    if(path.startsWith('/issues/6/artifacts?'))return artifacts;
+    if(/^\/issues\/6\/artifacts\/\d+$/.test(path))return {artifact:artifacts[Number(path.split('/').at(-1))-1]};
+    const data=raw as {body:string;name:string;type:string};
+    if(path==='/issues/6/artifacts' && method==='POST'){
+      const num=artifacts.length+1;
+      const row={...data,id:num,number:num,creator:{id:40},html_url:'https://github.com/owner/repo/issues/6/artifacts/'+num};artifacts.push(row);return row;
+    }
+    if(path==='/issues/6/comments' && method==='POST'){
+      posts++;const c={id:81,issue_url:'https://api.github.com/repos/owner/repo/issues/6',user:{id:40},body:data.body};comments.push(c);return c;
+    }
+    if(path==='/issues/comments/81' && method==='PATCH'){
+      patches++;comments[0]!.body=data.body;if(loseEdit){loseEdit=false;throw Error('lost PATCH response');}return comments[0];
+    }
+    throw Error('Unexpected '+method+' '+path);
+  };
+  const credentials=async():Promise<[typeof api,number]>=>[api,40];
+  recordProgress(dir,6,'review','The integrator passed this candidate.');
+  await publishProgress(dir,topic,credentials);
+  const reports=[{purpose:'review' as const,markdown:'# Findings\n\nPass.\n'},{purpose:'tests' as const,markdown:'# Validation\n\n24 tests passed.\n'}];
+  recordProgress(dir,6,'review','The integrator passed this candidate.',reports);
+  await publishProgress(dir,topic,credentials);db.exec('UPDATE events SET retryAt=0');
+  await publishProgress(dir,topic,credentials);
+  recordProgress(dir,6,'review','The integrator passed this candidate.',reports);
+  assert.equal(await publishProgress(dir,topic,credentials),false);
+  assert.equal(posts,1);assert.equal(patches,1);assert.equal(artifacts.length,2);
+  assert.equal(comments.length,1);assert.match(comments[0]!.body,/The integrator passed this candidate\. \[review-6-/);
+  assert.match(comments[0]!.body,/\[tests-6-/);assert.equal(db.prepare('select receipt from events').get()!.receipt,81);
+});

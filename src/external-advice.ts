@@ -2,7 +2,6 @@ import {recordProgress} from './work-progress.js';
 import {createHash} from 'node:crypto';
 import {join} from 'node:path';
 import {z} from 'zod';
-import {issueClient,publisherIdentity} from './github-app.js';
 import type {Topic} from './intake-journal.js';
 import {exchange,type ReviewPhase,type ConsultationProgress} from './profile-checkout.js';
 import {atomicJson,readJson} from './storage.js';
@@ -45,7 +44,7 @@ export function adviserNotes(run:ExternalReview) {
 }
 
 export async function externalReview(state:string,topic:Topic,cards:Card[],phase:ReviewPhase,fields:Fields,signal:AbortSignal,
-  decide:Decide,call=exchange,report=reportAdvice):Promise<ExternalReview>{
+  decide:Decide,call=exchange,report?:(topic:Topic,issue:number,record:Evidence)=>Promise<void>):Promise<ExternalReview>{
   const packet=reviewPacket(fields);
   const ids=cards.map(c=>c.issue);
   const inputDigest=sha(JSON.stringify([topic.repoId,phase,cards,packet]));
@@ -110,29 +109,16 @@ export async function externalReview(state:string,topic:Topic,cards:Card[],phase
   for(const issue of ids){
     await atomicJson(join(state,'assignments',String(issue),'consultations',phase+'.json'),record);
     if(advice.length){
-      await report(topic,issue,record);
-      recordProgress(state,issue,'advice-report:'+inputDigest,'The '+phase+' advice for '+version+' is recorded. The '+owner+' owns the next decision.',
-        {purpose:'consultation',markdown:'# '+phase+' advisory report\n\nInput `'+inputDigest+'`\n\n'+advice.map(a=>'## '+a.name+' ('+a.status+')\n\n'+a.text).join('\n\n')});
+      await report?.(topic,issue,record);
+      for(const [attempt,replies] of (record.attempts??[advice]).entries()){
+        for(const result of replies){
+          const id=phase+':'+inputDigest+':'+(attempt?'retry-':'')+result.name+result.status;
+          recordProgress(state,issue,id,result.name+' returned '+result.status+' for '+phase+' input '+version+'. The '+owner+' owns the next decision.',
+            {purpose:'consultation',markdown:'# '+result.name+' — '+phase+' review\n\nInput `'+inputDigest+'`\n\nOutcome: '+result.status+'\n\n'+result.text});
+        }
+      }
     }
   }
   if(decision!=='CONTINUE' && advice.some(a=>a.status==='error'))throw Error('Configured consultant failed after retry; inspect retained consultation evidence');
   return {advice,inputDigest};
-}
-async function reportAdvice(topic:Topic,issue:number,record:Evidence){
-  const [api,publisher]=await Promise.all([issueClient(topic.repository,topic.installation),publisherIdentity(topic.repository,topic.installation)]);
-  const path='/issues/'+issue+'/comments';
-  const marker='<!-- jam-bot:consultation:'+record.phase+' -->';
-  const described=record.advice.map(v=>v.name+' ('+[v.provider,v.model].filter(Boolean).join(', ')+'): '+(v.status==='ok'?'review received':v.status));
-  const retry=record.attempts && record.attempts.length>1?' A failed call was retried.':'';
-  const body='External '+record.phase+' review — '+described.join(', ')+'.'+retry+' Evidence `'+record.inputDigest.slice(0,12)+'`.\n\n'+marker;
-  for(let page=1;;page++){
-    const rows=await api(path+'?per_page=100&page='+page) as {id:number;user:{id:number};body:string}[];
-    const found=rows.find(item=>item.user.id===publisher && item.body.endsWith(marker));
-    if(found){
-      if(found.body!==body)await api('/issues/comments/'+found.id,'PATCH',{body});
-      return;
-    }
-    if(rows.length<100)break;
-  }
-  await api(path,'POST',{body});
 }

@@ -4,7 +4,8 @@ import { digestOf, specName } from './specification-upload.js';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import {publishIssueSpec} from './issue-specification.js';
-import {atomicJson} from './storage.js';
+import {recordProgress,confirmedProgress,fingerprint,storedResultComment,reconcileProgress} from './work-progress.js';
+import {atomicJson,readJson} from './storage.js';
 import { GitHubRequestError, issueClient, publisherIdentity } from './github-app.js';
 import type { Topic } from './intake-journal.js';
 
@@ -65,14 +66,18 @@ async function authenticatedComment(topic:Topic,issue:number,body:string,lookupO
   }finally{db.close();}
 }
 export async function requestFileScope(topic:Topic,issue:number,plan:string) {
-  await authenticatedComment(topic,issue,issueComment('needs-files',plan));
+  issueComment('needs-files',plan);
+  const state=dirname(topic.cwd),key='scope-plan:'+fingerprint(plan);
+  recordProgress(state,issue,key,'The architect completed the implementation plan. Create a linked Task listing the approved file paths before development.',{purpose:'plan',markdown:plan});
+  await confirmedProgress(state,topic,issue,key);
   await setCardProgress(topic,issue,'blocked');
 }
 
-export async function completeCard(topic: Topic, issue: number, summary: string) {
+export async function completeCard(topic: Topic, issue: number, summary: string, existingResult?:string) {
   const api = await issueClient(topic.repository,topic.installation);
   const path = '/issues/'+issue;
-  await authenticatedComment(topic,issue,issueComment('completion',summary));
+  if(existingResult)await confirmedProgress(dirname(topic.cwd),topic,issue,existingResult);
+  else await authenticatedComment(topic,issue,issueComment('completion',summary));
   if((await api(path)).state!=='closed')
   await api(path,'PATCH',{state:'closed',state_reason:'completed'});
   const labels: {name:string}[] = await api(path+'/labels?per_page=100');
@@ -92,13 +97,29 @@ export async function publishSpecification({topic,issue,markdown,signal,authoriz
   await mkdir(directory,{recursive:true,mode:0o700});
   await writeFile(join(directory,name),markdown,{mode:0o600});
   const [api,bot]=await Promise.all([issueClient(topic.repository,topic.installation),publisherIdentity(topic.repository,topic.installation)]);
-  const receipt=await publishIssueSpec(state,topic.repository,topic.repoId,issue,markdown,bot,api,authorize,signal);
+  const artifact=await publishIssueSpec(state,topic.repository,topic.repoId,issue,markdown,bot,api,authorize,signal,undefined,true);
+  const handoff=await readJson<{identity:string;role:string}>(join(state,'assignments',String(issue),'handoffs',fingerprint(markdown)+'.json')).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;});
+  const key=handoff?.role==='architect'?handoff.identity:'specification:'+artifact.sha256;
+  recordProgress(state,issue,key,'The '+(markdown.startsWith('# Correction for issue ')?'integrator delivered correction guidance':'architect delivered the specification')+' for this work card.',undefined,[artifact]);
+  const commentId=await confirmedProgress(state,topic,issue,key);
+  const receipt={...artifact,commentId};
   await atomicJson(join(directory,name+'.artifact-receipt.json'),receipt);
+}
+
+export async function publishDirectResult(topic:Topic,issue:number,kind:'assignment'|'consultation',output:string){
+  issueComment('completion',output);
+  const state=dirname(topic.cwd),key='direct-result:'+fingerprint(output);
+  const short=output.length<=350 && !output.includes('\n');
+  recordProgress(state,issue,key,short?output:'The '+kind+' is complete. The attached result contains the full response.',
+    short?undefined:{purpose:kind,markdown:output});
+  return key;
 }
 
 export async function hasClosedResult(topic:Topic,issue:number,summary:string){
   const api=await issueClient(topic.repository,topic.installation);
   const card=await api('/issues/'+issue);
-  return card.number===issue && card.state==='closed' && card.state_reason==='completed' &&
-    await authenticatedComment(topic,issue,issueComment('completion',summary),true);
+  if(card.number!==issue || card.state!=='closed' || card.state_reason!=='completed')return false;
+  const state=dirname(topic.cwd),key='direct-result:'+fingerprint(summary);
+  if(storedResultComment(state,issue,key)){await reconcileProgress(state,topic,issue);return true;}
+  return authenticatedComment(topic,issue,issueComment('completion',summary),true);
 }
