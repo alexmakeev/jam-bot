@@ -64,3 +64,25 @@ test('Sandbox publication uses its own repo identity, opt-in and development que
   await queueSandbox({autoDeploySum:true},req,dir);
   assert.equal(JSON.parse(await readFile(join(dir,req.sha+'.json'),'utf8')).base,req.expected);
 });
+
+test('deployed browser assertion failure restores the previous healthy site and emits a failed closure gate',async t=>{
+  const {reconcileCalculator}=await import('../scripts/macos/calculator-deployment.mjs');
+  const queue=await mkdtemp(join(tmpdir(),'jam-live-gate-'));t.after(()=>rm(queue,{force:true,recursive:true}));
+  const old='a'.repeat(40),revision='b'.repeat(40),oldImage='sha256:'+'1'.repeat(64),image='sha256:'+'2'.repeat(64);
+  const project={autoDeployCalculator:true,calculatorSpecCards:{staticSvg:24}};
+  await queueCalculator(project,{repo:calculatorRepo,action:'publish',sha:revision,expected:old,cards:[{issue:24}]},queue);
+  const endpoint={address:'127.0.0.1',port:19853};
+  let current=old;const calls=[];
+  const opts={queue,exchange:join(queue,'exchange'),registry:join(queue,'registry.json'),remoteHead:async()=>revision,repositoryId:async()=>1457276291,build:async()=>image,
+    managementCall:async(_,op,target)=>{
+      if(op==='get')return {tier:'development',settings:{secretRefs:[],endpoint}};
+      if(op==='deploy'){current=target;calls.push(target);}
+      return {healthy:true,running:true,image:current===old?oldImage:image,revision:current,endpoint};
+    },accept:async()=>{throw Error('AssertionError: clipped figure');}};
+  await reconcileCalculator(project,opts);await reconcileCalculator(project,opts);
+  assert.deepEqual(calls,[revision,old]);
+  const result=JSON.parse(await readFile(join(queue,revision+'.json'),'utf8'));
+  assert.equal(result.done,'failed-acceptance');
+  const notice=JSON.parse(await readFile(join(opts.exchange,'deployments','1457276291',revision+'.json'),'utf8'));
+  assert.equal(notice.acceptance,'failed');assert.deepEqual(notice.issues,[24]);
+});

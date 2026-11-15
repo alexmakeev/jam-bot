@@ -17,7 +17,7 @@ export type ReviewPhase='architecture'|'implementation'|'diagnosis';
 export interface ConsultationProgress {phase:ReviewPhase;updatedAt:string;providers:{name:string;provider:string;status:string;startedAt:string;updatedAt:string;finishedAt?:string}[]}
 export interface Advice {name:string;provider:string;model?:string;startedAt?:string;finishedAt?:string;status:'ok'|'unavailable'|'error';text:string}
 interface Request {scope?:string;action:'seed'|'test-head'|'test'|'publish'|'consult';phase?:ReviewPhase;packet?:string;only?:string[];repo:string;sha?:string;base?:string;expected?:string;cards?:{issue:number;approval:TaskApproval}[]}
-export interface BrokerResult {sha:string;advice?:Advice[];dev?:string;tests?:string[];log?:string;alreadyPublished?:boolean}
+export interface BrokerResult {sha:string;advice?:Advice[];dev?:string;tests?:string[];log?:string;alreadyPublished?:boolean;awaitDeployment?:boolean}
 export class PublisherSeedUnavailable extends Error {}
 
 interface Reply {uncertain?:boolean;ok:boolean;error?:string;value?:BrokerResult}

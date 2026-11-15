@@ -1,4 +1,5 @@
 // This host-only recipe belongs to one development site. Issue content cannot select a destination or build command.
+import {verifyDeployedSvg} from './profile-recipes.mjs';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {readFile,writeFile,mkdir,mkdtemp,readdir,rename,rm} from 'node:fs/promises';
@@ -30,7 +31,7 @@ function developmentSite({repo,repoId,environment,port,moduleName,enabled}){
     try{await json(file);return;}catch(e){if(e.code!=='ENOENT')throw e;}
     const issues=req.cards?.map(card=>card.issue)??[];
     if(issues.some(id=>!Number.isSafeInteger(id)||id<1)||issues.length>15)throw Error('Invalid deployment work cards');
-    await atomic(file,{revision:req.sha,base:req.expected,issues,attempts:0,queuedAt:Date.now()});
+    await atomic(file,{revision:req.sha,base:req.expected,issues,acceptSvg:repo===calculatorRepo && issues.includes(project.calculatorSpecCards?.staticSvg),attempts:0,queuedAt:Date.now()});
   }
   async function command(file,args,opts={}){
     return (await exec(file,args,{timeout:90000,maxBuffer:4*1024*1024,...opts})).stdout;
@@ -75,7 +76,7 @@ function developmentSite({repo,repoId,environment,port,moduleName,enabled}){
     } finally {await rm(temp,{recursive:true,force:true});}
   }
   async function reconcileCalculator(project,{
-    queue=stateDir,exchange,registry=join(management,environment+'-dev-releases.json'),remoteHead=head,managementCall=manage,build=buildCalculator,
+    queue=stateDir,exchange,registry=join(management,environment+'-dev-releases.json'),remoteHead=head,managementCall=manage,build=buildCalculator,accept=verifyDeployedSvg,
     repositoryId=async()=>JSON.parse(await command('gh',['api','repos/'+repo])).id
   }={}){
     if(project?.[enabled]!==true)return;
@@ -83,17 +84,25 @@ function developmentSite({repo,repoId,environment,port,moduleName,enabled}){
     const orders=(await readdir(queue)).filter(name=>/^[0-9a-f]{40}\.json$/.test(name));
     for(const name of orders){
       const file=join(queue,name),job=await json(file);
-      if(job.done==='deployed' && job.issues?.length && exchange && !job.noticeDelivered){
+      if(['deployed','failed-acceptance'].includes(job.done) && job.issues?.length && exchange && !job.noticeDelivered){
         const delivery=join(exchange,'deployments',String(repoId));
         await mkdir(delivery,{recursive:true,mode:0o700});
         await atomic(join(delivery,name),{repoId,repository:repo,environment,port,issues:job.issues,
-          revision:job.revision,image:job.image,verifiedAt:job.verifiedAt});
+          revision:job.revision,image:job.image,verifiedAt:job.verifiedAt,acceptance:job.acceptance});
         job.noticeDelivered=true;await atomic(file,job);
       }
       if(job.done||job.after>Date.now())continue;
       try{
         if(job.revision+'.json'!==name||!commit.test(job.base))throw Error('Invalid calculator queue record');
         if(await repositoryId()!==repoId)throw Error('Calculator repository identity changed');
+        if(job.acceptance==='failed'){
+          if(job.previous){
+            let current=await managementCall(project,'status');
+            if(!verifiedSite(current,job.previous.revision,job.previous.image))current=await managementCall(project,'deploy',job.previous.revision);
+            if(!verifiedSite(current,job.previous.revision,job.previous.image))throw Error('Previous site recovery pending');
+          }
+          job.done='failed-acceptance';await atomic(file,job);continue;
+        }
         const current=await remoteHead();
         if(current!==job.revision){
           if(current===job.base&&Date.now()-job.queuedAt<24*3600*1000){job.after=Date.now()+30000;}
@@ -111,9 +120,26 @@ function developmentSite({repo,repoId,environment,port,moduleName,enabled}){
             let releases={};try{releases=await json(registry);}catch(e){if(e.code!=='ENOENT')throw e;}
             if(releases[job.revision]&&releases[job.revision]!==job.image)throw Error('Conflicting calculator image for published revision');
             releases[job.revision]=job.image;await atomic(registry,releases);
+            if(job.acceptSvg && !job.previous && status.healthy && status.running && status.revision!==job.revision && commit.test(status.revision) && dockerId.test(status.image)){
+              job.previous={revision:status.revision,image:status.image};await atomic(file,job);
+            }
             if(!verifiedSite(status,job.revision,job.image))status=await managementCall(project,'deploy',job.revision);
             if(!verifiedSite(status,job.revision,job.image))throw Error('Calculator deployment not healthy at requested revision');
-            job.done='deployed';job.verifiedAt=Date.now();
+            if(job.acceptSvg){
+              try{
+                const evidence=await accept(project,job,port);
+                job.acceptance='passed';job.evidence=evidence;
+              }catch(error){
+                if(!String(error.message).includes('AssertionError') && !String(error.message).includes('Live HTML does not match'))throw error;
+                job.acceptance='failed';job.verifiedAt=Date.now();job.failure=String(error.message).slice(-3000);
+                await atomic(file,job);
+              }
+            }
+            if(job.acceptance==='failed'){
+              if(job.previous){const restored=await managementCall(project,'deploy',job.previous.revision);
+                if(!verifiedSite(restored,job.previous.revision,job.previous.image))throw Error('Previous site recovery pending');}
+              job.done='failed-acceptance';
+            }else{job.done='deployed';job.verifiedAt=Date.now();}
           }
         }
       }catch(e){

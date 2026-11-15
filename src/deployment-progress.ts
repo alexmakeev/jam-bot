@@ -1,11 +1,11 @@
 import {readdir,rm} from 'node:fs/promises';
 import {join} from 'node:path';
-import {readJson} from './storage.js';
+import {atomicJson,readJson} from './storage.js';
 import {recordProgress} from './work-progress.js';
 import type {Topic} from './intake-journal.js';
 
 interface VerifiedSite {
-  repoId:number; repository:string; environment:string; revision:string; image:string; port:number; verifiedAt:number; issues:number[];
+  repoId:number; repository:string; environment:string; revision:string; image:string; port:number; verifiedAt:number; issues:number[]; acceptance?:'passed'|'failed';
 }
 
 // The host writes after checking the actual running image, endpoint and revision.
@@ -26,10 +26,22 @@ export async function collectDeploymentProgress(state:string,topic:Topic,exchang
       const result=await readJson<{issue:number;dev:string}>(join(state,'assignments',String(issue),'result.json'))
         .catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;});
       if(!result || result.issue!==issue || result.dev!==site.revision){complete=false;continue;}
+      if(site.acceptance==='failed'){
+        recordProgress(state,issue,'deployment-failed:'+site.revision,'The development host found a deployed acceptance failure for tested commit `'+site.revision+'`. The integrator must review the host report before closure.');
+        continue;
+      }
       recordProgress(state,issue,'deployment:'+site.environment+':'+site.revision,
         'The development host verified tested commit `'+site.revision+'` running healthy in `'+site.environment+'` at '+
         '`http://127.0.0.1:'+site.port+'/` on '+new Date(site.verifiedAt).toISOString()+'. Image `'+site.image+'`. Deployment complete.');
     }
-    if(complete)await rm(path,{force:true});
+    if(complete){await atomicJson(join(state,'deployments',file),site);await rm(path,{force:true});}
   }
+}
+
+export async function deploymentVerified(state:string,repoId:number,sha:string,issue:number):Promise<boolean>{
+  if(!/^[a-f0-9]{40}$/.test(sha))throw Error('Invalid deployment revision');
+  const site=await readJson<VerifiedSite>(join(state,'deployments',sha+'.json')).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;});
+  if(!site || site.revision!==sha || site.repoId!==repoId || !site.issues.includes(issue))return false;
+  if(site.acceptance==='failed')throw Error('Deployed acceptance failed for '+sha+'; inspect the host report');
+  return site.acceptance==='passed';
 }

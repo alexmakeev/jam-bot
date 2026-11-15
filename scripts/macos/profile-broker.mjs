@@ -36,6 +36,12 @@ async function authorizedFiles(req){
   return allowed;
 }
 
+function requiresLiveAcceptance(req){
+  const project=projects[req.repo];
+  return req.repo===calculatorRepo && project?.autoDeployCalculator===true &&
+    Array.isArray(req.cards) && req.cards.some(card=>card.issue===project.calculatorSpecCards?.staticSvg);
+}
+
 async function execute(dir) {
   await regular(join(dir,'request.json'),1024*1024);
   const req=JSON.parse(await readFile(join(dir,'request.json'),'utf8'));
@@ -72,7 +78,7 @@ async function execute(dir) {
     }
     if (!['test-head','test','publish'].includes(req.action) || !sha(req.sha) || !sha(req.base) || !(req.expected===''||sha(req.expected))) throw Error('Invalid candidate');
     const files=await authorizedFiles(req);
-    if(req.action==='publish' && dev===req.sha) return {sha:dev,alreadyPublished:true};
+    if(req.action==='publish' && dev===req.sha) return {sha:dev,alreadyPublished:true,awaitDeployment:requiresLiveAcceptance(req)};
     if(req.action!=='test-head' && dev!==req.expected) throw Error('Remote dev changed during validation');
     const baseRef=dev?'dev':(await gh('repos/'+req.repo)).default_branch;
     await git(temp,['fetch','--no-tags','origin','refs/heads/'+baseRef+':refs/heads/base']);
@@ -90,7 +96,7 @@ async function execute(dir) {
     const tree=join(temp,'code');await git(temp,['worktree','add','--detach',tree,req.sha]);
     const filesForCandidate=(await git(tree,['ls-files','-z'])).split('\0').filter(Boolean);
     const {tests,log}=await testCandidate({project:projects[req.repo],tree,files:filesForCandidate,
-      sha:req.sha,name:'jam-check-'+basename(dir),approvedIssues:req.cards.map(card=>card.issue)});
+      sha:req.sha,base:req.base,name:'jam-check-'+basename(dir),approvedIssues:req.cards.map(card=>card.issue)});
     if(req.action==='publish') {
       await authorizedFiles(req);
       await queueCalculator(projects[req.repo],req);
@@ -98,7 +104,7 @@ async function execute(dir) {
       await git(temp,['push','--force-with-lease=refs/heads/dev:'+req.expected,'origin',req.sha+':refs/heads/dev']);
       if(!(await git(temp,['ls-remote','origin','refs/heads/dev'])).startsWith(req.sha+'\t'))throw Error('Publication requires reconciliation');
     }
-    return {sha:req.sha,tests,log:log.slice(-8000)};
+    return {sha:req.sha,tests,log:log.slice(-8000),awaitDeployment:req.action==='publish' && requiresLiveAcceptance(req)};
   } finally {await rm(temp,{recursive:true,force:true});}
 }
 async function reply(dir) {
@@ -126,7 +132,7 @@ async function recoverClaim(dir,id){
   if(req.action==='publish' && Object.hasOwn(projects,req.repo) && sha(req.sha)){
     const current=await gh('repos/'+req.repo+'/git/ref/heads/dev');
     if(current.object?.sha===req.sha){
-      await writeFile(staged,JSON.stringify({ok:true,value:{sha:req.sha,alreadyPublished:true}}),{mode:0o600,flag:'wx'});
+      await writeFile(staged,JSON.stringify({ok:true,value:{sha:req.sha,alreadyPublished:true,awaitDeployment:requiresLiveAcceptance(req)}}),{mode:0o600,flag:'wx'});
       await rename(staged,join(dir,'answer.json'));return;
     }
   }

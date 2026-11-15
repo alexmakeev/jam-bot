@@ -8,7 +8,7 @@ import {tmpdir} from 'node:os';
 import {setTimeout as delay} from 'node:timers/promises';
 import {DatabaseSync} from 'node:sqlite';
 import {exchange} from '../src/profile-checkout.js';
-import {collectDeploymentProgress} from '../src/deployment-progress.js';
+import {collectDeploymentProgress,deploymentVerified} from '../src/deployment-progress.js';
 
 test('a killed receiver reattaches to the claimed request and reuses the confirmed response',async t=>{
   const state=await mkdtemp(join(tmpdir(),'jam-exchange-')),root=join(state,'exchange'),repo=join(state,'project.git');
@@ -43,7 +43,7 @@ test('only a matching integrated task may announce a healthy host deployment onc
   const root=join(state,'exchange'),dir=join(root,'deployments','15'),revision='a'.repeat(40);
   const topic={repository:'owner/test',repoId:15,installation:5,cwd:state};
   const file=join(dir,revision+'.json');
-  const site={issues:[3],repoId:15,repository:topic.repository,revision,environment:'sum',image:'sha256:'+'b'.repeat(64),port:19854,verifiedAt:Date.now()};
+  const site={acceptance:'passed',issues:[3],repoId:15,repository:topic.repository,revision,environment:'sum',image:'sha256:'+'b'.repeat(64),port:19854,verifiedAt:Date.now()};
   await mkdir(dir,{recursive:true});
   await writeFile(file,JSON.stringify(site));
   await collectDeploymentProgress(state,topic,root);
@@ -56,6 +56,8 @@ test('only a matching integrated task may announce a healthy host deployment onc
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM events').get()!.count,1);
   assert.ok(String(db.prepare('SELECT body FROM events').get()!.body).includes(revision));
   db.close();
+  assert.ok(await deploymentVerified(state,15,revision,3));
+  assert.equal(await deploymentVerified(state,15,revision,99),false);
   assert.deepEqual(await readdir(dir),[]);
 });
 
