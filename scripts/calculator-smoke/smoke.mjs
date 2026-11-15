@@ -2,10 +2,11 @@
 import assert from 'node:assert/strict';
 import {chromium} from 'playwright-core';
 import ts from 'typescript';
+import {checkDragonSpec} from './dragon-acceptance.mjs';
 
 let payload='';
 for await (const chunk of process.stdin) payload+=chunk;
-const {html,source,sha}=JSON.parse(payload);
+const {html,source,sha,checks=[]}=JSON.parse(payload);
 const module=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.ES2022,target:ts.ScriptTarget.ES2022}}).outputText;
 const base='http://calculator.test/';
 const browser=await chromium.launch({args:['--disable-dev-shm-usage']});
@@ -29,6 +30,18 @@ try {
       await input.fill(value);
       await input.press('Enter');
       assert.match((await output.innerText()).trim(),expected,'Keyboard result for '+value);
+    }
+    if(checks.includes('reset')){
+      const reset=form.getByRole('button',{name:/^Сбросить$/i});
+      assert.equal(await reset.count(),1,'Expected one Russian reset button');
+      for(const value of ['6','-1']){
+        await input.fill(value);await input.press('Enter');
+        await reset.focus();await reset.press('Space');
+        assert.equal(await input.inputValue(),'5','Reset restores initial input');
+        assert.match((await output.innerText()).trim(),/\b120$/,'Reset restores initial product');
+        assert.ok(await input.evaluate(el=>document.activeElement===el),'Reset restores keyboard focus');
+      }
+      console.log('PASS reset at '+width+': valid and invalid results restored by keyboard, focus returned to input');
     }
     const metrics=await page.evaluate(()=>{
       const form=document.querySelector('form').getBoundingClientRect();
@@ -69,5 +82,6 @@ try {
     console.log('PASS '+width+'x'+height+' scrollWidth='+metrics.scroll+' colored dragon samples='+metrics.sides.map(r=>r.pixels).join('/')+'; controls reachable; keyboard factorial and invalid input passed');
     await context.close();
   }
+  if(checks.includes('dragons'))await checkDragonSpec(browser,base,html,module);
   console.log('Candidate Chromium preview passed for '+sha+' (production deployment checked separately).');
 }finally{await browser.close();}

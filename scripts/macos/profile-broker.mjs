@@ -90,7 +90,7 @@ async function execute(dir) {
     const tree=join(temp,'code');await git(temp,['worktree','add','--detach',tree,req.sha]);
     const filesForCandidate=(await git(tree,['ls-files','-z'])).split('\0').filter(Boolean);
     const {tests,log}=await testCandidate({project:projects[req.repo],tree,files:filesForCandidate,
-      sha:req.sha,name:'jam-check-'+basename(dir)});
+      sha:req.sha,name:'jam-check-'+basename(dir),approvedIssues:req.cards.map(card=>card.issue)});
     if(req.action==='publish') {
       await authorizedFiles(req);
       await queueCalculator(projects[req.repo],req);

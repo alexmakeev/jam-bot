@@ -28,3 +28,11 @@ test('calculator browser validation accepts only a pinned image on the selected 
   assert.throws(()=>projectRecipes(config('node-strip',image)),/Invalid calculator browser/);
   assert.equal(projectRecipes(config('typescript-build',image))['o/a'].calculatorBrowserImage,image);
 });
+
+test('calculator acceptance selects only registered checks with a positive issue number',()=>{
+  const project={image:'base',recipe:'typescript-build',calculatorBrowserImage:'sha256:'+'a'.repeat(64)};
+  const load=calculatorSpecCards=>projectRecipes({projects:{'o/a':{...project,calculatorSpecCards}}});
+  assert.throws(()=>load({dragons:0}),/Invalid calculator acceptance/);
+  assert.throws(()=>load({command:21}),/Invalid calculator acceptance/);
+  assert.deepEqual(load({reset:22})['o/a'].calculatorSpecCards,{reset:22});
+});

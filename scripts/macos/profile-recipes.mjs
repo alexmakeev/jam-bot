@@ -9,6 +9,7 @@ const safeRepo=/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
 export function projectRecipes(config) {
   const projects=config.projects ?? Object.fromEntries(config.repositories.map(repo=>[repo,{image:config.image,recipe:'node-strip'}]));
   for (const [repo,project] of Object.entries(projects)) {
+    if (project?.calculatorSpecCards && (!project.calculatorBrowserImage || Object.entries(project.calculatorSpecCards).some(([check,issue])=>!['dragons','reset'].includes(check) || !Number.isSafeInteger(issue) || issue<1))) throw Error('Invalid calculator acceptance mapping');
     if (project?.calculatorBrowserImage && (project.recipe!=='typescript-build' || !/^sha256:[a-f0-9]{64}$/.test(project.calculatorBrowserImage))) throw Error('Invalid calculator browser image');
     if (!safeRepo.test(repo) || !project || !recipes.has(project.recipe) || typeof project.image!=='string' || !project.image || project.image.startsWith('-')) {
       throw Error('Invalid trusted project recipe');
@@ -28,7 +29,7 @@ rm -rf -- dist
 exec node --experimental-strip-types --test --test-concurrency=1 "$@"
 `;
 
-async function calculatorPreview({tree,sha,image,name}) {
+async function calculatorPreview({tree,sha,image,name,checks}) {
   const options={cwd:tree,maxBuffer:1024*1024};
   const blob=async path=>{
     const {stdout:entry}=await run('git',['ls-tree',sha,'--',path],options);
@@ -48,13 +49,13 @@ async function calculatorPreview({tree,sha,image,name}) {
         else resolve({stdout});
       });
       child.stdin.on('error',()=>{}); // A container startup failure is reported by execFile.
-      child.stdin.end(JSON.stringify({sha,html,source}));
+      child.stdin.end(JSON.stringify({sha,html,source,checks}));
     });
     return stdout;
   } finally {await run('docker',['rm','-f',container]).catch(()=>{});}
 }
 
-export async function testCandidate({project,tree,files,sha,name}) {
+export async function testCandidate({project,tree,files,sha,name,approvedIssues=[]}) {
   const build=project.recipe==='typescript-build';
   if (!recipes.has(project.recipe)) throw Error('Unknown validation recipe');
   if (build && !files.includes('tsconfig.json')) throw Error('Missing tsconfig.json for typescript-build recipe');
@@ -73,7 +74,8 @@ export async function testCandidate({project,tree,files,sha,name}) {
     const log='Recipe: '+project.recipe+'\nImage: '+project.image+'\nBuild: '+(build?'tsc -p tsconfig.json':'native Node type stripping')+
       '\nCommand: node --experimental-strip-types --test --test-concurrency=1 '+tests.join(' ')+'\nExit code: 0\nRevision: '+sha;
     const diagnostic=stdout+(stderr?'\n'+stderr:'');
-    const preview=project.calculatorBrowserImage ? await calculatorPreview({tree,sha,image:project.calculatorBrowserImage,name}) : '';
+    const checks=Object.entries(project.calculatorSpecCards??{}).filter(([,issue])=>approvedIssues.includes(issue)).map(([check])=>check);
+    const preview=project.calculatorBrowserImage ? await calculatorPreview({tree,sha,image:project.calculatorBrowserImage,name,checks}) : '';
     return {tests,log:log+'\n'+(diagnostic.length>5000 ? diagnostic.slice(0,400)+'\n…\n'+diagnostic.slice(-4600) : diagnostic)+'\n'+preview};
   } catch (error) {
     throw Error('Validation failed for '+project.recipe+'\n'+[error.stdout,error.stderr,(!error.stdout && !error.stderr)?error.message:'',error.killed?'Timed out':''].filter(Boolean).join('\n').slice(-8000));
