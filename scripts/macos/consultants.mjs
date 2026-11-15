@@ -60,7 +60,7 @@ export async function consultAll(entries,phase,packet,adapters={codex:consultCod
   if(!['architecture','implementation','diagnosis'].includes(phase)||typeof packet!=='string'||Buffer.byteLength(packet)>65536)throw Error('Invalid consultation packet');
   if(!JSON.parse(packet)||!packet.trim())throw Error('Empty consultation packet');
   const advice=await Promise.all(consultantProfiles(entries).map(async profile=>{
-    const identity={name:profile.name,provider:profile.provider};
+    const identity={name:profile.name,provider:profile.provider,...(profile.model?{model:profile.model}:{})};
     const signal=AbortSignal.timeout((profile.timeoutMinutes??30)*60_000);
     try{
       const reply=await adapters[profile.provider]({profile,packet,signal,phase});
