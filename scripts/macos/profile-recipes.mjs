@@ -127,5 +127,9 @@ export async function verifyDeployedSvg(project,job,port){
   const running=(await run('docker',['inspect','--format','{{.Image}} {{.State.Health.Status}}',id])).stdout.trim();
   if(running!==job.image+' healthy')throw Error('Live container changed');
   await runBrowser({html,source:'',sha:job.revision,image:project.calculatorBrowserImage,name:'jam-live-'+job.revision.slice(0,16),checks:['staticSvg'],site:'calculator',liveContainer:id,livePort:port});
-  return {url,htmlDigest:expected.htmlDigest,screenshots:[320,390,960,1440]};
+  const directory=evidenceDir(job.revision,'deployed-'+port);
+  const report=JSON.parse(await readFile(join(directory,'report.json'),'utf8'));
+  const screenshots=await Promise.all(report.shots.map(async width=>({width,
+    sha256:createHash('sha256').update(await readFile(join(directory,width+'.png'))).digest('hex')})));
+  return {url,htmlDigest:expected.htmlDigest,screenshots,report:report.log};
 }

@@ -6,6 +6,7 @@ import type {Topic} from './intake-journal.js';
 
 interface VerifiedSite {
   repoId:number; repository:string; environment:string; revision:string; image:string; port:number; verifiedAt:number; issues:number[]; acceptance?:'passed'|'failed';
+  evidence?:{url:string;htmlDigest:string;screenshots:{width:number;sha256:string}[];report:string};
 }
 
 // The host writes after checking the actual running image, endpoint and revision.
@@ -30,9 +31,14 @@ export async function collectDeploymentProgress(state:string,topic:Topic,exchang
         recordProgress(state,issue,'deployment-failed:'+site.revision,'The development host found a deployed acceptance failure for tested commit `'+site.revision+'`. The integrator must review the host report before closure.');
         continue;
       }
+      const proof=site.evidence;
+      const report=site.acceptance==='passed' && proof && typeof proof.report==='string' && proof.report.length<16000 &&
+        Array.isArray(proof.screenshots) && proof.screenshots.every(s=>Number.isSafeInteger(s.width) && /^[0-9a-f]{64}$/.test(s.sha256))
+        ? {purpose:'tests' as const,markdown:'# Deployed browser acceptance\n\nRevision `'+site.revision+'`. Local site `http://127.0.0.1:'+site.port+'/`.\n\nHTML SHA-256 `'+proof.htmlDigest+'`.\n\n'+
+          proof.screenshots.map(s=>'- '+s.width+' px screenshot SHA-256 `'+s.sha256+'`').join('\n')+'\n\n'+proof.report} : undefined;
       recordProgress(state,issue,'deployment:'+site.environment+':'+site.revision,
         'The development host verified tested commit `'+site.revision+'` running healthy in `'+site.environment+'` at '+
-        '`http://127.0.0.1:'+site.port+'/` on '+new Date(site.verifiedAt).toISOString()+'. Image `'+site.image+'`. Deployment complete.');
+        '`http://127.0.0.1:'+site.port+'/` on '+new Date(site.verifiedAt).toISOString()+'. Image `'+site.image+'`. Deployment complete.',report);
     }
     if(complete){await atomicJson(join(state,'deployments',file),site);await rm(path,{force:true});}
   }

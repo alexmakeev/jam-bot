@@ -88,7 +88,7 @@ function developmentSite({repo,repoId,environment,port,moduleName,enabled}){
         const delivery=join(exchange,'deployments',String(repoId));
         await mkdir(delivery,{recursive:true,mode:0o700});
         await atomic(join(delivery,name),{repoId,repository:repo,environment,port,issues:job.issues,
-          revision:job.revision,image:job.image,verifiedAt:job.verifiedAt,acceptance:job.acceptance});
+          revision:job.revision,image:job.image,verifiedAt:job.verifiedAt,acceptance:job.acceptance,evidence:job.evidence});
         job.noticeDelivered=true;await atomic(file,job);
       }
       if(job.done||job.after>Date.now())continue;
