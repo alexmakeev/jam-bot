@@ -35,7 +35,7 @@ interface ReceiptQuery {
   config: string; cwd: string; session: string; name: string; agentType: string; challenge: string; expected?: string
 }
 
-async function mailboxReceipt({config,cwd,session,name,agentType,challenge,expected}: ReceiptQuery) {
+export async function mailboxReceipt({config,cwd,session,name,agentType,challenge,expected}: ReceiptQuery) {
   const team='session-'+session.slice(0,8);
   const raw=await optionalText(join(config,'teams',team,'config.json'));
   if (!raw) return;
@@ -60,20 +60,21 @@ async function mailboxReceipt({config,cwd,session,name,agentType,challenge,expec
   for (const row of workerRows) {
     if (row.type!=='assistant' || !Array.isArray(row.message?.content)) continue;
     for (const block of row.message.content) {
-      const message = block.input?.message?.trim();
+      const message = block.input?.message;
       if (block.type==='tool_use' && block.name==='SendMessage' && ['main','team-lead'].includes(block.input?.to ?? '') &&
-          message && message.length<=65536 && (expected!==undefined ? message===expected : message.startsWith(challenge+'\n'))) messages.add(message);
+          message && message.length<=65536 && (expected!==undefined ? message.trim()===expected : message.trimStart().startsWith(challenge+'\n'))) messages.add(message);
     }
   }
   const deliveries = [...messages].filter(answer=>leadRows.some(row=>{
     const body=row.message?.content;
     if (row.type!=='user' || typeof body!=='string' || !body.startsWith('Another Claude session sent a message:\n')) return false;
-    return body.includes('<agent-message from="'+name+'">\n'+answer+'\n</agent-message>') ||
-      (body.includes('<teammate-message teammate_id="'+name+'"') && body.includes('>\n'+answer+'\n</teammate-message>'));
+    return [answer,answer.trim()].some(text=>
+      body.includes('<agent-message from="'+name+'">\n'+text+'\n</agent-message>') ||
+      (body.includes('<teammate-message teammate_id="'+name+'"') && body.includes('>\n'+text+'\n</teammate-message>')));
   }));
   if (deliveries.length>1) throw new Error('Ambiguous native teammate output');
   if (deliveries.length===1) return { developer:handle, nativeMember:member.agentId, backend:member.backendType, team,
-    output:expected===undefined ? deliveries[0]!.slice(challenge.length+1) : deliveries[0]! };
+    output:expected===undefined ? deliveries[0]!.trimStart().slice(challenge.length+1) : deliveries[0]!.trim() };
 }
 
 export async function teammateReceipt(config: string, cwd: string, session: string, name: string, challenge: string, answer: string) {

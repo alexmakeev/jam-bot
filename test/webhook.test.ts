@@ -174,8 +174,8 @@ test('route before approval, verify actor and author, ignore locks, deduplicate 
 });
 
 test('a text-producing subagent cannot satisfy native teammate evidence',async t=>{
-  const {teammateReceipt}=await import('../src/native-teammate.js');
-  const {mkdir,writeFile}=await import('node:fs/promises');
+  const {teammateReceipt,mailboxReceipt}=await import('../src/native-teammate.js');
+  const {mkdir,writeFile,appendFile}=await import('node:fs/promises');
   const root=await mkdtemp(join(tmpdir(),'jam-team-evidence-'));
   t.after(()=>rm(root,{recursive:true,force:true}));
   const session=randomUUID(), name='developer-test', cwd='/state/leo', handle='native-handle';
@@ -195,6 +195,14 @@ test('a text-producing subagent cannot satisfy native teammate evidence',async t
   assert.equal(await teammateReceipt(root,cwd,session,name,challenge,answer),undefined);
   await writeFile(worker,msg('assistant',[{type:'tool_use',name:'SendMessage',input:{to:'main',message:answer}}]));
   assert.equal((await teammateReceipt(root,cwd,session,name,challenge,answer))?.developer,handle);
+  const markdown='# Verified spec\n\nKeep the final newline.\n';
+  const roleAnswer=challenge+'\n'+markdown;
+  await writeFile(worker,msg('assistant',[{type:'tool_use',name:'SendMessage',input:{to:'main',message:roleAnswer}}]));
+  const query={config:root,cwd,session,name,challenge,agentType:'jam-developer'};
+  assert.equal(await mailboxReceipt(query),undefined);
+  await appendFile(prefix+'.jsonl',msg('user','Another Claude session sent a message:\n<agent-message from="'+name+'">\n'+roleAnswer+'\n</agent-message>'));
+  assert.equal((await mailboxReceipt(query))?.output,markdown);
+
 });
 
 
