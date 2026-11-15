@@ -36,3 +36,11 @@ test('calculator acceptance selects only registered checks with a positive issue
   assert.throws(()=>load({command:21}),/Invalid calculator acceptance/);
   assert.deepEqual(load({reset:22})['o/a'].calculatorSpecCards,{reset:22});
 });
+
+test('Sandbox clear action is selected only by a positive issue number on an enabled browser recipe',()=>{
+  const project={image:'base',recipe:'node-strip',sumBrowserImage:'sha256:'+'7'.repeat(64),runningTotalsCard:7};
+  const load=p=>projectRecipes({projects:{'o/sandbox':p}});
+  assert.doesNotThrow(()=>load({...project,clearTotalsCard:8}));
+  assert.throws(()=>load({...project,clearTotalsCard:'8'}),/Invalid clear totals/);
+  assert.throws(()=>load({...project,clearTotalsCard:8,sumBrowserImage:undefined}),/Invalid clear totals/);
+});

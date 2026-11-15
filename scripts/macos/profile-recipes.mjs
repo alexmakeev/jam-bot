@@ -9,6 +9,7 @@ const safeRepo=/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
 export function projectRecipes(config) {
   const projects=config.projects ?? Object.fromEntries(config.repositories.map(repo=>[repo,{image:config.image,recipe:'node-strip'}]));
   for (const [repo,project] of Object.entries(projects)) {
+    if(project?.clearTotalsCard!==undefined && (!project.sumBrowserImage || !Number.isSafeInteger(project.clearTotalsCard) || project.clearTotalsCard<1))throw Error('Invalid clear totals work card');
     if(project?.sumBrowserImage && (project.recipe!=='node-strip'||!/^sha256:[a-f0-9]{64}$/.test(project.sumBrowserImage)||!Number.isSafeInteger(project.runningTotalsCard)||project.runningTotalsCard<1))throw Error('Invalid sum page recipe');
     if (project?.calculatorSpecCards && (!project.calculatorBrowserImage || Object.entries(project.calculatorSpecCards).some(([check,issue])=>!['dragons','reset'].includes(check) || !Number.isSafeInteger(issue) || issue<1))) throw Error('Invalid calculator acceptance mapping');
     if (project?.calculatorBrowserImage && (project.recipe!=='typescript-build' || !/^sha256:[a-f0-9]{64}$/.test(project.calculatorBrowserImage))) throw Error('Invalid calculator browser image');
@@ -77,6 +78,7 @@ export async function testCandidate({project,tree,files,sha,name,approvedIssues=
     const diagnostic=stdout+(stderr?'\n'+stderr:'');
     const checks=Object.entries(project.calculatorSpecCards??{}).filter(([,issue])=>approvedIssues.includes(issue)).map(([check])=>check);
     if(project.sumBrowserImage && approvedIssues.includes(project.runningTotalsCard))checks.push('runningTotals');
+    if(project.sumBrowserImage && approvedIssues.includes(project.clearTotalsCard))checks.push('clearTotals');
     const browserImage=project.sumBrowserImage??project.calculatorBrowserImage;
     const preview=browserImage ? await calculatorPreview({tree,sha,image:browserImage,name,checks,site:project.sumBrowserImage?'sum':'calculator'}) : '';
     return {tests,log:log+'\n'+(diagnostic.length>5000 ? diagnostic.slice(0,400)+'\n…\n'+diagnostic.slice(-4600) : diagnostic)+'\n'+preview};
