@@ -187,3 +187,9 @@ export function adoptVerifiedLegacyResult(state:string,issue:number,identity:str
     db.exec('COMMIT');
   }finally{db.close();}
 }
+
+export function hasProgressIdentity(state:string,issue:number,identity:string){
+  const db=open(state);
+  try{return Boolean(db.prepare('SELECT 1 FROM events WHERE issue=? AND key=?').get(issue,fingerprint(identity)));}
+  finally{db.close();}
+}

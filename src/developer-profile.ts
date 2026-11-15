@@ -302,7 +302,8 @@ async function diagnoseIntegration(runtime:TopicRuntime,entries:(Ready&ReadyBran
     const authorize=()=>validateTaskApproval(topic,card.issue,card.approval);
     await authorize();
     const markdown='# Correction for issue '+card.issue+'\n\nCandidate `'+sha+'`\n\n'+item.markdown;
-    await publishSpecification({topic,issue:card.issue,markdown,authorize,signal});
+    const resultKey=(await readJson<{identity:string}>(join(directory(state,entries[0]!.issue),'handoffs',fingerprint(final.output)+'.json'))).identity;
+    await publishSpecification({topic,issue:card.issue,markdown,authorize,signal,resultKey});
   }
 }
 
@@ -363,7 +364,7 @@ export async function integrateReady(runtime:TopicRuntime,signal:AbortSignal,que
         throw err;
       });
       await atomicJson(join(dir,'tests.json'),tested);
-      for(const e of entries)recordProgress(state,e.issue,'integration-tests:'+candidate.sha,'Validation passed for `'+candidate.sha+'`. The integrator now reviews this candidate.');
+      for(const e of entries)recordProgress(state,e.issue,'integration-tests:'+candidate.sha,'Validation passed for `'+candidate.sha+'`. The integrator now reviews this candidate.',{purpose:'tests',markdown:'# Integration validation\n\nCandidate `'+candidate.sha+'`\n\n'+tested.log});
       const review=await mandatoryReview({role:'integrator',state,cwd:topic.cwd,session:journal.lead().id,issue:entries[0]!.issue,issues:entries.map(e=>e.issue),revision:candidate.sha,signal,
         input:'You are deciding whether to publish this exact tested candidate to dev. Evaluate implementation, test outcomes, and proposed integration. Return PASS or FAIL on the first line, followed by reasons. The publisher reruns the suite and performs the guarded dev push only after your approval. Closing the issue and cleanup also follow publication.\n'+
           JSON.stringify({base:candidate.base, devBefore:candidate.expected || null, candidate:candidate.sha, featureHeads:entries.map(e=>({issue:e.issue,branch:e.branch,sha:e.sha})), candidateStatus:await git(candidateTree,'status','--porcelain'), commit:await git(candidateTree,'log','-1','--oneline','--stat')})+'\n'+
@@ -402,6 +403,7 @@ export async function integrateReady(runtime:TopicRuntime,signal:AbortSignal,que
         await atomicJson(join(directory(state,e.issue),'result.json'),{issue:e.issue,head:e.sha,dev:candidate!.sha,batch:batch.id,summary:confirmed});
       }
       const resultKey=publication?.awaitDeployment?await verifiedDeploymentIdentity(state,topic.repoId,candidate!.sha,e.issue):undefined;
+      if(publication?.awaitDeployment && !resultKey)throw Error('Deployed result identity requires reconciliation');
       await completeCard(topic,e.issue,confirmed,resultKey);
       if(await realpath(e.project.tree).catch(()=>undefined)){
         if(await git(e.project.tree,'status','--porcelain'))throw Error('Worktree contains uncommitted changes');

@@ -88,8 +88,8 @@ export async function completeCard(topic: Topic, issue: number, summary: string,
 }
 
 // Stage the exact architect bytes locally and confirm the copy attached to the original work card.
-export async function publishSpecification({topic,issue,markdown,signal,authorize}: {
-  topic:Topic;issue:number;markdown:string;signal:AbortSignal;authorize:()=>Promise<void>
+export async function publishSpecification({topic,issue,markdown,signal,authorize,resultKey}: {
+  topic:Topic;issue:number;markdown:string;signal:AbortSignal;authorize:()=>Promise<void>;resultKey?:string
 }) {
   const state=dirname(topic.cwd);
   const name=specName(issue,digestOf(markdown));
@@ -99,7 +99,7 @@ export async function publishSpecification({topic,issue,markdown,signal,authoriz
   const [api,bot]=await Promise.all([issueClient(topic.repository,topic.installation),publisherIdentity(topic.repository,topic.installation)]);
   const artifact=await publishIssueSpec(state,topic.repository,topic.repoId,issue,markdown,bot,api,authorize,signal,undefined,true);
   const handoff=await readJson<{identity:string;role:string}>(join(state,'assignments',String(issue),'handoffs',fingerprint(markdown)+'.json')).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;});
-  const key=handoff?.role==='architect'?handoff.identity:'specification:'+artifact.sha256;
+  const key=resultKey??(handoff?.role==='architect'?handoff.identity:'specification:'+artifact.sha256);
   recordProgress(state,issue,key,'The '+(markdown.startsWith('# Correction for issue ')?'integrator delivered correction guidance':'architect delivered the specification')+' for this work card.',undefined,[artifact]);
   const prior=await readJson<{commentId?:number;sha256?:string;url?:string}>(join(directory,name+'.artifact-receipt.json')).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;});
   if(prior?.commentId && prior.sha256===artifact.sha256 && prior.url===artifact.url && !storedResultComment(state,issue,key)){
