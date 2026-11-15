@@ -57,3 +57,19 @@ test('bounded hold expires while a check is late, and recovery repeats only froz
   validations.tick(queue,async()=>{},signal);await validations.settle();
   assert.deepEqual(queue.snapshot().ready,[head(2)]);
 });
+
+test('a new architect waits for an overlapping head while independent file scopes can start',async t=>{
+  const db=new DatabaseSync(':memory:');t.after(()=>db.close());
+  db.exec("CREATE TABLE intake(issue INTEGER,action TEXT,title TEXT,body TEXT,kind TEXT); INSERT INTO intake VALUES(17,'task','Validation','Files: src/calculator.ts, test/arithmetic.ts',NULL)");
+  const checks=new BranchValidation(db), queue=new IntegrationQueue(db),signal=new AbortController().signal;
+  const next={issue:18,title:'Multiply',delivery:'example',body:'Files: src/calculator.ts, web/index.html'};
+  checks.submit(head(17),1200);
+  assert.equal(checks.canStart(next),false);
+  assert.equal(checks.canStart({...next,body:'Files: src/unrelated.ts'}),true);
+  let done!:()=>void;
+  checks.tick(queue,()=>new Promise<void>(resolve=>{done=resolve;}),signal);await yieldTurn();
+  assert.equal(checks.canStart(next),false);
+  done();await checks.settle();
+  assert.deepEqual(checks.tick(queue,async()=>{},signal).batch?.entries,[head(17)]);
+  assert.equal(checks.canStart(next),true);
+});

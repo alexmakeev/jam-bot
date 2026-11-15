@@ -1,6 +1,9 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { IntegrationQueue, type IntegrationBatch, type ReadyBranch } from './integration-queue.js';
 
+import type {Intake} from './intake-journal.js';
+import {parseTaskCard, type ProfileKind} from './profile-card.js';
+
 type Validation = (head: ReadyBranch) => Promise<void>;
 interface Tick { batch?: IntegrationBatch; waiting: boolean }
 
@@ -25,6 +28,18 @@ export class BranchValidation {
   recover() {
     // Only immutable, read-only checks may be repeated. The service already holds its owner lock.
     this.db.exec("UPDATE branch_validation SET state='pending', startedAt=NULL WHERE state='checking'");
+  }
+
+  // tick() already claims ready integrations. Checking heads still need their overlapping successor to wait.
+  canStart(task:Intake, defaultClass?:ProfileKind):boolean {
+    const next=parseTaskCard(task.title,task.body,task.kind,defaultClass);
+    if (!next?.files.length) return true;
+    const rows=this.db.prepare(`SELECT i.title,i.body,i.kind FROM branch_validation AS v
+      JOIN intake AS i ON i.issue=v.issue AND i.action='task' WHERE v.state IN ('pending','checking')`).all();
+    return !rows.some(row=>{
+      const previous=parseTaskCard(String(row.title),String(row.body),(row.kind ?? undefined) as ProfileKind|undefined,defaultClass);
+      return previous?.files.some(file=>next.files.includes(file));
+    });
   }
 
   async settle() {await Promise.all(this.active.values());}

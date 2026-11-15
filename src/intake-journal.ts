@@ -146,11 +146,12 @@ export class Journal {
     });
   }
 
-  nextWorker(): Intake | undefined {
+  nextWorker(canStart: (task: Intake) => boolean = () => true): Intake | undefined {
     return this.transaction(() => {
-      const row = this.db.prepare(`SELECT * FROM intake WHERE action='task' AND workerState='pending' AND seedRetryAt<=unixepoch()
+      const rows = this.db.prepare(`SELECT * FROM intake WHERE action='task' AND workerState='pending' AND seedRetryAt<=unixepoch()
         AND NOT EXISTS(SELECT 1 FROM intake WHERE workerState IN ('running','review') OR state IN ('running','review'))
-        ORDER BY rowid LIMIT 1`).get();
+        ORDER BY rowid`).all();
+      const row=rows.find(item=>canStart(intake(item)));
       if (!row) return;
       this.db.prepare("UPDATE intake SET workerState='running' WHERE delivery=?").run(row.delivery!);
       return intake(row);

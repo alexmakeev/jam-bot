@@ -39,7 +39,7 @@ async function consume({journal,topic,state}: TopicRuntime, signal: AbortSignal)
       const decision=validations.tick(integrations,head=>validateReviewedHead(runtime,head,signal),signal);
       if(decision.batch) {await integrateReady(runtime,signal,integrations,decision.batch);continue;}
       if(decision.waiting) {await delay(250);continue;}
-      const execution = journal.nextWorker();
+      const execution = journal.nextWorker(task=>validations.canStart(task,topic.defaultClass));
       if (execution) {
         try {
           await dispatchApprovedWorker(execution,topic,state,signal,journal.lead().id);
