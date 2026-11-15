@@ -3,7 +3,7 @@ import {createServer} from 'node:http';
 import {connect} from 'node:net';
 import {networkInterfaces} from 'node:os';
 
-const allowed=new Set(['accounts.google.com','oauth2.googleapis.com','www.googleapis.com','antigravity.google',
+const allowed=new Set(['accounts.google.com','aicode.googleapis.com','oauth2.googleapis.com','www.googleapis.com','antigravity.google',
   'cloudcode-pa.googleapis.com','daily-cloudcode-pa.googleapis.com','daily-cloudcode-pa.sandbox.googleapis.com',
   'autopush-cloudcode-pa.sandbox.googleapis.com','antigravity.googleapis.com','antigravity-pa.googleapis.com',
   'antigravity-unleash.goog','generativelanguage.googleapis.com','cloudcode-pa.clients6.google.com',
