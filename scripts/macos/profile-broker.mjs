@@ -1,4 +1,6 @@
 // Local dev publisher for explicitly selected repositories. The service only exchanges Git bundles.
+import {consultAll} from './consultants.mjs';
+import {setTimeout as delay} from 'node:timers/promises';
 import {calculatorRepo,queueCalculator,reconcileCalculator} from './calculator-deployment.mjs';
 import {projectRecipes,testCandidate} from './profile-recipes.mjs';
 import { brokerFiles } from './runtime/broker-approval.js';
@@ -21,10 +23,27 @@ async function regular(path,limit) {
   const st=await lstat(path);
   if (!st.isFile() || st.nlink!==1 || st.size>limit) throw Error('Invalid broker input file');
 }
+async function authorizedFiles(req){
+  if (!Array.isArray(req.cards)||req.cards.length<1||req.cards.length>15) throw Error('Invalid work cards');
+  const allowed=new Set();
+  for(const card of req.cards){
+    if(!Number.isSafeInteger(card.issue)||card.issue<1)throw Error('Invalid issue');
+    const base='repos/'+req.repo;
+    const issue=await gh(base+'/issues/'+card.issue);
+    const paths=await brokerFiles(card.issue,issue,card.approval,login=>gh(base+'/collaborators/'+encodeURIComponent(login)+'/permission'));
+    for(const path of paths)allowed.add(path);
+  }
+  return allowed;
+}
+
 async function execute(dir) {
-  await regular(join(dir,'request.json'),65536);
+  await regular(join(dir,'request.json'),1024*1024);
   const req=JSON.parse(await readFile(join(dir,'request.json'),'utf8'));
   if (!Object.hasOwn(projects,req.repo) || !/^[\w.-]+\/[\w.-]+$/.test(req.repo)) throw Error('Repository outside publisher scope');
+  if(req.action==='consult'){
+    await authorizedFiles(req);
+    return consultAll(projects[req.repo].consultants,req.phase,req.packet);
+  }
   const url='https://github.com/'+req.repo+'.git';
   const temp=await mkdtemp(join(tmpdir(),'jam-broker-'));
   try {
@@ -41,19 +60,7 @@ async function execute(dir) {
       return {sha:await git(temp,['rev-parse','refs/heads/seed']),dev};
     }
     if (!['test-head','test','publish'].includes(req.action) || !sha(req.sha) || !sha(req.base) || !(req.expected===''||sha(req.expected))) throw Error('Invalid candidate');
-    if (!Array.isArray(req.cards)||req.cards.length<1||req.cards.length>15) throw Error('Invalid work cards');
-    const authorizedFiles=async()=>{
-      const allowed=new Set();
-      for(const card of req.cards){
-        if(!Number.isSafeInteger(card.issue)||card.issue<1)throw Error('Invalid issue');
-        const base='repos/'+req.repo;
-        const issue=await gh(base+'/issues/'+card.issue);
-        const paths=await brokerFiles(card.issue,issue,card.approval,login=>gh(base+'/collaborators/'+encodeURIComponent(login)+'/permission'));
-        for(const path of paths)allowed.add(path);
-      }
-      return allowed;
-    };
-    const files=await authorizedFiles();
+    const files=await authorizedFiles(req);
     if(req.action==='publish' && dev===req.sha) return {sha:dev,alreadyPublished:true};
     if(req.action!=='test-head' && dev!==req.expected) throw Error('Remote dev changed during validation');
     const baseRef=dev?'dev':(await gh('repos/'+req.repo)).default_branch;
@@ -74,7 +81,7 @@ async function execute(dir) {
     const {tests,log}=await testCandidate({project:projects[req.repo],tree,files:filesForCandidate,
       sha:req.sha,name:'jam-check-'+basename(dir)});
     if(req.action==='publish') {
-      await authorizedFiles();
+      await authorizedFiles(req);
       await queueCalculator(projects[req.repo],req);
       await git(temp,['push','--force-with-lease=refs/heads/dev:'+req.expected,'origin',req.sha+':refs/heads/dev']);
       if(!(await git(temp,['ls-remote','origin','refs/heads/dev'])).startsWith(req.sha+'\t'))throw Error('Publication requires reconciliation');
@@ -82,16 +89,33 @@ async function execute(dir) {
     return {sha:req.sha,tests,log:log.slice(-8000)};
   } finally {await rm(temp,{recursive:true,force:true});}
 }
-await mkdir(root,{recursive:true});
-for(const id of await readdir(root)){
-  if(!/^[a-f0-9-]{36}$/.test(id))continue;
-  const dir=join(root,id);
-  if((await realpath(dir))!==dir)continue;
-  const pending=join(dir,'request.ready');
-  try {await rename(pending,join(dir,'request.json'));}catch{continue;}
-  let reply;try{reply={ok:true,value:await execute(dir)};}catch(e){reply={ok:false,error:String(e.message).slice(-10000)};}
-  await writeFile(join(dir,'answer.tmp'),JSON.stringify(reply),{mode:0o600,flag:'wx'});
+async function reply(dir) {
+  let answer;
+  try{answer={ok:true,value:await execute(dir)};}catch(e){answer={ok:false,error:String(e.message).slice(-10000)};}
+  await writeFile(join(dir,'answer.tmp'),JSON.stringify(answer),{mode:0o600,flag:'wx'});
   await rename(join(dir,'answer.tmp'),join(dir,'answer.json'));
 }
 
-await reconcileCalculator(projects[calculatorRepo]);
+await mkdir(root,{recursive:true});
+const consultations=new Set();
+do {
+  for(const id of await readdir(root)){
+    if(!/^[a-f0-9-]{36}$/.test(id))continue;
+    const dir=join(root,id);
+    if(await realpath(dir).catch(()=>null)!==dir)continue;
+    const pending=join(dir,'request.ready');
+    let consult=false;
+    try{
+      await regular(pending,1024*1024);
+      consult=JSON.parse(await readFile(pending,'utf8')).action==='consult';
+    }catch(error){if(error.code==='ENOENT')continue;}
+    if(consult && consultations.size>=4)continue;
+    try{await rename(pending,join(dir,'request.json'));}catch{continue;}
+    if(consult){
+      const active=reply(dir).catch(()=>console.error('Could not store consultation reply')).finally(()=>consultations.delete(active));
+      consultations.add(active);
+    }else await reply(dir);
+  }
+  await reconcileCalculator(projects[calculatorRepo]);
+  if(consultations.size)await Promise.race([...consultations,delay(1000)]);
+}while(consultations.size);

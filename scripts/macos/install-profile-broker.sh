@@ -21,7 +21,7 @@ src=$(cd "$(dirname "$0")/../.." && pwd)
 mkdir -p "$dir/runtime"
 printf '%s\n' '{"type":"module"}' > "$dir/runtime/package.json"
 install -m 600 "$src/dist/src/profile-card.js" "$src/dist/src/broker-approval.js" "$dir/runtime/"
-install -m 700 "$(dirname "$0")/profile-broker.mjs" "$(dirname "$0")/profile-recipes.mjs" "$(dirname "$0")/calculator-deployment.mjs" "$dir/"
+install -m 700 "$(dirname "$0")/profile-broker.mjs" "$(dirname "$0")/profile-recipes.mjs" "$(dirname "$0")/calculator-deployment.mjs" "$(dirname "$0")/consultants.mjs" "$(dirname "$0")/antigravity-consultant.mjs" "$dir/"
 node --input-type=module - "$dir" "$repo" "$image" "$recipe" <<'NODE'
 import {readFileSync,writeFileSync,renameSync} from 'node:fs';
 import {pathToFileURL} from 'node:url';
