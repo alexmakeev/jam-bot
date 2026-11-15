@@ -82,7 +82,16 @@ export async function serve(root,exchange,tokenPath) {
   const inspect=async id=>JSON.parse(await docker(['inspect',id]))[0];
   async function run(x){
     const key=x.serverId+'/'+x.repoId+'/'+x.environment;
-    const recipe=selectEnvironmentRecipe(host.recipes,x.repoId,x.environment);
+    let recipe=selectEnvironmentRecipe(host.recipes,x.repoId,x.environment);
+    if(x.action==='deploy' && x.repoId===1457276291 && x.environment==='calculator' && recipe?.tier==='development' && recipe.autoDeployCalculator===true){
+      let releases={};
+      try{releases=JSON.parse(await privateConfig(join(root,'calculator-dev-releases.json')));}
+      catch(error){if(error.code!=='ENOENT')throw error;}
+      if(Object.entries(releases).some(([sha,id])=>!/^[a-f0-9]{40}$/.test(sha)||!image.test(id)))throw Error('Invalid development release index');
+      if(Object.hasOwn(releases,x.revision) && ((x.secretRefs?.length??0)>0 || x.endpoint?.port!==19853 || x.endpoint?.address!=='127.0.0.1'))
+        throw Error('Automatic calculator releases require the dedicated loopback endpoint and no secrets');
+      recipe={...recipe,releases:{...releases,...recipe.releases}};
+    }
     validate(x,host,recipe);
     const project='jamenv-'+digest(key).slice(0,24);
     db.prepare('INSERT OR IGNORE INTO environments(k,owner) VALUES(?,?)').run(key,randomUUID());

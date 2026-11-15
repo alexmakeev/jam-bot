@@ -1,0 +1,11 @@
+# Test calculator development site
+
+The host operator can opt in the private Test repository to publish its local calculator after integration into `dev`. Its site listens on `127.0.0.1:19853`. The publisher checks GitHub repository ID `1457276291` before deployment.
+
+1. Install the regular development publisher and management environment host. Configure the `calculator` development environment with its loopback endpoint and empty secret list. Verify the operator's management CLI can route to `alexmakeev/jam-bot-test`.
+2. In the host's private environment catalog, set `autoDeployCalculator: true` on that exact recipe. Reload the environment host.
+3. In the private Test publisher entry, set `autoDeployCalculator: true`, `managementNode` to a Node executable supporting the management CLI, and `calculatorRuntimeImage` to a full local image ID containing Node and the calculator health check. The existing `image` field pins the isolated compiler.
+
+The publisher records a local intent before pushing the validated candidate. After verifying the remote development head, it reads the regular Git blobs for `web/index.html`, `web/server.mjs`, and `src/triangular.ts`. A fixed network-isolated compiler produces the browser module. A host-owned Dockerfile packages these three files. Repository scripts and credentials are outside the build context. Adding another entry point or asset requires updating this project recipe.
+
+The authenticated management deployment verifies the exact running revision, image, health and port. Its existing rollback retains the previous healthy release. The publisher retries failed jobs independently of Git publication and skips superseded revisions. Per-SHA receipts are in the host operator's private `.jam-bot/management/calculator-dev-queue/` directory. Only this development recipe reads the local release index.

@@ -1,4 +1,5 @@
 // Local dev publisher for explicitly selected repositories. The service only exchanges Git bundles.
+import {calculatorRepo,queueCalculator,reconcileCalculator} from './calculator-deployment.mjs';
 import {projectRecipes,testCandidate} from './profile-recipes.mjs';
 import { brokerFiles } from './runtime/broker-approval.js';
 import { execFile } from 'node:child_process';
@@ -74,6 +75,7 @@ async function execute(dir) {
       sha:req.sha,name:'jam-check-'+basename(dir)});
     if(req.action==='publish') {
       await authorizedFiles();
+      await queueCalculator(projects[req.repo],req);
       await git(temp,['push','--force-with-lease=refs/heads/dev:'+req.expected,'origin',req.sha+':refs/heads/dev']);
       if(!(await git(temp,['ls-remote','origin','refs/heads/dev'])).startsWith(req.sha+'\t'))throw Error('Publication requires reconciliation');
     }
@@ -91,3 +93,5 @@ for(const id of await readdir(root)){
   await writeFile(join(dir,'answer.tmp'),JSON.stringify(reply),{mode:0o600,flag:'wx'});
   await rename(join(dir,'answer.tmp'),join(dir,'answer.json'));
 }
+
+await reconcileCalculator(projects[calculatorRepo]);

@@ -21,7 +21,7 @@ src=$(cd "$(dirname "$0")/../.." && pwd)
 mkdir -p "$dir/runtime"
 printf '%s\n' '{"type":"module"}' > "$dir/runtime/package.json"
 install -m 600 "$src/dist/src/profile-card.js" "$src/dist/src/broker-approval.js" "$dir/runtime/"
-install -m 700 "$(dirname "$0")/profile-broker.mjs" "$(dirname "$0")/profile-recipes.mjs" "$dir/"
+install -m 700 "$(dirname "$0")/profile-broker.mjs" "$(dirname "$0")/profile-recipes.mjs" "$(dirname "$0")/calculator-deployment.mjs" "$dir/"
 node --input-type=module - "$dir" "$repo" "$image" "$recipe" <<'NODE'
 import {readFileSync,writeFileSync,renameSync} from 'node:fs';
 import {pathToFileURL} from 'node:url';
@@ -31,7 +31,7 @@ const {projectRecipes}=await import(pathToFileURL(dir+'/profile-recipes.mjs'));
 const file=dir+'/config.json';
 let projects={};
 try { projects=projectRecipes(JSON.parse(readFileSync(file,'utf8'))); } catch(error) { if(error.code!=='ENOENT') throw error; }
-projects[repo]={image,recipe};
+projects[repo]={...projects[repo],image,recipe};
 const tmp=file+'.'+randomUUID()+'.tmp';
 writeFileSync(tmp,JSON.stringify({projects},null,2)+'\n',{flag:'wx',mode:0o600});
 renameSync(tmp,file);
