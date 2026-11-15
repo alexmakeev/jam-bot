@@ -202,6 +202,15 @@ test('a text-producing subagent cannot satisfy native teammate evidence',async t
   assert.equal(await mailboxReceipt(query),undefined);
   await appendFile(prefix+'.jsonl',msg('user','Another Claude session sent a message:\n<agent-message from="'+name+'">\n'+roleAnswer+'\n</agent-message>'));
   assert.equal((await mailboxReceipt(query))?.output,markdown);
+  const teamInit=msg('assistant',[{type:'tool_use',name:'Agent',id:'call',input:{name,subagent_type:'jam-developer',prompt:challenge}}])+
+    msg('user',[{type:'tool_result',tool_use_id:'call',content:[{text:'agent_id: '+handle}]}]);
+  const idle=(from:string,result:string)=>msg('user','Another Claude session sent a message:\n<teammate-message teammate_id="'+from+'" color="blue">\n'+
+    JSON.stringify({type:'idle_notification',from,idleReason:'available',result})+'\n</teammate-message>');
+  await writeFile(worker,msg('assistant',[{type:'text',text:roleAnswer}]));
+  await writeFile(prefix+'.jsonl',teamInit+idle('other',roleAnswer)+idle(name,roleAnswer+'modified'));
+  assert.equal(await mailboxReceipt(query),undefined);
+  await appendFile(prefix+'.jsonl',idle(name,roleAnswer));
+  assert.equal((await mailboxReceipt(query))?.output,markdown);
   await writeFile(prefix+'.jsonl',msg('assistant',[{type:'tool_use',name:'Agent',id:'call',input:{name,subagent_type:'jam-developer',prompt:challenge}}])+
     msg('user',[{type:'tool_result',tool_use_id:'call',is_error:true,content:'An interrupted invocation with private text'}]));
   await assert.rejects(mailboxReceipt(query),/declined or interrupted by the harness; reconcile before another execution/);

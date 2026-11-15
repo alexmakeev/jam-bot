@@ -97,7 +97,7 @@ export function implementationInput(context:string,scope:string,spec:string,assi
 async function reviewedImplementation(p:ProfileRun,project:Project,scope:string,spec:string,assignment:string,correction?:Correction) {
   let feedback=correction?.feedback??'';
   for(let attempt=correction?.attempt??0;attempt<2;attempt++){
-    if(!correction?.reviewOnly) {
+    if(!correction?.reviewOnly || attempt!==correction.attempt) {
       const context=await projectContext(project.tree,p.card.files,p.card.task+'\n'+spec+'\n'+assignment);
       const output=await stage(p,'developer',implementationInput(context,scope,spec,assignment,feedback));
       await applyImplementation(p,project,output);
@@ -168,7 +168,7 @@ export async function runDeveloperProfile(p:ProfileRun) {
         if(resume){
           const prior=await readJson<Correction&{project:Project}>(join(dir,'correction.json'));
           const {correcting:_,...expected}=project as Project&{correcting?:boolean};
-          if(JSON.stringify(prior.project)!==JSON.stringify(expected) || prior.attempt!==1 ||
+          if(JSON.stringify(prior.project)!==JSON.stringify(expected) || !(prior.attempt===1 || (prior.reviewOnly===true&&prior.attempt===0)) ||
               !/^[0-9a-f]{40}$/.test(prior.sha) || !prior.feedback?.trim())
             throw Error('Invalid implementation correction checkpoint');
           if(expected.tree!==join(state,'worktrees',String(issue)) || expected.store!==join(state,'project.git') ||

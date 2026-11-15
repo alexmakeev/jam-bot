@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 interface Block {
-  type: string; id?: string; name?: string; tool_use_id?: string;
+  type: string; text?:string; id?: string; name?: string; tool_use_id?: string;
   input?: {name?: string; subagent_type?: string; to?: string; message?: string; prompt?: string};
   is_error?:boolean; content?: string | {text?: string}[];
 }
@@ -81,22 +81,33 @@ export async function mailboxReceipt({config,cwd,session,name,agentType,challeng
   if (!handle) return;
 
   const workerRows=await rows(join(prefix,'subagents','agent-'+handle+'.jsonl'));
-  const messages = new Set<string>();
-  for (const row of workerRows) {
-    if (row.type!=='assistant' || !Array.isArray(row.message?.content)) continue;
-    for (const block of row.message.content) {
-      const message = block.input?.message;
-      if (block.type==='tool_use' && block.name==='SendMessage' && ['main','team-lead'].includes(block.input?.to ?? '') &&
-          message && message.length<=65536 && (expected!==undefined ? message.trim()===expected : message.trimStart().startsWith(challenge+'\n'))) messages.add(message);
+  const messages=new Set<string>();
+  const finalOutputs=new Set<string>();
+  const valid=(value:unknown):value is string=>typeof value==='string' && value.length<=65536 &&
+    (expected!==undefined?value.trim()===expected:value.trimStart().startsWith(challenge+'\n'));
+  for(const row of workerRows){
+    if(row.type!=='assistant' || !Array.isArray(row.message?.content))continue;
+    for(const block of row.message.content){
+      if(block.type==='tool_use' && block.name==='SendMessage' && ['main','team-lead'].includes(block.input?.to??'') &&
+          valid(block.input?.message))messages.add(block.input.message);
+      if(block.type==='text' && valid(block.text))finalOutputs.add(block.text);
     }
   }
-  const deliveries = [...messages].filter(answer=>leadRows.some(row=>{
+  const delivered=new Set<string>();
+  for(const row of leadRows){
     const body=row.message?.content;
-    if (row.type!=='user' || typeof body!=='string' || !body.startsWith('Another Claude session sent a message:\n')) return false;
-    return [answer,answer.trim()].some(text=>
+    if(row.type!=='user' || typeof body!=='string' || !body.startsWith('Another Claude session sent a message:\n'))continue;
+    for(const answer of messages)if([answer,answer.trim()].some(text=>
       body.includes('<agent-message from="'+name+'">\n'+text+'\n</agent-message>') ||
-      (body.includes('<teammate-message teammate_id="'+name+'"') && body.includes('>\n'+text+'\n</teammate-message>')));
-  }));
+      (body.includes('<teammate-message teammate_id="'+name+'"') && body.includes('>\n'+text+'\n</teammate-message>'))))delivered.add(answer);
+    const envelope=/^Another Claude session sent a message:\n<teammate-message teammate_id="([^"]+)"[^>]*>\n([\s\S]*)\n<\/teammate-message>\s*$/.exec(body);
+    if(!envelope || envelope[1]!==name)continue;
+    let notice;
+    try{notice=JSON.parse(envelope[2]!);}catch{continue;}
+    if(notice?.type==='idle_notification' && notice.from===name && notice.idleReason==='available' &&
+        valid(notice.result) && finalOutputs.has(notice.result))delivered.add(notice.result);
+  }
+  const deliveries=[...delivered];
   if (deliveries.length>1) throw new Error('Ambiguous native teammate output');
   if (deliveries.length===1) return { developer:handle, nativeMember:member.agentId, backend:member.backendType, team,
     output:expected===undefined ? deliveries[0]!.trimStart().slice(challenge.length+1) : deliveries[0]!.trim() };
