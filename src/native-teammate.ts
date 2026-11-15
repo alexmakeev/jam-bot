@@ -106,7 +106,10 @@ export async function runNativeJob({state,cwd,session,name,agentType,challenge,s
   child.on('error',()=>{error=true;});
   const closed=new Promise<void>(done=>child.once('close',()=>done()));
   try {
-    const deadline=Date.now()+150_000;
+    // A UI implementation or a substantial synthesis can exceed the short checksum probe.
+    const timeout=Number(process.env.JAM_NATIVE_STAGE_TIMEOUT_MINUTES??15);
+    if(!Number.isInteger(timeout) || timeout<1 || timeout>60)throw Error('Invalid native stage timeout');
+    const deadline=Date.now()+timeout*60_000;
     while (Date.now()<deadline) {
       if (signal.aborted) throw new Error('Native teammate interrupted');
       if (error || child.exitCode!==null || child.signalCode!==null) throw new Error('Native teammate runtime exited before verified receipt');
