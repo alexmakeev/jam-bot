@@ -1,6 +1,6 @@
 // Instrumentation for the Ubuntu image's pinned Claude Code 2.1.325 Agent Teams protocol.
 import { spawn } from 'node:child_process';
-import { mkdir, readFile, realpath, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, realpath, symlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -24,6 +24,29 @@ async function rows(path: string): Promise<Row[]> {
   const text=await optionalText(path);
   // The final line may still be in flight.
   return text.slice(0,text.lastIndexOf('\n')+1).split('\n').filter(Boolean).map(line=>JSON.parse(line));
+}
+
+// The pinned harness leaves its interactive process open after a terminal model refusal.
+export async function stageRefused(log:string,session:string,startedAt:number) {
+  const file=await open(log,'r').catch((err:NodeJS.ErrnoException)=>{
+    if(err.code!=='ENOENT')throw err;
+    return undefined;
+  });
+  if(!file)return false;
+  try{
+    const {size}=await file.stat();
+    const start=Math.max(0,size-65536),buffer=Buffer.alloc(size-start);
+    const {bytesRead}=await file.read(buffer,0,buffer.length,start);
+    const lines=buffer.subarray(0,bytesRead).toString('utf8').split('\n');
+    if(start)lines.shift();
+    lines.pop();
+    return lines.some(line=>{
+      if(!line.includes('"isApiErrorMessage":true'))return false;
+      const row=JSON.parse(line);
+      return row.sessionId===session && row.type==='assistant' && row.isApiErrorMessage===true &&
+        row.message?.stop_reason==='refusal' && Date.parse(row.timestamp)>=startedAt;
+    });
+  }finally{await file.close();}
 }
 
 export interface TeammateJob {
@@ -102,6 +125,9 @@ export async function runNativeJob({state,cwd,session,name,agentType,challenge,s
   // script supplies a PTY. Print mode falls back to a different, short-lived subagent.
   // All arguments are POSIX-quoted. Issue text is excluded from the command.
   const shellCommand='exec claude '+args.map(arg=>"'"+arg.replaceAll("'","'\\''")+"'").join(' ');
+  const startedAt=Date.now();
+  const transcript=join(config,'projects',cwd.replace(/[^a-zA-Z0-9-]/g,'-'),session+'.jsonl');
+  let nextStatusCheck=startedAt;
   const child=spawn('script',['-qefc',shellCommand,'/dev/null'],{cwd,stdio:['pipe','ignore','ignore'],
     env:{...process.env,HOME:home,TERM:'xterm-256color',CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS:'1'}});
   let error=false;
@@ -117,6 +143,10 @@ export async function runNativeJob({state,cwd,session,name,agentType,challenge,s
       if (error || child.exitCode!==null || child.signalCode!==null) throw new Error('Native teammate runtime exited before verified receipt');
       const receipt=await mailboxReceipt({config,cwd,session,name,challenge,expected,agentType});
       if (receipt) return receipt;
+      if(Date.now()>=nextStatusCheck){
+        nextStatusCheck=Date.now()+3000;
+        if(await stageRefused(transcript,session,startedAt))throw Error('Native model refused this stage; preserve the candidate and reconcile before further work');
+      }
       await delay(400);
     }
     throw new Error('Native teammate receipt timed out');

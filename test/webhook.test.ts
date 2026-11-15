@@ -291,3 +291,15 @@ test('an already closed or retyped issue is rejected before Leo and concurrent r
   assert.equal(calls,1); assert.equal(journal.next(),undefined);
   assert.equal(journal.list()[0]?.state,'rejected');
 });
+
+test('detect a current native model refusal without replaying it or blaming another session',async t=>{
+  const {stageRefused}=await import('../src/native-teammate.js');
+  const {writeFile}=await import('node:fs/promises');
+  const dir=await mkdtemp(join(tmpdir(),'jam-role-refusal-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+  const path=join(dir,'session.jsonl'),at=Date.now();
+  const row={type:'assistant',sessionId:'lead',isApiErrorMessage:true,message:{stop_reason:'refusal'},timestamp:new Date(at).toISOString()};
+  await writeFile(path,'x'.repeat(70000)+'\n'+JSON.stringify(row)+'\n');
+  assert.equal(await stageRefused(path,'lead',at),true);
+  assert.equal(await stageRefused(path,'other',at),false);
+  assert.equal(await stageRefused(path,'lead',at+1),false);
+});
