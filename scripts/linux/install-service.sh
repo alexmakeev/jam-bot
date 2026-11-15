@@ -18,6 +18,7 @@ case "$node_path$docker_path" in *[\"\%\\\$]*|*$'\n'*) echo 'Unsupported executa
 "$node_path" -e "require('node:sqlite')" >/dev/null
 "$docker_path" info >/dev/null
 "$docker_path" compose version >/dev/null
+if [[ ! -x "$root/node_modules/.bin/tsc" ]]; then (cd "$root" && npm ci); fi
 mkdir -p "$base/publisher/runtime" "$HOME/.jam-bot/profile-exchange" "$HOME/.jam-bot/container-home" "$HOME/.claude" "$units"
 export JAM_HOST_NODE="$node_path"
 "$root/scripts/linux/install-environment-host.sh"
@@ -71,6 +72,7 @@ Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=%h/.jam-bot/service
 ExecStart="$docker_path" compose --env-file service.env -f compose.service.yaml up --wait --wait-timeout 90 -d
+ExecReload="$docker_path" compose --env-file service.env -f compose.service.yaml up --wait --wait-timeout 90 -d
 ExecStop="$docker_path" compose --env-file service.env -f compose.service.yaml stop --timeout 30
 TimeoutStartSec=120
 Restart=on-failure
@@ -103,7 +105,7 @@ systemctl --user daemon-reload
 systemctl --user enable jam-bot-receiver.service jam-bot-publisher.timer
 systemctl --user start jam-bot-publisher.service
 systemctl --user restart jam-bot-publisher.timer
-systemctl --user restart jam-bot-receiver.service
+systemctl --user reload-or-restart jam-bot-receiver.service
 systemctl --user is-active --quiet jam-bot-receiver.service jam-bot-publisher.timer
 if [[ $(loginctl show-user "$(id -u)" -p Linger --value) != yes ]]; then
   loginctl enable-linger "$(id -un)" || { echo "Enable unattended startup with: sudo loginctl enable-linger $(id -un)" >&2; exit 1; }

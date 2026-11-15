@@ -4,7 +4,7 @@ The Linux installation runs the Ubuntu receiver under Docker Compose and the sco
 
 ## Install
 
-Use a Linux account with Docker access and a running systemd user manager. Install Docker Engine and Compose v2, Git, GitHub CLI, a supported Node.js 22 release with `node:sqlite`, npm, and `flock`. Authenticate GitHub CLI as the account authorized to publish to each selected project. Clone JAM-Bot and run `npm ci` in the checkout. For unattended reboot the Docker service must be enabled. The installer enables user lingering through `loginctl` or prints the administrative command if required.
+Use a Linux account with Docker access and a running systemd user manager. Install Docker Engine and Compose v2, Git, GitHub CLI, a supported Node.js 22 release with `node:sqlite`, npm, and `flock`. Authenticate GitHub CLI as the account authorized to publish to each selected project. Clone JAM-Bot. The installer runs `npm ci` in a fresh checkout. For unattended reboot the Docker service must be enabled. The installer enables user lingering through `loginctl` or prints the administrative command if required.
 
 Create a private environment file using [the documented service variables](SERVICE.md). Use absolute Linux paths for the webhook secret and GitHub App key, both readable by the service UID. Set `JAM_MANAGEMENT_HOSTS` to your authenticated public TLS hostname and any allowed local authorities. Omit the repository binding variables for an empty project list. The installer creates the server identity and private owner token and records the service user's numeric UID/GID for Linux bind mounts. `JAM_RECEIVER_IMAGE` can identify an existing locally loaded receiver image. By default the installer builds `jam-bot-local-service:latest` when absent.
 
@@ -18,7 +18,7 @@ node -p 'JSON.stringify({projects:{[process.env.PUBLISH_REPOSITORY]:{image:proce
 scripts/linux/install-service.sh /absolute/path/to/service.env "$PWD/publisher.json"
 ```
 
-The first installation can omit the catalog argument. No repository is authorized for publishing until the operator registers one. Reinstallation preserves the existing catalog if none is supplied. An explicit catalog replaces its contents. The receiver uses loopback port 19739 by default. Configure your existing HTTPS ingress to reach it and preserve the original Host and Authorization headers. See [management setup](MANAGEMENT.md) and [environment recipes](ENVIRONMENT-RUNNER.md).
+The first installation can omit the catalog argument. No repository is authorized for publishing until the operator registers one. Reinstallation reloads Compose and preserves an unchanged running receiver and its existing publisher catalog if none is supplied. An explicit catalog replaces its contents. The receiver uses loopback port 19739 by default. Configure your existing HTTPS ingress to reach it and preserve the original Host and Authorization headers. See [management setup](MANAGEMENT.md) and [environment recipes](ENVIRONMENT-RUNNER.md).
 
 ## Verify and operate
 
