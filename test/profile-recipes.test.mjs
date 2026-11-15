@@ -20,3 +20,11 @@ test('mixed repository recipes preserve their separate discovery roots',async()=
   await assert.rejects(testCandidate({project:projects['o/b'],files:['tsconfig.json','tests/a.test.ts']}),/No tracked tests/);
   assert.throws(()=>projectRecipes({projects:{'o/a':{image:'image-a',recipe:'npm-from-card'}}}),/Invalid trusted/);
 });
+
+test('calculator browser validation accepts only a pinned image on the selected build recipe',()=>{
+  const config=(recipe,calculatorBrowserImage)=>({projects:{'o/a':{image:'base',recipe,calculatorBrowserImage}}});
+  assert.throws(()=>projectRecipes(config('typescript-build','calculator:latest')),/Invalid calculator browser/);
+  const image='sha256:'+'a'.repeat(64);
+  assert.throws(()=>projectRecipes(config('node-strip',image)),/Invalid calculator browser/);
+  assert.equal(projectRecipes(config('typescript-build',image))['o/a'].calculatorBrowserImage,image);
+});
