@@ -6,7 +6,7 @@ test('isolated consultant pins the image, mounts only its own volume and denies 
  const args=antigravityArgs(profile,'test');
  assert.deepEqual(args.filter(a=>a.includes('type=volume')),['type=volume,src=jam-antigravity-home,dst=/home/jam']);
  assert.equal(args[args.indexOf('--network')+1],'jam-antigravity-private');
- assert.equal(args[args.indexOf('--entrypoint')+1],'/usr/local/bin/agy');assert.ok(args.includes(profile.image));
+ assert.equal(args[args.indexOf('--entrypoint')+1],'/bin/sh');assert.ok(args.includes(profile.image));
  const settings=JSON.parse(args[args.indexOf('--settings')+1]);
  assert.deepEqual(new Set(settings.permissions.deny),new Set(['read_file(*)','write_file(*)','command(*)','unsandboxed(*)','execute_url(*)','read_url(*)','mcp(*)']));
  for(const changed of [{image:'latest'},{volume:'other'},{model:'--new-project'}])assert.throws(()=>antigravityArgs({...profile,...changed},'test'));

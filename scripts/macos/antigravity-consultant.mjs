@@ -13,9 +13,10 @@ export function antigravityArgs(profile,name){
     '--cap-drop','ALL','--security-opt','no-new-privileges','--pids-limit','150','--memory','1536m','--cpus','2','--user','1000:1000',
     '--mount','type=volume,src='+profile.volume+',dst=/home/jam','--tmpfs','/tmp:rw,nosuid,nodev,noexec,size=128m','--workdir','/work',
     '--env','HOME=/home/jam','--env','HTTPS_PROXY='+endpoint,'--env','HTTP_PROXY='+endpoint,'--env','NO_PROXY=localhost,127.0.0.1',
-    '--entrypoint','/usr/local/bin/agy',profile.image,'--mode','plan','--settings',settings,'--disable-slash-commands','--print-timeout','3m',
-    ...(profile.model?['--model',profile.model]:[]),'--output-format','text','-p',
-    'Read the review packet from standard input. Give concise independent technical advice for the specified role. Use only the supplied text.'];
+    '--entrypoint','/bin/sh',profile.image,'-ec',
+    'packet=$(cat); exec /usr/local/bin/agy "$@" -p "Give concise independent technical advice using only this review packet.\n$packet"',
+    'consult','--mode','plan','--settings',settings,'--disable-slash-commands','--print-timeout','3m',
+    ...(profile.model?['--model',profile.model]:[]),'--output-format','text'];
 }
 export async function consultAntigravity({profile,packet,signal}){
   if(typeof packet!=='string'||Buffer.byteLength(packet)>65536||!packet.trim())throw Error('Invalid Antigravity review packet');
