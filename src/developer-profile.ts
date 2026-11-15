@@ -74,7 +74,7 @@ export async function runDeveloperProfile(p:ProfileRun) {
     const brief=await projectContext(project.tree,card.files,card.task);
     const scope=JSON.stringify({task:card.task,files:card.files});
     const spec=await stage(p,'architect','Return a compact English Markdown implementation specification, including acceptance tests.\n'+scope+'\n'+brief);
-    await publishSpecification({topic,issue,markdown:spec,signal});
+    await publishSpecification({topic,issue,markdown:spec,signal,authorize:p.authorize});
     await setCardProgress(topic,issue,'in progress');
     const assignment=await stage(p,'assignment','Prepare the developer handoff from this approved scope and specification.\n'+scope+'\n'+spec);
     const implementationContext=await projectContext(project.tree,card.files,card.task+'\n'+spec+'\n'+assignment);

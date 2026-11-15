@@ -1,9 +1,10 @@
 import { issueComment } from './issue-comment.js';
-import { attachmentUrl, digestOf, specName } from './specification-upload.js';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { digestOf, specName } from './specification-upload.js';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
-import { GitHubRequestError, issueClient } from './github-app.js';
+import {publishIssueSpec} from './issue-specification.js';
+import {atomicJson} from './storage.js';
+import { GitHubRequestError, issueClient, publisherIdentity } from './github-app.js';
 import type { Topic } from './intake-journal.js';
 
 const stages = ['queued','planning','in progress','in validation','blocked'] as const;
@@ -55,38 +56,16 @@ export async function completeCard(topic: Topic, issue: number, summary: string)
   }
 }
 
-// GitHub's web form accepts Markdown attachments. The public CLI upload endpoint
-// currently restricts uploads to media. Verify the operator's attachment in the original issue.
-export async function publishSpecification({topic,issue,markdown,signal}: {
-  topic:Topic;issue:number;markdown:string;signal:AbortSignal
+// Stage the exact architect bytes locally and confirm the copy attached to the original work card.
+export async function publishSpecification({topic,issue,markdown,signal,authorize}: {
+  topic:Topic;issue:number;markdown:string;signal:AbortSignal;authorize:()=>Promise<void>
 }) {
-  const api = await issueClient(topic.repository,topic.installation);
-  const digest = digestOf(markdown);
-  const name = specName(issue,digest);
-  const directory = join(dirname(topic.cwd),'assignments',String(issue),'attachments');
+  const state=dirname(topic.cwd);
+  const name=specName(issue,digestOf(markdown));
+  const directory=join(state,'assignments',String(issue),'attachments');
   await mkdir(directory,{recursive:true,mode:0o700});
   await writeFile(join(directory,name),markdown,{mode:0o600});
-  // The local uploader prepares this receipt after verifying the uploaded bytes.
-  // Waiting for the file uses no GitHub requests or model calls.
-  const ticket = join(directory,name+'.receipt.json');
-  for (;;) {
-    const raw = await readFile(ticket,'utf8').catch((error:NodeJS.ErrnoException)=>{
-      if (error.code !== 'ENOENT') throw error;
-      return '';
-    });
-    if (raw) {
-      const receipt = JSON.parse(raw) as {sha256:string;commentId:number;url:string};
-      if (receipt.sha256!==digest || !Number.isSafeInteger(receipt.commentId) || receipt.commentId<=0 ||
-          !/^https:\/\/github\.com\/user-attachments\/(?:files\/\d+\/[\w.%-]+|assets\/[a-f0-9-]+)$/.test(receipt.url)) {
-        throw new Error('Invalid attachment verification record');
-      }
-      const [repo,comment] = await Promise.all([api(''),api('/issues/comments/'+receipt.commentId)]);
-      if (comment.issue_url!=='https://api.github.com/repos/'+topic.repository+'/issues/'+issue ||
-          comment.user?.id!==repo.owner?.id || attachmentUrl(String(comment.body),name)!==receipt.url) {
-        throw new Error('Specification attachment is missing from the original work card');
-      }
-      return;
-    }
-    await delay(1500,undefined,{signal});
-  }
+  const [api,bot]=await Promise.all([issueClient(topic.repository,topic.installation),publisherIdentity(topic.repository,topic.installation)]);
+  const receipt=await publishIssueSpec(state,topic.repository,topic.repoId,issue,markdown,bot,api,authorize,signal);
+  await atomicJson(join(directory,name+'.artifact-receipt.json'),receipt);
 }

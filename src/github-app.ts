@@ -74,3 +74,12 @@ export async function availableInstallations(page:number) {
     installationId:i.id,account:i.account.login,suspended:Boolean(i.suspended_at)
   }));
 }
+
+export async function publisherIdentity(repository:string, installation:number) {
+  const app=await request('app',await appJwt());
+  if(String(app.id)!==process.env.JAM_GITHUB_APP_ID || typeof app.slug!=='string')throw Error('Unknown publishing application');
+  const read=await appReader(repository,String(installation));
+  const bot=await read('users/'+encodeURIComponent(app.slug+'[bot]'));
+  if(bot.type!=='Bot' || !Number.isSafeInteger(bot.id) || bot.login!==app.slug+'[bot]')throw Error('Unknown publishing bot');
+  return Number(bot.id);
+}
