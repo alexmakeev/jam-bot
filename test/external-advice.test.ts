@@ -29,7 +29,7 @@ test('each original work card retains attributable adviser results and identical
   };
   const cards=[{issue:2,approval},{issue:3,approval}];
   try{
-    const run=()=>externalReview(dir,topic,cards,'diagnosis',{revision:'abcd'},new AbortController().signal,broker,async (_,issue)=>{seen.push(issue);});
+    const run=()=>externalReview(dir,topic,cards,'diagnosis',{revision:'abcd'},new AbortController().signal,async()=>'RETRY',broker,async (_,issue)=>{seen.push(issue);});
     const first=await run();assert.equal((await run()).inputDigest,first.inputDigest);
     assert.equal(calls,1);assert.deepEqual(seen,[2,3,2,3]);assert.match(adviserNotes(first),/Check the test/);
     assert.doesNotMatch(adviserNotes(first),/Not signed in/);
@@ -48,7 +48,7 @@ test('retry only the failed independent adviser and retain both original and sub
       requests.push(req.only);
       return {sha:'',advice:req.only?[provider('b','ok')]:[provider('a','ok'),provider('b','error')]};
     };
-    const run=await externalReview(dir,topic,[{issue:2,approval}],'architecture',{draft:'ready'},new AbortController().signal,broker,async()=>{});
+    const run=await externalReview(dir,topic,[{issue:2,approval}],'architecture',{draft:'ready'},new AbortController().signal,async()=>'RETRY',broker,async()=>{});
     assert.deepEqual(requests,[undefined,['b']]);
     assert.deepEqual(run.advice.map(a=>a.status),['ok','ok']);
     const saved=JSON.parse(await readFile(join(dir,'consultations',run.inputDigest+'.json'),'utf8'));

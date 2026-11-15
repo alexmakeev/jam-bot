@@ -13,12 +13,13 @@ export async function git(cwd:string,...args:string[]) {
 }
 
 export type ReviewPhase='architecture'|'implementation'|'diagnosis';
-export interface Advice {name:string;provider:string;model?:string;status:'ok'|'unavailable'|'error';text:string}
+export interface ConsultationProgress {phase:ReviewPhase;updatedAt:string;providers:{name:string;provider:string;status:string;startedAt:string;updatedAt:string;finishedAt?:string}[]}
+export interface Advice {name:string;provider:string;model?:string;startedAt?:string;finishedAt?:string;status:'ok'|'unavailable'|'error';text:string}
 interface Request {action:'seed'|'test-head'|'test'|'publish'|'consult';phase?:ReviewPhase;packet?:string;only?:string[];repo:string;sha?:string;base?:string;expected?:string;cards?:{issue:number;approval:TaskApproval}[]}
 export interface BrokerResult {sha:string;advice?:Advice[];dev?:string;tests?:string[];log?:string;alreadyPublished?:boolean}
 export class PublisherSeedUnavailable extends Error {}
 
-export async function exchange(repository:string, request:Request,signal:AbortSignal) {
+export async function exchange(repository:string, request:Request,signal:AbortSignal,onSlow?:(progress:ConsultationProgress)=>Promise<void>) {
   const dir=join(process.env.JAM_PROFILE_EXCHANGE ?? '/var/lib/jam-profile-exchange',randomUUID());
   await mkdir(dir,{mode:0o700});
   let received=false;
@@ -32,11 +33,25 @@ export async function exchange(repository:string, request:Request,signal:AbortSi
     }
     await writeFile(join(dir,'request.tmp'),JSON.stringify(request),{mode:0o600});
     await rename(join(dir,'request.tmp'),join(dir,'request.ready'));
-    const until=Date.now()+(request.action==='consult'?35*60_000:240_000);
+    const started=Date.now();
+    let lastCheck=0,observedSlow=false;
+    const until=started+(request.action==='consult'?35*60_000:240_000);
     while(Date.now()<until){
       signal.throwIfAborted();
       const reply=await readFile(join(dir,'answer.json'),'utf8').catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;return '';});
-      if(!reply){await delay(500,undefined,{signal});continue;}
+      if(!reply){
+        if(onSlow && !observedSlow && Date.now()-started>=90000 && Date.now()-lastCheck>=10000){
+          lastCheck=Date.now();
+          const progress=await readFile(join(dir,'progress.json'),'utf8').catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;return '';});
+          if(progress){
+            const current=JSON.parse(progress) as ConsultationProgress;
+            if(current.phase===request.phase && Array.isArray(current.providers) && current.providers.some(p=>p.status==='running')){
+              observedSlow=true;await onSlow(current);
+            }
+          }
+        }
+        await delay(500,undefined,{signal});continue;
+      }
       received=true;
       const result=JSON.parse(reply);
       if(!result.ok && request.action==='seed' && result.error==='Repository outside publisher scope')
