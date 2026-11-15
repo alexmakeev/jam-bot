@@ -64,24 +64,25 @@ async function consultAntigravity(args){
   const adapter=await import('./antigravity-consultant.mjs');
   return adapter.consultAntigravity({...args,question:phaseBrief[args.phase]});
 }
-export async function consultAll(entries,phase,packet,adapters={codex:consultCodex,antigravity:consultAntigravity}) {
+export async function consultAll(entries,phase,packet,adapters={codex:consultCodex,antigravity:consultAntigravity},progress) {
   if(!['architecture','implementation','diagnosis'].includes(phase)||typeof packet!=='string'||Buffer.byteLength(packet)>65536)throw Error('Invalid consultation packet');
   if(!JSON.parse(packet)||!packet.trim())throw Error('Empty consultation packet');
   const advice=await Promise.all(consultantProfiles(entries).map(async profile=>{
     const identity={name:profile.name,provider:profile.provider,...(profile.model?{model:profile.model}:{})};
     const signal=AbortSignal.timeout((profile.timeoutMinutes??30)*60_000);
+    const startedAt=new Date().toISOString();
+    if(progress)await progress({...identity,status:'running',startedAt,updatedAt:startedAt});
+    let receipt;
     try{
-      const run=()=>adapters[profile.provider]({profile,packet,signal,phase});
-      let reply;
-      try {reply=await run();} catch(error){
-        if(!error.transient || signal.aborted)throw error;
-        reply=await run();
-      }
-      if(typeof reply!=='string'||!reply.trim())throw Error('Empty consultant response');
-      return {...identity,status:'ok',text:reply.trim().slice(0,6000)};
-    } catch(error){
-      return {...identity,status:error.unavailable?'unavailable':'error',text:signal.aborted?'Configured consultation timeout reached':error.unavailable?'Provider subscription unavailable':'Provider could not complete this consultation'};
+      const result=await adapters[profile.provider]({profile,packet,signal,phase});
+      if(typeof result!=='string'||!result.trim())throw Error('Empty consultant response');
+      receipt={...identity,status:'ok',text:result.trim().slice(0,6000)};
+    }catch(error){
+      receipt={...identity,status:error.unavailable?'unavailable':'error',text:signal.aborted?'Configured consultation timeout reached':error.unavailable?'Provider subscription unavailable':'Provider could not complete this consultation'};
     }
+    const finishedAt=new Date().toISOString();
+    if(progress)await progress({...identity,status:receipt.status,startedAt,finishedAt,updatedAt:finishedAt});
+    return {...receipt,startedAt,finishedAt};
   }));
   return {advice};
 }

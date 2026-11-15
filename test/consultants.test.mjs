@@ -24,13 +24,14 @@ test('runtime and profiles are constrained by the operator catalog',async()=>{
   await assert.rejects(consultAll([profile],'diagnosis','not json'));
 });
 
-test('retries are limited to existing named subscriptions and transient failures',async()=>{
+test('confirmed failures preserve timings and may retry only existing named subscriptions',async()=>{
   assert.throws(()=>selectedConsultants([profile],['unknown']));
   assert.throws(()=>selectedConsultants([profile],[]));
   assert.deepEqual(selectedConsultants([profile],['Codex']),[profile]);
-  let attempts=0;
+  let attempts=0;const states=[];
   const {advice}=await consultAll([profile],'diagnosis',packet,{codex:async()=>{
     attempts++;if(attempts===1)throw Object.assign(Error('retry'),{transient:true});return 'Use the failing seed';
-  }});
-  assert.equal(attempts,2);assert.equal(advice[0].status,'ok');
+  }},async event=>states.push(event.status));
+  assert.equal(attempts,1);assert.equal(advice[0].status,'error');assert.deepEqual(states,['running','error']);
+  assert.ok(Date.parse(advice[0].finishedAt)>=Date.parse(advice[0].startedAt));
 });

@@ -42,7 +42,18 @@ async function execute(dir) {
   if (!Object.hasOwn(projects,req.repo) || !/^[\w.-]+\/[\w.-]+$/.test(req.repo)) throw Error('Repository outside publisher scope');
   if(req.action==='consult'){
     await authorizedFiles(req);
-    return consultAll(selectedConsultants(projects[req.repo].consultants,req.only),req.phase,req.packet);
+    const providers=new Map();
+    let written=Promise.resolve();
+    const progress=event=>{
+      providers.set(event.name,event);
+      const bytes=JSON.stringify({phase:req.phase,updatedAt:event.updatedAt,providers:[...providers.values()]});
+      written=written.then(async()=>{
+        await writeFile(join(dir,'progress.tmp'),bytes,{mode:0o600,flag:'wx'});
+        await rename(join(dir,'progress.tmp'),join(dir,'progress.json'));
+      });
+      return written;
+    };
+    return consultAll(selectedConsultants(projects[req.repo].consultants,req.only),req.phase,req.packet,undefined,progress);
   }
   const url='https://github.com/'+req.repo+'.git';
   const temp=await mkdtemp(join(tmpdir(),'jam-broker-'));
