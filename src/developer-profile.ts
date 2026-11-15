@@ -7,7 +7,7 @@ import { BranchValidation } from './branch-validation.js';
 import { IntegrationQueue, type IntegrationBatch, type ReadyBranch } from './integration-queue.js';
 import {assembleCandidate} from './integration-assembly.js';
 import {implementationCommit} from './implementation-checkpoint.js';
-import {fingerprint,recordProgress} from './work-progress.js';
+import {fingerprint,recordProgress,reconcileProgress} from './work-progress.js';
 import {checkpointRole} from './role-checkpoint.js';
 import { type StageRole } from './role-harness.js';
 import { checkout, exchange, git } from './profile-checkout.js';
@@ -318,6 +318,7 @@ export async function integrateReady(runtime:TopicRuntime,signal:AbortSignal,que
       if(ready.sha!==head.sha || ready.project.branch!==head.branch)throw Error('Recorded branch mismatch');
       return {...head,...ready};
     }));
+    for(const e of entries)await reconcileProgress(state,topic,e.issue);
     const seed=await exchange(store,{action:'seed',repo:topic.repository},signal);
     let candidate=await readJson<{sha:string;base:string;expected:string}>(marker).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;});
     if(candidate && seed.dev===candidate.sha)published=true;

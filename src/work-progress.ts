@@ -80,3 +80,32 @@ export function pendingProgress(state:string) {
   try{return db.prepare('SELECT issue,key,body,status,retryAt FROM events WHERE receipt IS NULL ORDER BY rowid').all();}
   finally{db.close();}
 }
+
+// A restored database may lag GitHub. A missing or edited authenticated handoff cannot authorize a replay.
+export async function reconcileProgress(state:string,topic:Topic,issue:number,credentials=async():Promise<[Api,number]>=>Promise.all([
+  issueClient(topic.repository,topic.installation),publisherIdentity(topic.repository,topic.installation)])){
+  const db=open(state);
+  try{
+    const [api,bot]=await credentials();
+    if((await api('')).id!==topic.repoId)throw Error('Timeline reconciliation repository mismatch');
+    const rows=db.prepare('SELECT key,body,receipt FROM events WHERE issue=?').all(issue);
+    const local=new Map(rows.map(r=>[String(r.key),r]));
+    const confirmed=new Set<string>();
+    const target='https://api.github.com/repos/'+topic.repository+'/issues/'+issue;
+    for(let page=1;;page++){
+      const comments:Comment[]=await api('/issues/'+issue+'/comments?per_page=100&page='+page);
+      for(const item of comments){
+        if(item.user?.id!==bot || item.issue_url!==target)continue;
+        const key=/<!-- jam-bot:progress:([0-9a-f]{64}) -->$/.exec(item.body)?.[1];
+        if(!key)continue;
+        const record=local.get(key);
+        if(!record || record.body!==item.body || (record.receipt!==null && record.receipt!==item.id) || confirmed.has(key))
+          throw Error('Source work card and local handoff disagree; reconcile before dispatch');
+        confirmed.add(key);
+        if(record.receipt===null)db.prepare("UPDATE events SET receipt=?,status='sent' WHERE issue=? AND key=?").run(item.id,issue,key);
+      }
+      if(comments.length<100)break;
+    }
+    if(rows.some(r=>r.receipt!==null && !confirmed.has(String(r.key))))throw Error('A confirmed work card handoff is missing; reconcile before dispatch');
+  }finally{db.close();}
+}

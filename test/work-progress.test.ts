@@ -82,3 +82,21 @@ test('integration resumes after a fast-forward already happened before the next 
   assert.deepEqual(saved,{sha:head,base,expected:base});
   assert.deepEqual(await assembleCandidate(repo,dir,{sha:base,dev:base},[head]),saved);
 });
+
+test('source reconciliation ignores a forged marker and holds a missing or unrecognized authenticated handoff',async t=>{
+  const {reconcileProgress}=await import('../src/work-progress.js');
+  const dir=await mkdtemp(join(tmpdir(),'source-progress-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+  recordProgress(dir,6,'handoff','Architecture delivered.');
+  const db=new DatabaseSync(join(dir,'work-progress.sqlite'));t.after(()=>db.close());
+  const row=db.prepare('select body from events').get()!;
+  const comment={id:22,user:{id:19},body:String(row.body),issue_url:'https://api.github.com/repos/owner/repo/issues/6'};
+  const comments=[comment];
+  const api=async(path:string)=>path===''?{id:10}:comments;
+  const creds=async():Promise<[typeof api,number]>=>[api,19];
+  await reconcileProgress(dir,topic,6,creds);
+  assert.equal(db.prepare('select receipt from events').get()!.receipt,22);
+  comment.user.id=18;
+  await assert.rejects(reconcileProgress(dir,topic,6,creds),/missing/);
+  comment.user.id=19;comment.body='another outcome'+comment.body.slice(comment.body.indexOf('\n'));
+  await assert.rejects(reconcileProgress(dir,topic,6,creds),/disagree/);
+});
