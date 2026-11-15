@@ -1,7 +1,7 @@
 // Local dev publisher for explicitly selected repositories. The service only exchanges Git bundles.
 import {consultAll,selectedConsultants} from './consultants.mjs';
 import {setTimeout as delay} from 'node:timers/promises';
-import {calculatorRepo,queueCalculator,reconcileCalculator} from './calculator-deployment.mjs';
+import {calculatorRepo,queueCalculator,reconcileCalculator,sandboxRepo,queueSandbox,reconcileSandbox} from './calculator-deployment.mjs';
 import {projectRecipes,testCandidate} from './profile-recipes.mjs';
 import { brokerFiles } from './runtime/broker-approval.js';
 import { execFile } from 'node:child_process';
@@ -94,6 +94,7 @@ async function execute(dir) {
     if(req.action==='publish') {
       await authorizedFiles(req);
       await queueCalculator(projects[req.repo],req);
+      await queueSandbox(projects[req.repo],req);
       await git(temp,['push','--force-with-lease=refs/heads/dev:'+req.expected,'origin',req.sha+':refs/heads/dev']);
       if(!(await git(temp,['ls-remote','origin','refs/heads/dev'])).startsWith(req.sha+'\t'))throw Error('Publication requires reconciliation');
     }
@@ -128,5 +129,6 @@ do {
     }else await reply(dir);
   }
   await reconcileCalculator(projects[calculatorRepo]);
+  await reconcileSandbox(projects[sandboxRepo]);
   if(consultations.size)await Promise.race([...consultations,delay(1000)]);
 }while(consultations.size);

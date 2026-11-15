@@ -53,3 +53,14 @@ test('failed deployment retries the same built image and reconciles an already h
   assert.equal(JSON.parse(await readFile(file,'utf8')).done,'deployed');
   assert.deepEqual(calls,['get','status','build','deploy','get','status']);
 });
+
+test('Sandbox publication uses its own repo identity, opt-in and development queue',async t=>{
+  const {queueSandbox,sandboxRepo}=await import('../scripts/macos/calculator-deployment.mjs');
+  const dir=await mkdtemp(join(tmpdir(),'jam-sandbox-queue-'));t.after(()=>rm(dir,{force:true,recursive:true}));
+  const req={action:'publish',repo:sandboxRepo,expected:'a'.repeat(40),sha:'b'.repeat(40)};
+  await queueSandbox({autoDeployCalculator:true},req,dir);
+  await queueSandbox({autoDeploySum:true},{...req,repo:calculatorRepo},dir);
+  assert.deepEqual(await readdir(dir),[]);
+  await queueSandbox({autoDeploySum:true},req,dir);
+  assert.equal(JSON.parse(await readFile(join(dir,req.sha+'.json'),'utf8')).base,req.expected);
+});

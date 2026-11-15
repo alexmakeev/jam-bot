@@ -2,16 +2,18 @@
 import assert from 'node:assert/strict';
 import {chromium} from 'playwright-core';
 import ts from 'typescript';
+import {checkSumPage} from './sum-acceptance.mjs';
 import {checkDragonSpec} from './dragon-acceptance.mjs';
 
 let payload='';
 for await (const chunk of process.stdin) payload+=chunk;
-const {html,source,sha,checks=[]}=JSON.parse(payload);
+const {html,source,sha,checks=[],site}=JSON.parse(payload);
 const module=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.ES2022,target:ts.ScriptTarget.ES2022}}).outputText;
 const base='http://calculator.test/';
 const browser=await chromium.launch({args:['--disable-dev-shm-usage']});
 try {
-  for(const [width,height] of [[1440,900],[390,844],[320,740]]){
+  if(site==='sum')await checkSumPage(browser,base,html,module,checks.includes('runningTotals'));
+  else for(const [width,height] of [[1440,900],[390,844],[320,740]]){
     const context=await browser.newContext({viewport:{width,height},serviceWorkers:'block',reducedMotion:'reduce'});
     const errors=[];
     const page=await context.newPage();

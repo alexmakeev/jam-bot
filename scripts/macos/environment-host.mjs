@@ -83,12 +83,16 @@ export async function serve(root,exchange,tokenPath) {
   async function run(x){
     const key=x.serverId+'/'+x.repoId+'/'+x.environment;
     let recipe=selectEnvironmentRecipe(host.recipes,x.repoId,x.environment);
-    if(x.action==='deploy' && x.repoId===1457276291 && x.environment==='calculator' && recipe?.tier==='development' && recipe.autoDeployCalculator===true){
+    const developmentSite=x.repoId===1457276291 && x.environment==='calculator' && recipe?.autoDeployCalculator===true
+      ? {port:19853,index:'calculator-dev-releases.json'}
+      : x.repoId===1457276329 && x.environment==='sum' && recipe?.autoDeploySum===true
+        ? {port:19854,index:'sum-dev-releases.json'} : undefined;
+    if(x.action==='deploy' && developmentSite && recipe?.tier==='development'){
       let releases={};
-      try{releases=JSON.parse(await privateConfig(join(root,'calculator-dev-releases.json')));}
+      try{releases=JSON.parse(await privateConfig(join(root,developmentSite.index)));}
       catch(error){if(error.code!=='ENOENT')throw error;}
       if(Object.entries(releases).some(([sha,id])=>!/^[a-f0-9]{40}$/.test(sha)||!image.test(id)))throw Error('Invalid development release index');
-      if(Object.hasOwn(releases,x.revision) && ((x.secretRefs?.length??0)>0 || x.endpoint?.port!==19853 || x.endpoint?.address!=='127.0.0.1'))
+      if(Object.hasOwn(releases,x.revision) && ((x.secretRefs?.length??0)>0 || x.endpoint?.port!==developmentSite.port || x.endpoint?.address!=='127.0.0.1'))
         throw Error('Automatic calculator releases require the dedicated loopback endpoint and no secrets');
       recipe={...recipe,releases:{...releases,...recipe.releases}};
     }
