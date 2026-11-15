@@ -1,3 +1,4 @@
+import {loadProjectValues,responsible} from './project-values.js';
 import {DatabaseSync} from 'node:sqlite';
 import { issueComment } from './issue-comment.js';
 import { digestOf, specName } from './specification-upload.js';
@@ -68,7 +69,8 @@ async function authenticatedComment(topic:Topic,issue:number,body:string,lookupO
 export async function requestFileScope(topic:Topic,issue:number,plan:string) {
   issueComment('needs-files',plan);
   const state=dirname(topic.cwd),key='scope-plan:'+fingerprint(plan);
-  recordProgress(state,issue,key,'The architect completed the implementation plan. Create a linked Task listing the approved file paths before development.',{purpose:'plan',markdown:plan});
+  const recipient=responsible(await loadProjectValues(topic),'architecture');
+  recordProgress(state,issue,key,'@'+recipient+' — the architect completed the implementation plan. Create a linked Task listing the approved file paths before development.',{purpose:'plan',markdown:plan});
   await confirmedProgress(state,topic,issue,key);
   await setCardProgress(topic,issue,'blocked');
 }

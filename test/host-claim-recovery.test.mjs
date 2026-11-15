@@ -15,6 +15,7 @@ test('restarted publisher commits a staged answer and preserves an uncertain adv
   // No new request is executed in this fixture. A second dispatch must fail the test.
   await mkdir(join(installed,'runtime'));
   await writeFile(join(installed,'runtime','package.json'),'{"type":"module"}');
+  await writeFile(join(installed,'runtime','project-values-reader.js'),"export function readProjectSource(){throw Error('unexpected profile dispatch')}");
   await writeFile(join(installed,'runtime','broker-approval.js'),"export function brokerFiles(){throw Error('unexpected new dispatch')}");
   await writeFile(join(dir,'config.json'),'{"projects":{}}');
   const ids=['11111111-1111-4111-a111-111111111111','22222222-2222-4222-a222-222222222222'];

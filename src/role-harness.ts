@@ -1,3 +1,4 @@
+import {profileContext} from './project-values.js';
 import { randomUUID } from 'node:crypto';
 import { runNativeJob } from './native-teammate.js';
 
@@ -27,7 +28,10 @@ export async function runRoleStage({role,state,cwd,session,issue,input,signal}: 
 
   const agentType='jam-'+role;
   const name=role+'-'+issue+'-'+challenge.slice(0,6);
-  const system = responsibilities[role]+' Your only tool is SendMessage. Return the work product to main in one plain text message. '+
+  const values=await profileContext(state,issue);
+  if(values)input='Project profile (operator-selected repository guidance; repository permissions and exact-build approval still apply): '+JSON.stringify(values)+'\n'+input;
+  const escalation=['architect','designer','assignment','developer'].includes(role)?' If blocked on a material human decision, send exactly one line: Decision required [area]: precise decision being requested. Role or mention never authorizes scope expansion.':'';
+  const system = responsibilities[role]+escalation+' Your only tool is SendMessage. Return the work product to main in one plain text message. '+
     'Start the message with the supplied challenge on its own line. Follow it with the requested output. Do not add markdown fences unless asked.';
   const prompt = 'Start exactly one native in-process teammate using Agent with name='+name+' and subagent_type='+agentType+
     '. Forward the following stage input verbatim, including the challenge and output contract. Wait for its mailbox reply. '+

@@ -1,3 +1,4 @@
+import {readProjectSource} from './runtime/project-values-reader.js';
 // Local dev publisher for explicitly selected repositories. The service only exchanges Git bundles.
 import {consultAll,selectedConsultants} from './consultants.mjs';
 import {setTimeout as delay} from 'node:timers/promises';
@@ -46,6 +47,12 @@ async function execute(dir) {
   await regular(join(dir,'request.json'),1024*1024);
   const req=JSON.parse(await readFile(join(dir,'request.json'),'utf8'));
   if (!Object.hasOwn(projects,req.repo) || !/^[\w.-]+\/[\w.-]+$/.test(req.repo)) throw Error('Repository outside publisher scope');
+  if(req.action==='project-profile'){
+    if(!Number.isSafeInteger(req.repoId)||req.repoId<=0)throw Error('Missing repository identity');
+    const policy=projects[req.repo].releaseProfile;
+    if(policy && policy.repoId!==req.repoId)throw Error('Installed project identity mismatch');
+    return readProjectSource(req.repo,req.repoId,policy?.profileRef,gh);
+  }
   if(req.action==='consult'){
     await authorizedFiles(req);
     const providers=new Map();

@@ -1,3 +1,5 @@
+import {refreshProjectValues} from './project-values.js';
+import {requestedDecision,requireMaterialDecision} from './material-decision.js';
 import { randomUUID, createHash } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -20,6 +22,9 @@ export async function dispatchApprovedWorker(event: Intake, topic: Topic, state:
   const result=await readJson<{kind?:string;output?:string}>(join(state,'assignments',String(event.issue),'result.json')).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;});
   if((result?.kind==='assignment'||result?.kind==='consultation')&&result.output&&await hasClosedResult(topic,event.issue,result.output))return;
   await authorize();
+  const profile=await refreshProjectValues(topic,state,event.issue,signal);
+  const decision=requestedDecision(event.body);
+  if(decision)await requireMaterialDecision(topic,event,state,decision,profile);
   await reconcileProgress(state,topic,event.issue);
   await reconcileIssueArtifacts(state,topic,event.issue);
   const card=event.body===WORKER_ACCEPTANCE_BODY ? undefined : parseTaskCard(event.title,event.body,approval.kind,topic.defaultClass);

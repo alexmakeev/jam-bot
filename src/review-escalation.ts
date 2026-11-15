@@ -2,8 +2,8 @@ import {randomUUID} from 'node:crypto';
 import {join} from 'node:path';
 import {homedir} from 'node:os';
 import type {DatabaseSync} from 'node:sqlite';
-import {issueClient,publisherIdentity,appReader} from './github-app.js';
-import {hasTaskWriteAccess} from './task-approval.js';
+import {issueClient,publisherIdentity} from './github-app.js';
+import {loadProjectValues,responsible} from './project-values.js';
 import {runRoleStage} from './role-harness.js';
 import {mailboxReceipt} from './native-teammate.js';
 import {atomicJson,readJson} from './storage.js';
@@ -37,19 +37,6 @@ export async function migrateReviewNotices(runtime:TopicRuntime){
     if(correction.sha===revision && await git(join(state,'worktrees',String(issue)),'rev-parse','HEAD')===revision)
       queueReviewNotice(journal.db,issue,revision,'consultant','The native model refused the mandatory review');
   }
-}
-
-async function maintainer(runtime:TopicRuntime,issue:number){
-  const {topic,journal}=runtime,read=await appReader(topic.repository,String(topic.installation));
-  const repo=await read('repos/'+topic.repository);
-  if(repo.id!==topic.repoId)throw Error('Review escalation repository identity changed');
-  if(repo.owner?.type==='User' && /^[a-zA-Z0-9-]+$/.test(repo.owner.login))return String(repo.owner.login);
-  const row=journal.db.prepare("SELECT actorId,actorLogin FROM intake WHERE issue=? AND action='task'").get(issue);
-  if(row && await hasTaskWriteAccess(topic,{type:'User',id:Number(row.actorId),login:String(row.actorLogin)},read))return String(row.actorLogin);
-  const admins=await read('repos/'+topic.repository+'/collaborators?permission=admin&per_page=100');
-  const admin=admins.find((user:{type:string;login:string})=>user.type==='User'&&/^[a-zA-Z0-9-]+$/.test(user.login));
-  if(!admin)throw Error('No authorized maintainer for review escalation');
-  return String(admin.login);
 }
 
 export async function publishReviewNotice(api:Awaited<ReturnType<typeof issueClient>>,bot:number,notice:Notice,owner:string){
@@ -97,7 +84,7 @@ export async function deliverReviewNotice(runtime:TopicRuntime,signal:AbortSigna
       db.prepare('UPDATE review_escalations SET diagnosis=? WHERE issue=? AND revision=? AND role=?').run(recommendation,...ids);
       notice.diagnosis=recommendation;
     }
-    const [api,bot,owner]=await Promise.all([issueClient(topic.repository,topic.installation),publisherIdentity(topic.repository,topic.installation),maintainer(runtime,notice.issue)]);
+    const [api,bot,owner]=await Promise.all([issueClient(topic.repository,topic.installation),publisherIdentity(topic.repository,topic.installation),loadProjectValues(topic).then(profile=>responsible(profile,notice.role==='integrator'?'integration':'code review'))]);
     const remote=await publishReviewNotice(api,bot,notice,owner);
     db.prepare('UPDATE review_escalations SET remote=? WHERE issue=? AND revision=? AND role=?').run(remote,...ids);
   }catch(error){

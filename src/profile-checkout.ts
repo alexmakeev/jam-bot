@@ -16,8 +16,8 @@ export async function git(cwd:string,...args:string[]) {
 export type ReviewPhase='architecture'|'implementation'|'diagnosis';
 export interface ConsultationProgress {phase:ReviewPhase;updatedAt:string;providers:{name:string;provider:string;status:string;startedAt:string;updatedAt:string;finishedAt?:string}[]}
 export interface Advice {name:string;provider:string;model?:string;startedAt?:string;finishedAt?:string;status:'ok'|'unavailable'|'error';text:string}
-interface Request {scope?:string;action:'seed'|'test-head'|'test'|'publish'|'consult';phase?:ReviewPhase;packet?:string;only?:string[];repo:string;sha?:string;base?:string;expected?:string;cards?:{issue:number;approval:TaskApproval}[]}
-export interface BrokerResult {sha:string;advice?:Advice[];dev?:string;tests?:string[];log?:string;alreadyPublished?:boolean;awaitDeployment?:boolean}
+interface Request {repoId?:number;scope?:string;action:'project-profile'|'seed'|'test-head'|'test'|'publish'|'consult';phase?:ReviewPhase;packet?:string;only?:string[];repo:string;sha?:string;base?:string;expected?:string;cards?:{issue:number;approval:TaskApproval}[]}
+export interface BrokerResult {sha:string;markdown?:string;owner?:string;advice?:Advice[];dev?:string;tests?:string[];log?:string;alreadyPublished?:boolean;awaitDeployment?:boolean}
 export class PublisherSeedUnavailable extends Error {}
 
 interface Reply {uncertain?:boolean;ok:boolean;error?:string;value?:BrokerResult}
@@ -40,7 +40,7 @@ export async function exchange(repository:string, request:Request,signal:AbortSi
   signal.throwIfAborted();
   const root=process.env.JAM_PROFILE_EXCHANGE ?? '/var/lib/jam-profile-exchange';
   // Unscoped seeds deliberately read current remote state during integration reconciliation.
-  const durable=request.action!=='seed' || Boolean(request.scope);
+  const durable=request.action!=='project-profile' && (request.action!=='seed' || Boolean(request.scope));
   const digest=createHash('sha256').update(JSON.stringify(request,canonical)).digest('hex');
   const id=durable?[digest.slice(0,8),digest.slice(8,12),digest.slice(12,16),digest.slice(16,20),digest.slice(20,32)].join('-'):randomUUID();
   const dir=join(root,id),stage=join(root,'.prepared-'+id);

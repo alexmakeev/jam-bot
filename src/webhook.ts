@@ -1,3 +1,4 @@
+import {decisionReply,wakeDecision} from './material-decision.js';
 import { storeReleaseApprovalHint } from './release-approval-hint.js';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -33,12 +34,18 @@ async function receive(req: IncomingMessage, res: ServerResponse, routes: Routes
   if (!data || typeof data !== 'object' || Array.isArray(data)) return end(400);
   const type = req.headers['x-github-event'];
   const approvalComment=type==='issue_comment' && data.action==='created' && data.comment?.body?.startsWith?.('Approve JAM-Bot stable release of ');
-  if (!approvalComment && (type !== 'issues' || !['opened','typed'].includes(data.action))) return end(204);
+  const decision=type==='issue_comment' && data.action==='created' && typeof data.comment?.body==='string' && decisionReply.exec(data.comment.body);
+  if (!decision && !approvalComment && (type !== 'issues' || !['opened','typed'].includes(data.action))) return end(204);
   const repoId = data.repository?.id;
   const installation = data.installation?.id;
   if (!Number.isSafeInteger(repoId) || !Number.isSafeInteger(installation)) return end(403);
   const route = routes.get(topicKey(installation,repoId));
   if (!route || data.repository.full_name !== route.topic.repository) return end(403);
+  if(decision){
+    if(data.sender?.type==='User' && data.sender.id===data.comment.user?.id && !data.issue?.pull_request && Number.isSafeInteger(data.issue?.number))
+      wakeDecision(route.journal.db,data.issue.number,decision[2]!);
+    return end(204);
+  }
   if(approvalComment){
     if(!data.issue?.pull_request && data.sender?.type==='User')await storeReleaseApprovalHint(process.env.JAM_PROFILE_EXCHANGE ?? '/var/lib/jam-profile-exchange',repoId,route.topic.repository,data.issue?.number,data.comment,data.sender.id);
     return end(204);

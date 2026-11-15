@@ -1,3 +1,4 @@
+import {profileContext} from './project-values.js';
 import {recordProgress} from './work-progress.js';
 import {createHash} from 'node:crypto';
 import {join} from 'node:path';
@@ -45,7 +46,8 @@ export function adviserNotes(run:ExternalReview) {
 
 export async function externalReview(state:string,topic:Topic,cards:Card[],phase:ReviewPhase,fields:Fields,signal:AbortSignal,
   decide:Decide,call=exchange,report?:(topic:Topic,issue:number,record:Evidence)=>Promise<void>):Promise<ExternalReview>{
-  const packet=reviewPacket(fields);
+  const values=cards.length?await profileContext(state,cards[0]!.issue):'';
+  const packet=reviewPacket(values?{projectValues:values,...fields}:fields);
   const ids=cards.map(c=>c.issue);
   const inputDigest=sha(JSON.stringify([topic.repoId,phase,cards,packet]));
   const path=join(state,'consultations',inputDigest+'.json');

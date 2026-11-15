@@ -1,3 +1,5 @@
+import {refreshProjectValues} from './project-values.js';
+import {DecisionPending,pauseDecision} from './material-decision.js';
 import { readdir, readFile, readlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -38,6 +40,7 @@ async function consume({journal,topic,state}: TopicRuntime, signal: AbortSignal)
   const runtime={journal,topic,state};
   prepareReviewNotices(journal.db);
   try {
+    journal.db.prepare("UPDATE intake SET workerState='pending' WHERE workerState='waiting-decision'").run();
     await migrateReviewNotices(runtime);
     for(const row of journal.db.prepare("SELECT delivery,issue FROM intake WHERE state='review' AND reason='Service stopped during dispatch'").all()){
       const receipt=await recoveredIntake({issue:Number(row.issue),delivery:String(row.delivery)},journal.lead(),topic.cwd,topic.repository);
@@ -54,6 +57,7 @@ async function consume({journal,topic,state}: TopicRuntime, signal: AbortSignal)
           await dispatchApprovedWorker(execution,topic,state,signal,journal.lead().id);
           journal.finishWorker(execution.delivery);
         } catch (err) {
+          if(err instanceof DecisionPending){pauseDecision(journal.db,execution.delivery,execution.issue,err.message);continue;}
           if(err instanceof PublisherSeedUnavailable) {
             journal.deferPublisherSeed(execution.delivery);
             continue;
@@ -68,7 +72,8 @@ async function consume({journal,topic,state}: TopicRuntime, signal: AbortSignal)
       if (!event) { await delay(500); continue; }
       try {
         if(event.action==='task')await validateTaskApproval(topic,event.issue,approvalFromEvent(event));
-        const ack = await notifyLeo(event,journal.lead(),topic.cwd,topic.repository,signal);
+        const profile=event.action==='task'?await refreshProjectValues(topic,state,event.issue,signal):undefined;
+        const ack = await notifyLeo(event,journal.lead(),topic.cwd,topic.repository,signal,profile?.markdown);
         journal.complete(ack);
         console.log('Leo acknowledged issue',topic.repository,event.issue);
       } catch (err) {

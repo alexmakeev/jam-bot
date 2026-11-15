@@ -1,3 +1,5 @@
+import {refreshProjectValues} from './project-values.js';
+import {requestedDecision,requireMaterialDecision} from './material-decision.js';
 import { lstat, mkdir, readFile, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import {mandatoryReview} from './review-supervisor.js';
@@ -32,7 +34,20 @@ const directory=(state:string,issue:number)=>join(state,'assignments',String(iss
 async function stage(p:ProfileRun,role:StageRole,input:string,emitResult=true){
   await p.authorize();
   const next={designer:'architect draft',architect:'architecture handoff',assignment:'assigned execution or publication',developer:'candidate validation and review',consultant:'result publication',integrator:'publication decision'};
-  const receipt=await checkpointRole({role,state:p.state,cwd:p.topic.cwd,session:p.lead,issue:p.issue,input,signal:p.signal},next[role],undefined,undefined,emitResult);
+  const invoke=(text:string)=>checkpointRole({role,state:p.state,cwd:p.topic.cwd,session:p.lead,issue:p.issue,input:text,signal:p.signal},next[role],undefined,undefined,emitResult);
+  let receipt=await invoke(input);
+  const decisions=new Map<string,{area:string;scope:string}>();
+  while(receipt.output.startsWith('Decision required [')){
+    const decision=requestedDecision(receipt.output);
+    if(!decision)throw Error('Incomplete material decision');
+    await p.authorize();
+    const task={...p.approval,issue:p.issue,actorId:p.approval.actor.id,authorId:p.approval.author.id,authorLogin:p.approval.author.login};
+    await requireMaterialDecision(p.topic,task,p.state,decision,await refreshProjectValues(p.topic,p.state,p.issue,p.signal));
+    const key=JSON.stringify(decision);
+    if(decisions.has(key))throw Error('Stage repeated a verified decision; inspect the checkpoint');
+    decisions.set(key,decision);
+    receipt=await invoke('Verified maintainer decisions within this same approved Task: '+JSON.stringify([...decisions.values()])+'. Continue the original stage within its approved file scope.\n'+input);
+  }
   await atomicJson(join(directory(p.state,p.issue),role+'.json'),receipt);
   return receipt.output;
 }
@@ -42,7 +57,7 @@ export async function projectContext(tree:string, files:string[], references:str
   const parts=['Tracked files: '+JSON.stringify(names)];
   // A referenced implementation or neighboring test is read-only context for the teammate.
   const referenced=names.filter(name=>/\.(?:[cm]?[jt]sx?|md)$/.test(name) && references.includes(name));
-  const required=new Set(['.jam-bot/VALUES.md','README.md',...files]);
+  const required=new Set(['README.md',...files]);
   let remainingReferenceBytes=16000;
   for(const file of new Set([...required,...referenced])){
     const path=join(tree,file);
@@ -316,6 +331,7 @@ export async function integrateReady(runtime:TopicRuntime,signal:AbortSignal,que
   await mkdir(dir,{recursive:true});
   let published=false;
   try{
+    await refreshProjectValues(topic,state,batch.entries.map(head=>head.issue),signal);
     const entries=await Promise.all(batch.entries.map(async head=>{
       const ready=await readJson<Ready>(join(directory(state,head.issue),'ready.json'));
       if(ready.sha!==head.sha || ready.project.branch!==head.branch)throw Error('Recorded branch mismatch');
