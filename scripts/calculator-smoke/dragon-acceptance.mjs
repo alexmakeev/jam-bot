@@ -54,6 +54,45 @@ export async function checkDragonSpec(browser, base, html, module) {
       }
     }
     console.log('D1-D3/M1-M3/A1: eleven viewports spanning 320–1440 px; side and band sizes, no intersections, inaccessible decoration, identity, RGB shading, face winding and canvas thirds passed. R1: zero painted pixels in outer 2px across still poses.');
+    const retina=await browser.newContext({deviceScaleFactor:2,viewport:{width:375,height:812},serviceWorkers:'block',reducedMotion:'reduce'});
+    try {
+      await retina.route('**/*',route=>{
+        if(route.request().url()===base)return route.fulfill({contentType:'text/html; charset=utf-8',body:html});
+        if(route.request().url()===base+'triangular.js')return route.fulfill({contentType:'text/javascript',body:module});
+        return route.abort();
+      });
+      const p=await retina.newPage();
+      await p.addInitScript(()=>{
+        let nextId=0;
+        const pending=new Map();
+        window.requestAnimationFrame=callback=>{pending.set(++nextId,callback);return nextId;};
+        window.cancelAnimationFrame=id=>pending.delete(id);
+        window.sampleDragonFrame=time=>{const current=[...pending.values()];pending.clear();for(const callback of current)callback(time);};
+      });
+      await p.goto(base+'#dragon-debug');
+      await p.emulateMedia({reducedMotion:'no-preference'});
+      for(const width of [320,375,480,768,1024,1280,1440]){
+        await p.setViewportSize({width,height:800});
+        await p.waitForFunction(()=>[...document.querySelectorAll('canvas')].filter(c=>c.clientWidth).every(c=>Math.abs(c.width-c.clientWidth*2)<=1),null,{polling:50,timeout:5000});
+        const results=await p.evaluate(()=>{
+          let touched=0;
+          const panels=[...document.querySelectorAll('canvas')].filter(c=>c.clientWidth);
+          for(let phase=0;phase<12;phase++){
+            window.sampleDragonFrame(3500*phase/12);
+            for(const c of panels){
+              const ctx=c.getContext('2d');
+              for(const [x,y,w,h] of [[0,0,c.width,4],[0,c.height-4,c.width,4],[0,4,4,c.height-8],[c.width-4,4,4,c.height-8]]){
+                const pixels=ctx.getImageData(x,y,w,h).data;
+                for(let i=3;i<pixels.length;i+=4)if(pixels[i])touched++;
+              }
+            }
+          }
+          return touched;
+        });
+        assert.equal(results,0,'Shadow/geometry touches outer two CSS pixels at DPR 2, width '+width);
+      }
+      console.log('R1: verified transparent 2 CSS pixel border at DPR 2 on 7 widths across 12 sampled animation phases including wing extremes.');
+    } finally {await retina.close();}
     const first=await page.locator('canvas:visible').first().screenshot();
     await page.waitForTimeout(1000);
     assert.ok(first.equals(await page.locator('canvas:visible').first().screenshot()),'Reduced motion changed');
