@@ -84,12 +84,13 @@ export async function exchange(repository:string, request:Request,signal:AbortSi
     const started=Date.now();
     let lastCheck=0,observedSlow=false,progressKey='';
     const until=started+(request.action==='consult'?35*60_000:240_000);
+    let malformedReads=0;
     while(Date.now()<until){
       signal.throwIfAborted();
       const reply=await readFile(join(dir,'answer.json'),'utf8').catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;return '';});
       const slow=Boolean(onSlow) && !observedSlow && Date.now()-started>=90000 && Date.now()-lastCheck>=10000;
       if(onProgress || slow){
-        const current=await readJson<ConsultationProgress>(join(dir,'progress.json')).catch(e=>{if(!missing(e))throw e;});
+        const current=await readJson<ConsultationProgress>(join(dir,'progress.json')).catch(e=>{if(!missing(e) && !(e instanceof SyntaxError))throw e;});
         if(current && current.phase===request.phase && Array.isArray(current.providers)){
           const key=JSON.stringify(current.providers.map(p=>[p.name,p.status]));
           if(onProgress && key!==progressKey){await onProgress(current);progressKey=key;}
@@ -102,7 +103,12 @@ export async function exchange(repository:string, request:Request,signal:AbortSi
         const done=await cached();if(done)return value(done);
         await delay(500,undefined,{signal});continue;
       }
-      const result=JSON.parse(reply) as Reply;
+      let result:Reply;
+      try{result=JSON.parse(reply) as Reply;}
+      catch(error){
+        if(!(error instanceof SyntaxError) || ++malformedReads>10)throw error;
+        await delay(500,undefined,{signal});continue;
+      }
       if(result.uncertain)throw Error('Profile broker request '+id+' requires reconciliation: '+(result.error??'unknown external result'));
       if(result.ok && request.action==='seed'){
         await git(repository,'fetch','--no-tags',join(dir,'seed.bundle'),'+refs/heads/seed:refs/remotes/profile/seed');

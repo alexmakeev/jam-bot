@@ -49,7 +49,8 @@ export function recordProgress(state:string,issue:number,identity:string,summary
     let changed=false;
     const routine=board && !identity.startsWith('scope-plan:') && !identity.startsWith('material-decision:');
     if(routine && board.kind==='development/roles'){
-      const owner=progressOwner(identity);
+      const previous=identity.startsWith('blocked:')?db.prepare('SELECT identity FROM role_updates WHERE issue=? ORDER BY rowid DESC LIMIT 1').get(issue):undefined;
+      const owner=progressOwner(previous?String(previous.identity):identity);
       const boardKey=fingerprint('work-card-role:'+owner);
       changed=Boolean(db.prepare('INSERT OR IGNORE INTO role_updates VALUES(?,?,?,?,?)').run(issue,key,boardKey,identity,summary).changes);
       key=boardKey;
