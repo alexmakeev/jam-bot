@@ -27,6 +27,10 @@ The CLI retains the server ID and project placement in the operator's home direc
 3. Call `connect_project` with the current server ID, canonical GitHub repository URI and installation ID. The service checks GitHub, creates the project's directories and starts its coordinator consumer. Retrying the same connection preserves the journal and session. New bindings survive restart. Existing installer-managed topics keep their original locations.
 4. Use `configure_topic` to select the repository's default work class or bind a saved environment. Ordinary Tasks use the repository's configured default.
 
+## Start an approved Task
+
+On a single-owner endpoint with a linked GitHub identity, call `task_authority` to verify the delegated human and current repository access. Use `task_create` after that human approves the actual title and scope in the conversation. Keep the request UUID when retrying. The result contains the original GitHub issue URL. The signed native Task webhook starts the normal workflow. See [host identity binding and recovery](SERVICE.md#starting-a-task-from-a-trusted-owner-conversation).
+
 ## Configure and deploy an environment
 
 In a project conversation, an operator might ask to create a staging environment, select its nonsecret application parameters and associate it with the project. The client resolves the instance and repository and calls `environment_upsert`. The definition persists under `environments/<name>/definition.json` in that project's state directory. A separate `environment_deploy` request targets an exact revision admitted by a local machine recipe. `environment_status` checks the actual container and `environment_stop` stops that instance. The lifecycle tier is fixed on first creation. A stable deployment also requires verifiable human approval of the exact revision.
