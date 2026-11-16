@@ -10,32 +10,33 @@ export function roleChecklist(owner:Owner,history:Update[]){
   const start=owner==='Worker'?history.map(row=>/^(rework:|worker-revision:|worker-correction:)/.test(row.identity)).lastIndexOf(true):-1;
   const current=history.slice(Math.max(start,0));
   const has=(prefix:string)=>current.some(row=>row.identity.startsWith(prefix));
-  const tasks:[string,boolean][]=[];
+  const tasks:[string,boolean,boolean?][]=[];
   if(owner==='Architect'){
-    tasks.push(['Prepare the architecture draft',has('architecture:')]);
+    tasks.push(['Prepare the architecture draft',has('architecture:'),has('architect-')]);
   }else if(owner==='Worker'){
-    tasks.push(['Implement the approved scope',has('implementation:') || has('worker-revision:')]);
+    tasks.push(['Implement the approved scope',has('implementation:') || has('worker-revision:'),has('developer-') || has('rework:') || has('worker-correction:')]);
   }else{
     tasks.push(['Assemble the candidate',has('integration:')]);
   }
   const phase={Architect:'architecture',Worker:'implementation',Integrator:'diagnosis'}[owner];
   const prefix=phase+'-adviser:';
-  const advisers=new Map<string,boolean>();
+  const advisers=new Map<string,string>();
   for(const row of current.filter(row=>row.identity.startsWith(prefix))){
     const [, ,name,status]=row.identity.split(':');
-    if(name)advisers.set(name,status==='ok');
+    if(name && status)advisers.set(name,status);
   }
-  for(const [name,ok] of advisers)tasks.push([name+' review',ok]);
-  if(owner==='Architect')tasks.push(['Publish the specification',has('spec-ready:')]);
-  if(owner==='Worker')tasks.push(['Pass review and branch validation',has('validated:')]);
+  for(const [name,status] of advisers)tasks.push([name+' review',status==='ok',status==='running']);
+  if(owner==='Architect')tasks.push(['Publish the specification',has('spec-ready:'),has('architecture:') && advisers.size>0 && [...advisers.values()].every(status=>status==='ok')]);
+  if(owner==='Worker')tasks.push(['Pass review and branch validation',has('validated:'),has('consultant:') || has('validation:')]);
   if(owner==='Integrator'){
     const lastCandidate=history.map(row=>row.identity.startsWith('integration:')).lastIndexOf(true);
     const round=history.slice(Math.max(lastCandidate,0));
-    tasks.push(['Pass combined tests',round.some(row=>row.identity.startsWith('integration-tests:'))],
-      ['Approve the tested revision',round.some(row=>row.identity.startsWith('integration-review:')&&row.summary.includes('returned PASS'))],
-      ['Publish the verified revision to dev',has('integrated:')]);
+    tasks.push(['Pass combined tests',round.some(row=>row.identity.startsWith('integration-tests:')),round.some(row=>row.identity.startsWith('integration:'))],
+      ['Approve the tested revision',round.some(row=>row.identity.startsWith('integration-review:')&&row.summary.includes('returned PASS')),round.some(row=>row.identity.startsWith('integration-tests:')) && !round.some(row=>row.identity.startsWith('integration-review:'))],
+      ['Publish the verified revision to dev',has('integrated:'),round.some(row=>row.identity.startsWith('integration-review:') && row.summary.includes('returned PASS'))]);
   }
-  const lines=tasks.map(([label,ok])=>'- ['+(ok?'x':' ')+'] '+label);
+  const paused=current.at(-1)?.identity.startsWith('blocked:');
+  const lines=tasks.map(([label,done,active])=>'- '+(done?'✅':active && !paused?'🟨':'◻️')+' '+label);
   const last=current.at(-1);
   const final=(last?.identity==='card-result-verified'||last?.identity.startsWith('deployment:')&&last.summary.endsWith('Deployment complete.'))?current.filter(row=>row.identity.startsWith('integrated:')).at(-1):undefined;
   const status=final?final.summary+(last?.identity.startsWith('deployment:')?' Deployment verified.':''):last?.summary??'';

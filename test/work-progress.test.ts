@@ -175,7 +175,7 @@ test('one live checklist survives replay, retains late files and finishes on its
     return path.includes('comments?')?rows:rows[0];
   };
   const publish=()=>publishProgress(dir,topic,async()=>[api,40]);
-  beginDashboard(dir,6,'assignment');await publish();assert.match(rows[0]!.body,/⚪ Prepare/);
+  beginDashboard(dir,6,'assignment');await publish();assert.match(rows[0]!.body,/◻️ Prepare/);
   recordProgress(dir,6,'waiting-profile','Waiting for project profile read access.');await publish();
   assert.match(rows[0]!.body,/⏸️/);
   beginDashboard(dir,6,'assignment');
@@ -205,6 +205,13 @@ test('development handoffs retain separate role comments and reset worker checks
   }
   const db=new DatabaseSync(join(dir,'work-progress.sqlite'));
   const bodies=db.prepare('SELECT body FROM events ORDER BY rowid').all().map(row=>String(row.body));db.close();
-  assert.equal(bodies.length,3);assert.match(bodies[0]!,/\[x\] Codex review/);assert.match(bodies[0]!,/\[ \] Antigravity review/);
-  assert.match(bodies[1]!,/Worker:.*\n[^]*\[ \] Pass review/);assert.match(bodies[2]!,/Correction attached/);assert.match(bodies[2]!,/\[ \] Publish the verified revision/);
+  assert.equal(bodies.length,3);assert.match(bodies[0]!,/✅ Codex review/);assert.match(bodies[0]!,/◻️ Antigravity review/);
+  assert.match(bodies[1]!,/Worker:.*\n[^]*◻️ Pass review/);assert.match(bodies[2]!,/Correction attached/);assert.match(bodies[2]!,/◻️ Publish the verified revision/);
+});
+
+test('parallel adviser reviews have independent noninteractive status marks',async()=>{
+  const {roleChecklist}=await import('../src/role-progress.js');
+  const html=roleChecklist('Architect',['architecture:1:requested','architecture-adviser:1:Codex:running','architecture-adviser:1:Antigravity:running','architecture-adviser:1:Codex:ok'].map(identity=>({identity,summary:'Reviewing'})));
+  assert.match(html,/✅ Codex review/);assert.match(html,/🟨 Antigravity review/);assert.match(html,/◻️ Publish/);
+  assert.doesNotMatch(html,/^- \[([ x])\]/m);
 });

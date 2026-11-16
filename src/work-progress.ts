@@ -64,7 +64,7 @@ export function recordProgress(state:string,issue:number,identity:string,summary
       const active=latest.some(r=>r.key!==fingerprint('card-accepted'));
       const block=/paused|blocked|waiting for project profile/i.test(String(latest.at(-1)?.summary));
       const work=board.kind==='development'?'Implement and verify the change':board.kind==='consultation'?'Prepare the consultation':'Prepare the assignment';
-      summary='**LEO · work card progress**\n\n- ✅ Task accepted\n- '+(done?'✅':block?'⏸️':active?'🔄':'⚪')+' '+work+'\n- '+(done?'✅':'⚪')+' Deliver the verified result'+
+      summary='**LEO · work card progress**\n\n- ✅ Task accepted\n- '+(done?'✅':block?'⏸️':active?'🟨':'◻️')+' '+work+'\n- '+(done?'✅':'◻️')+' Deliver the verified result'+
         '\n\n**Latest updates**\n'+latest.map(row=>'- '+row.summary).join('\n');
       const earlier=history.slice(0,-5).map(row=>'- '+row.summary).join('\n');
       if(earlier && earlier.length+summary.length<45000)summary+='\n\n<details><summary>Earlier updates</summary>\n\n'+earlier+'\n\n</details>';
