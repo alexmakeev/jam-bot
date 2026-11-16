@@ -1,3 +1,4 @@
+import {specName,digestOf} from './specification-upload.js';
 import {reconcileIssueArtifacts} from './issue-artifact-recovery.js';
 import {refreshProjectValues} from './project-values.js';
 import {requestedDecision,requireMaterialDecision} from './material-decision.js';
@@ -28,7 +29,7 @@ interface ProfileRun {
   authorize:()=>Promise<void>; approval:TaskApproval;
 }
 type Project = Awaited<ReturnType<typeof checkout>>;
-interface Correction {sha:string;attempt:number;feedback:string;reviewOnly?:boolean;integrationHead?:string}
+interface Correction {sha:string;attempt:number;feedback:string;reviewOnly?:boolean;integrationHead?:string;reviewHead?:string}
 interface Ready {project:Project;sha:string;card:ProfileCard;spec:string;approval:TaskApproval}
 const directory=(state:string,issue:number)=>join(state,'assignments',String(issue));
 
@@ -57,7 +58,7 @@ export async function projectContext(tree:string, files:string[], references:str
   const names=(await git(tree,'ls-files','-z')).split('\0').filter(Boolean);
   const parts=['Tracked files: '+JSON.stringify(names)];
   // A referenced implementation or neighboring test is read-only context for the teammate.
-  const referenced=names.filter(name=>/\.(?:[cm]?[jt]sx?|md)$/.test(name) && references.includes(name));
+  const referenced=names.filter(name=>(/\.(?:[cm]?[jt]sx?|md)$/.test(name) && references.includes(name)) || ['tsconfig.json','package.json'].includes(name));
   const required=new Set(['README.md',...files]);
   let remainingReferenceBytes=16000;
   for(const file of new Set([...required,...referenced])){
@@ -114,10 +115,10 @@ async function prepareReview(p:ProfileRun,project:Project,sha:string,scope:strin
   const diff=await git(project.tree,'diff','--no-ext-diff',project.base,sha);
   const cards=[{issue:p.issue,approval:p.approval}];
   const started=Date.now();
-  let tests='',passing=false;
+  let tests='',passing=false;let executed:string[]=[];
   try {
     const result=await exchange(project.store,{action:'test-head',scope:'implementation-review:'+p.issue,repo:p.topic.repository,sha,base:project.base,expected:project.expected,cards},p.signal);
-    tests=result.log??'';passing=result.sha===sha;
+    tests=result.log??'';passing=result.sha===sha;executed=result.tests??[];
   } catch(err){
     if(!(err instanceof Error) || !err.message.startsWith('Profile broker: Validation failed for '))throw err;
     tests=err.message;
@@ -125,6 +126,12 @@ async function prepareReview(p:ProfileRun,project:Project,sha:string,scope:strin
   const elapsedMs=Math.max(1,Date.now()-started);
   const fields:Record<string,string>={requirements:scope,specification:spec,revision:sha,diff,testReport:tests,
     changedFiles:await git(project.tree,'diff','--name-only',project.base,sha)};
+  const filename=specName(p.issue,digestOf(spec));
+  const specReceipt=await readJson<{url:string;sha256:string;commentId:number}>(join(directory(p.state,p.issue),'attachments',filename+'.artifact-receipt.json'));
+  if(specReceipt.sha256!==digestOf(spec) || !specReceipt.commentId)throw Error('Missing verified architect handoff');
+  const architecture=await readJson<{advice:{provider:string;status:string}[]}>(join(directory(p.state,p.issue),'consultations','architecture.json'));
+  fields.architectHandoff=JSON.stringify({artifact:specReceipt.url,comment:specReceipt.commentId,advisers:architecture.advice.map(a=>({provider:a.provider,status:a.status}))});
+  fields.repositoryEvidence=await projectContext(project.tree,[],[...executed,scope,spec].join('\n'));
   if(p.card.designer){
     const designer=await readJson<{nativeMember:string;output:string}>(join(directory(p.state,p.issue),'designer.json'));
     fields.designer=reviewPacket({teammate:designer.nativeMember,brief:designer.output},3000);
@@ -136,11 +143,12 @@ async function prepareReview(p:ProfileRun,project:Project,sha:string,scope:strin
 }
 
 async function reviewedImplementation(p:ProfileRun,project:Project,scope:string,spec:string,assignment:string,correction?:Correction) {
+  const round=correction?.reviewHead??correction?.integrationHead;
   let parent=correction?.sha??project.base;
   let feedback=correction?.feedback??'';
   for(let attempt=correction?.attempt??0;attempt<2;attempt++){
     if(!correction?.reviewOnly || attempt!==correction.attempt) {
-      await implementationCommit(project.tree,join(directory(p.state,p.issue),'implementation-'+(correction?.integrationHead?correction.integrationHead+'-':'')+attempt+'.json'),p.issue,p.card.files,async()=>{
+      await implementationCommit(project.tree,join(directory(p.state,p.issue),'implementation-'+(round?round+'-':'')+attempt+'.json'),p.issue,p.card.files,async()=>{
         if(await git(project.tree,'rev-parse','HEAD')!==parent)throw Error('Unrecognized input revision before developer assignment');
         const context=await projectContext(project.tree,p.card.files,p.card.task+'\n'+spec+'\n'+assignment);
         return stage(p,'developer',implementationInput(context,scope,spec,assignment,feedback));
@@ -160,7 +168,7 @@ async function reviewedImplementation(p:ProfileRun,project:Project,scope:string,
     try{
       prepareReviewNotices(reviewJournal.db);
       // After a restart, reconstruct the review from the untouched head and the pinned input.
-      await atomicJson(join(directory(p.state,p.issue),'correction.json'),{project,sha,attempt,integrationHead:correction?.integrationHead,reviewOnly:true,feedback:'Resume the required review of the recorded revision'});
+      await atomicJson(join(directory(p.state,p.issue),'correction.json'),{project,sha,attempt,reviewHead:correction?.reviewHead,integrationHead:correction?.integrationHead,reviewOnly:true,feedback:'Resume the required review of the recorded revision'});
       reviewJournal.checkpointSpecification(p.issue,JSON.stringify({...project,correcting:true}));
       await p.authorize();
       recordProgress(p.state,p.issue,'consultant:'+sha,'Developer handed candidate `'+sha+'` to the mandatory code reviewer. A review decision is pending.');
@@ -173,7 +181,7 @@ async function reviewedImplementation(p:ProfileRun,project:Project,scope:string,
     if(passing && /^PASS\b/i.test(feedback.trim()))return {sha,elapsedMs};
     recordProgress(p.state,p.issue,'worker-correction:'+sha,'The reviewer requested changes. The worker is revising the candidate against the attached review.');
     feedback=reviewPacket({findings:feedback,externalAdvice:advice,testReport:tests},12000);
-    if(attempt===0)await atomicJson(join(directory(p.state,p.issue),'correction.json'),{project,sha,attempt:1,integrationHead:correction?.integrationHead,feedback});
+    if(attempt===0)await atomicJson(join(directory(p.state,p.issue),'correction.json'),{project,sha,attempt:1,reviewHead:correction?.reviewHead,integrationHead:correction?.integrationHead,feedback});
   }
   throw Error('Code review requires a correction: '+feedback.slice(0,500));
 }
@@ -223,7 +231,7 @@ export async function runDeveloperProfile(p:ProfileRun) {
         if(resume){
           const prior=await readJson<Correction&{project:Project}>(join(dir,'correction.json'));
           const {correcting:_,...expected}=project as Project&{correcting?:boolean};
-          if(JSON.stringify(prior.project)!==JSON.stringify(expected) || !(prior.attempt===1 || ((prior.reviewOnly===true||/^[a-f0-9]{40}$/.test(prior.integrationHead??''))&&prior.attempt===0)) ||
+          if(JSON.stringify(prior.project)!==JSON.stringify(expected) || !(prior.attempt===1 || ((prior.reviewOnly===true||/^[a-f0-9]{40}$/.test(prior.reviewHead??prior.integrationHead??''))&&prior.attempt===0)) ||
               !/^[0-9a-f]{40}$/.test(prior.sha) || !prior.feedback?.trim())
             throw Error('Invalid implementation correction checkpoint');
           if(prior.reviewOnly && (await git(expected.tree,'rev-parse','HEAD')!==prior.sha || await git(expected.tree,'status','--porcelain')))throw Error('Reviewed revision changed during restart');
