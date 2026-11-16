@@ -93,7 +93,7 @@ export async function requireMaterialDecision(topic:Topic,event:DecisionTask,sta
   const literal=(s:string)=>s.replaceAll('@','＠').replaceAll('`','′');
   const scope='`'+literal(d.area)+': '+literal(d.scope)+'`';
   const message=evidence?'Decision '+scope+' — '+evidence.decision+' by `'+evidence.actor.login+'` (GitHub user '+evidence.actor.id+', '+evidence.source+').':
-    '@'+responsible(profile,d.area)+' — a decision on '+scope+' is needed before work can proceed. An authorized maintainer may reply with `Approve JAM-Bot decision '+digest+'.` or `Decline JAM-Bot decision '+digest+'.`';
+    '❓ @'+responsible(profile,d.area)+' — do you approve '+scope+'? An authorized maintainer may reply with `Approve JAM-Bot decision '+digest+'.` or `Decline JAM-Bot decision '+digest+'.`';
   recordProgress(state,event.issue,key,message);await deps.publish(state,topic,event.issue,key);
   if(evidence?.decision!=='Approve'){
     await deps.status(topic,event.issue,'blocked');

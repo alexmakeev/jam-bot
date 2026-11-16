@@ -71,7 +71,7 @@ export async function requestFileScope(topic:Topic,issue:number,plan:string) {
   issueComment('needs-files',plan);
   const state=dirname(topic.cwd),key='scope-plan:'+fingerprint(plan);
   const recipient=responsible(await loadProjectValues(topic),'architecture');
-  recordProgress(state,issue,key,'@'+recipient+' — the architect completed the implementation plan. Create a linked Task listing the approved file paths before development.',{purpose:'plan',markdown:plan});
+  recordProgress(state,issue,key,'❓ @'+recipient+' — which files do you approve for this plan? List their paths in a linked Task to authorize implementation.',{purpose:'plan',markdown:plan});
   await confirmedProgress(state,topic,issue,key);
   await setCardProgress(topic,issue,'blocked');
 }

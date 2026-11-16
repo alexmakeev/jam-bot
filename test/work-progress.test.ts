@@ -216,3 +216,21 @@ test('parallel adviser reviews have independent noninteractive status marks',asy
   assert.doesNotMatch(html,/^[-*] /m);
   assert.match(html,/✅ Codex review {2}\n🟨 Antigravity review/);
 });
+
+test('human comments preserve the question and start one new editable progress comment',async t=>{
+  const {beginDashboard,startHumanTurn}=await import('../src/work-progress.js');
+  for(const kind of ['development','assignment']){
+    const dir=await mkdtemp(join(tmpdir(),'jam-human-turn-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+    beginDashboard(dir,6,kind);
+    recordProgress(dir,6,'scope-plan:one','❓ @owner — which files do you approve?',{purpose:'plan',markdown:'Plan for this issue.'});
+    const db=new DatabaseSync(join(dir,'work-progress.sqlite'));t.after(()=>db.close());
+    const rows=()=>db.prepare('SELECT key,body FROM events WHERE issue=6 ORDER BY rowid').all();
+    const before=rows();assert.equal(before.length,1);assert.match(String(before[0]?.body),/❓ @owner/);
+    startHumanTurn(dir,6,101);
+    recordProgress(dir,6,'architect-resumed','Continued with the answer.');
+    startHumanTurn(dir,6,101);startHumanTurn(dir,6,99);
+    recordProgress(dir,6,'architect-verified','Verified.');
+    recordProgress(dir,6,'scope-plan:one','❓ @owner — which files do you approve?',{purpose:'plan',markdown:'Plan for this issue.'});
+    const after=rows();assert.equal(after.length,2);assert.deepEqual(after[0],before[0]);assert.match(String(after[1]?.body),/Verified/);
+  }
+});

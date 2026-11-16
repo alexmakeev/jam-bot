@@ -16,6 +16,8 @@ function open(state:string) {
     receipt INTEGER,retryAt INTEGER DEFAULT 0,PRIMARY KEY(issue,key))`);
   if(!db.prepare("SELECT 1 FROM pragma_table_info('events') WHERE name='markdown'").get())db.exec('ALTER TABLE events ADD COLUMN markdown TEXT; ALTER TABLE events ADD COLUMN purpose TEXT;');
   db.exec(`CREATE TABLE IF NOT EXISTS dashboards(issue INTEGER PRIMARY KEY,kind TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS human_turns(issue INTEGER PRIMARY KEY,comment INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS progress_boards(issue INTEGER,key TEXT,board TEXT,owner TEXT,PRIMARY KEY(issue,key));
     CREATE TABLE IF NOT EXISTS milestones(issue INTEGER,key TEXT,summary TEXT,PRIMARY KEY(issue,key));
     CREATE TABLE IF NOT EXISTS role_updates(issue INTEGER,key TEXT,board TEXT,identity TEXT,summary TEXT,PRIMARY KEY(issue,key));
     CREATE TABLE IF NOT EXISTS event_reports(issue INTEGER,key TEXT,purpose TEXT,digest TEXT,markdown TEXT,PRIMARY KEY(issue,key,purpose,digest));
@@ -34,8 +36,17 @@ export function beginDashboard(state:string,issue:number,kind:string){
   finally{db.close();}
   recordProgress(state,issue,'card-accepted','Task and human approval verified.');
 }
+export function startHumanTurn(state:string,issue:number,comment:number){
+  const db=open(state);
+  try{
+    db.prepare(`INSERT INTO human_turns SELECT ?,? WHERE EXISTS(SELECT 1 FROM dashboards WHERE issue=?)
+      ON CONFLICT(issue) DO UPDATE SET comment=MAX(comment,excluded.comment)`).run(issue,comment,issue);
+  }finally{db.close();}
+}
 function eventKey(db:DatabaseSync,issue:number,identity:string){
   const key=fingerprint(identity);
+  const segment=db.prepare('SELECT board FROM progress_boards WHERE issue=? AND key=?').get(issue,key);
+  if(segment)return String(segment.board);
   const role=db.prepare('SELECT board FROM role_updates WHERE issue=? AND key=?').get(issue,key);
   if(role)return String(role.board);
   return db.prepare('SELECT 1 FROM milestones WHERE issue=? AND key=?').get(issue,key)?dashboard:key;
@@ -47,16 +58,26 @@ export function recordProgress(state:string,issue:number,identity:string,summary
     let key=fingerprint(identity);
     const board=db.prepare('SELECT kind FROM dashboards WHERE issue=?').get(issue);
     let changed=false;
-    const routine=board && !identity.startsWith('scope-plan:') && !identity.startsWith('material-decision:');
+    const legacy=db.prepare('SELECT 1 FROM events WHERE issue=? AND key=?').get(issue,key);
+    const routine=board && !legacy;
+    const segment=(owner:string,original:string)=>{
+      const mapped=eventKey(db,issue,identity);
+      if(mapped!==key)return mapped;
+      const turn=db.prepare('SELECT comment FROM human_turns WHERE issue=?').get(issue);
+      const target=turn?fingerprint(original+':after:'+turn.comment):original;
+      db.prepare('INSERT OR IGNORE INTO progress_boards VALUES(?,?,?,?)').run(issue,key,target,owner);
+      return target;
+    };
     if(routine && board.kind==='development/roles'){
-      const previous=identity.startsWith('blocked:')?db.prepare('SELECT identity FROM role_updates WHERE issue=? ORDER BY rowid DESC LIMIT 1').get(issue):undefined;
+      const previous=(identity.startsWith('blocked:')||identity.startsWith('material-decision:'))?db.prepare('SELECT identity FROM role_updates WHERE issue=? ORDER BY rowid DESC LIMIT 1').get(issue):undefined;
       const owner=progressOwner(previous?String(previous.identity):identity);
-      const boardKey=fingerprint('work-card-role:'+owner);
+      const boardKey=segment(owner,fingerprint('work-card-role:'+owner));
       changed=Boolean(db.prepare('INSERT OR IGNORE INTO role_updates VALUES(?,?,?,?,?)').run(issue,key,boardKey,identity,summary).changes);
       key=boardKey;
       const rows=db.prepare('SELECT identity,summary FROM role_updates WHERE issue=? AND board=? ORDER BY rowid').all(issue,key);
       summary=roleChecklist(owner,rows.map(row=>({identity:String(row.identity),summary:String(row.summary)})));
     }else if(routine){
+      const boardKey=segment('JAM',dashboard);
       changed=Boolean(db.prepare('INSERT OR IGNORE INTO milestones VALUES(?,?,?)').run(issue,key,summary).changes);
       const history=db.prepare('SELECT key,summary FROM milestones WHERE issue=? ORDER BY rowid').all(issue);
       const latest=history.slice(-5);
@@ -68,7 +89,7 @@ export function recordProgress(state:string,issue:number,identity:string,summary
         '\n\n**Latest updates**\n'+latest.map(row=>'- '+row.summary).join('\n');
       const earlier=history.slice(0,-5).map(row=>'- '+row.summary).join('\n');
       if(earlier && earlier.length+summary.length<45000)summary+='\n\n<details><summary>Earlier updates</summary>\n\n'+earlier+'\n\n</details>';
-      key=dashboard;
+      key=boardKey;
     }
     const body=summary+'\n\n<!-- jam-bot:progress:'+key+' -->';
     db.prepare('INSERT OR IGNORE INTO events(issue,key,body) VALUES(?,?,?)').run(issue,key,body);
@@ -126,7 +147,7 @@ async function publishOne(state:string,topic:Topic,credentials:()=>Promise<[Api,
       const marker='<!-- jam-bot:progress:'+key+' -->';
       if(files.some(f=>!f.url.startsWith('https://github.com/'+topic.repository+'/issues/'+issue+'/artifacts/')))throw Error('Result artifact belongs to another work card');
       const roleBoard=/^\*\*(Architect|Worker|Integrator):/.test(base);
-      const primaryOrder=base.startsWith('**Worker:')?['tests-','review-']:['integration-','spec-','tests-','review-'];
+      const primaryOrder=base.startsWith('**Worker:')?['tests-','review-']:['integration-','spec-','plan-','tests-','review-'];
       const primary=primaryOrder.map(prefix=>files.filter(file=>file.name.startsWith(prefix)).at(-1)).find(Boolean);
       const selected=roleBoard?(primary?[primary]:[]):files;
       const body=selected.length?base.slice(0,-marker.length).trimEnd()+(base.startsWith('**')?'\n\n**Files:** ':' ')+selected.map(f=>'['+f.name+']('+f.url+')').join(' · ')+'\n\n'+marker:base;
@@ -173,6 +194,7 @@ export async function publishTimeline(state:string,topic:Topic,signal:AbortSigna
   try{
     db.exec('BEGIN IMMEDIATE');
     for(const row of db.prepare('SELECT DISTINCT issue,board FROM role_updates').all()){
+      if(db.prepare('SELECT 1 FROM human_turns WHERE issue=?').get(row.issue!))continue;
       const history=db.prepare('SELECT identity,summary FROM role_updates WHERE issue=? AND board=? ORDER BY rowid').all(row.issue!,row.board!).map(r=>({identity:String(r.identity),summary:String(r.summary)}));
       const owner=(['Architect','Worker','Integrator'] as const).find(role=>fingerprint('work-card-role:'+role)===row.board);
       if(!owner)continue;
