@@ -45,7 +45,7 @@ export class BranchValidation {
   async settle() {await Promise.all(this.active.values());}
 
   tick(queue:IntegrationQueue, validate:Validation, signal:AbortSignal, now = Date.now()): Tick {
-    // Keep tests off Leo's call stack and bound the local test load. Queueing alone is not a near-finish signal.
+    // Keep tests off JAM's call stack and bound the local test load. Queueing alone is not a near-finish signal.
     while (!signal.aborted && this.active.size<3) {
       const row=this.db.prepare("SELECT rowid AS id,* FROM branch_validation WHERE state='pending' ORDER BY submittedAt,rowid LIMIT 1").get();
       if (!row) break;

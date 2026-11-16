@@ -60,6 +60,6 @@ export function parseProfileCard(body:string):ProfileCard|undefined {
 }
 export function formatProfileCard(card:ProfileCard):string {
   const body=[legacyHeader,'Class: '+card.kind+'\nFiles: '+(card.files.join(', ')||'none')+(card.designer?'\nDesign: requested':''),card.task].join('\n\n');
-  if(!parseProfileCard(body))throw new Error('Invalid Leo Developer work card');
+  if(!parseProfileCard(body))throw new Error('Invalid JAM Developer work card');
   return body;
 }

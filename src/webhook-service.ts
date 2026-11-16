@@ -85,17 +85,17 @@ async function consume({journal,topic,state}: TopicRuntime, signal: AbortSignal)
           catch(err){
             if(!(err instanceof Error) || !/^Profile broker: Repository outside (?:publisher|profile reader) scope$/.test(err.message))throw err;
             journal.deferProfile(event.delivery);
-            recordProgress(state,event.issue,'waiting-profile','Waiting for project profile read access. LEO will retry automatically.');
+            recordProgress(state,event.issue,'waiting-profile','Waiting for project profile read access. JAM will retry automatically.');
             continue;
           }
         }
         const ack = await notifyLeo(event,journal.lead(),topic.cwd,topic.repository,signal,profile?.markdown);
         journal.complete(ack);
-        console.log('LEO acknowledged issue',topic.repository,event.issue);
+        console.log('JAM acknowledged issue',topic.repository,event.issue);
       } catch (err) {
         if(signal.aborted)return;
         journal.fail(event.delivery,err instanceof Error ? err.message : 'Dispatch failed');
-        console.error('LEO intake requires review',topic.repository,event.issue);
+        console.error('JAM intake requires review',topic.repository,event.issue);
       }
     }
   } finally { await validations.settle(); }

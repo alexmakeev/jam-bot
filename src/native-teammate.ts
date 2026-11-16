@@ -147,7 +147,7 @@ export async function runNativeJob({state,cwd,session,name,agentType,challenge,s
   const agents = {[agentType]:{description:'JAM-Bot '+agentType+' teammate',prompt:system,tools:['SendMessage']}};
   const args=['--resume',session,'--setting-sources','','--settings','{"disableAllHooks":true}','--teammate-mode','in-process',
     '--strict-mcp-config','--tools','Agent,SendMessage','--allowedTools','Agent,SendMessage','--agents',JSON.stringify(agents),
-    '--permission-mode','dontAsk','--disable-slash-commands','--system-prompt','You are LEO, a native in-process team lead. Forward the stage input to the named native teammate. Wait for its result.',prompt];
+    '--permission-mode','dontAsk','--disable-slash-commands','--system-prompt','You are JAM, a native in-process team lead. Forward the stage input to the named native teammate. Wait for its result.',prompt];
   // script supplies a PTY. Print mode falls back to a different, short-lived subagent.
   // All arguments are POSIX-quoted. Issue text is excluded from the command.
   const shellCommand='exec claude '+args.map(arg=>"'"+arg.replaceAll("'","'\\''")+"'").join(' ');

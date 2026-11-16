@@ -184,7 +184,7 @@ test('one live checklist survives replay, retains late files and finishes on its
   assert.equal(rows.length,1);assert.match(rows[0]!.body,/✅ Deliver/);assert.match(rows[0]!.body,/lessons.md/);
   assert.equal(storedResultComment(dir,6,'result'),87);assert.equal(storedResultComment(dir,6,'unknown'),0);
 });
-test('a denied profile before LEO dispatch retries the same approved intake after reopening the journal',async t=>{
+test('a denied profile before JAM dispatch retries the same approved intake after reopening the journal',async t=>{
   const {Journal}=await import('../src/intake-journal.js');
   const dir=await mkdtemp(join(tmpdir(),'profile-retry-'));t.after(()=>rm(dir,{recursive:true,force:true}));
   const path=join(dir,'intake.sqlite');let journal=new Journal(path);
@@ -213,5 +213,6 @@ test('parallel adviser reviews have independent noninteractive status marks',asy
   const {roleChecklist}=await import('../src/role-progress.js');
   const html=roleChecklist('Architect',['architecture:1:requested','architecture-adviser:1:Codex:running','architecture-adviser:1:Antigravity:running','architecture-adviser:1:Codex:ok'].map(identity=>({identity,summary:'Reviewing'})));
   assert.match(html,/✅ Codex review/);assert.match(html,/🟨 Antigravity review/);assert.match(html,/◻️ Publish/);
-  assert.doesNotMatch(html,/^- \[([ x])\]/m);
+  assert.doesNotMatch(html,/^[-*] /m);
+  assert.match(html,/✅ Codex review {2}\n🟨 Antigravity review/);
 });

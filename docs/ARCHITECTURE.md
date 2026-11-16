@@ -24,7 +24,7 @@ flowchart LR
 | GitHub adapter | Verify webhook signatures, identify the installation, normalize relevant changes, reread remote cards and write authorized updates. Inspect actual approval provenance. | Mapping between GitHub resources and project references. Cards, discussions, attached specs and remote branches live on GitHub. |
 | Topic coordinator | Serialize decisions per work card, enforce admission and ownership, reconcile visible state and dispatch a work assignment. | Local coordination state and outstanding deliveries. |
 | Operational journal | Record received deliveries before acknowledging them, intended effects before execution and their observed outcomes. SQLite is a candidate for the service. | Local receipts, attempt identities and reconciliation cursors. |
-| Developer profile and harness | Assemble instructions, model, command, tools and credential references. Let Leo coordinate architect, developer and integrator roles. Bind each assignment to a worktree. | Session handles and worktree state; in-flight conversation is expendable. |
+| Developer profile and harness | Assemble instructions, model, command, tools and credential references. Let JAM coordinate architect, developer and integrator roles. Bind each assignment to a worktree. | Session handles and worktree state; in-flight conversation is expendable. |
 | Management | Share application operations between REST with OpenAPI, CLI and authenticated operator MCP. Check the target instance and topic before mutation. | Server-owned profile configuration, routing and access policy. |
 
 ## Source boundary
@@ -73,9 +73,9 @@ The profile owns TDD, consultants and release policy. Run configured consultants
 
 ## Per-topic integration queue
 
-The three work-card routes share admission checks. Leo sends an approved assignment to its owner and an approved consultation to its specialist. Only development emits a ready feature branch for integration. GitHub labels project the trusted class and current progress. The dispatcher chooses a repository-scoped profile after verifying human authorization.
+The three work-card routes share admission checks. JAM sends an approved assignment to its owner and an approved consultation to its specialist. Only development emits a ready feature branch for integration. GitHub labels project the trusted class and current progress. The dispatcher chooses a repository-scoped profile after verifying human authorization.
 
-Persist each ready issue, branch and immutable head in the topic journal. A newer ready head supersedes the queued head for the same issue and keeps its waiting time. Leo can vary batch size within JB-20. The default target is ten. A short delay for an undersized group requires a known completion estimate within sixty seconds of the oldest ready entry. With no such signal, claim immediately. A single transaction allocates the batch ID and marks its revisions. The oldest waiting entries are served first.
+Persist each ready issue, branch and immutable head in the topic journal. A newer ready head supersedes the queued head for the same issue and keeps its waiting time. JAM can vary batch size within JB-20. The default target is ten. A short delay for an undersized group requires a known completion estimate within sixty seconds of the oldest ready entry. With no such signal, claim immediately. A single transaction allocates the batch ID and marks its revisions. The oldest waiting entries are served first.
 
 A snapshot lists waiting revisions and the active batch. Recovery reconciles that same batch ID and exact revisions with candidate artifacts and the integration ref before taking action. Complete verified promotion against the expected base. A failed candidate retains its original membership. After diagnosis, release explicitly unaffected heads for another batch. A corrected revision supersedes an affected head. Ambiguous external effects keep the batch active pending reconciliation.
 

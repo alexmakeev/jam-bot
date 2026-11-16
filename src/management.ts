@@ -42,10 +42,10 @@ export async function createManagement(state:string,routes:Map<string,TopicRunti
       input:z.strictObject({installationId:z.int().positive(),page}),
       output:z.strictObject({total:z.int(),projects:z.array(z.strictObject({repoId:z.int(),sourceUri:z.url()}))}),
       mutate:false,run:async({installationId,page})=>availableProjects(installationId,page)},
-    {name:'connect_project',description:'Verify the GitHub App grant, persist the repository binding and start its LEO consumer.',
+    {name:'connect_project',description:'Verify the GitHub App grant, persist the repository binding and start its JAM consumer.',
       input:z.strictObject({serverId:z.uuid(),sourceUri,installationId:z.int().positive()}),
       output:topicSchema,mutate:true,run:async({sourceUri,installationId})=>describe(await connect(sourceUri,installationId))},
-    {name:'configure_topic',description:'Set the persistent default work class used by LEO for this repository.',
+    {name:'configure_topic',description:'Set the persistent default work class used by JAM for this repository.',
       input:target.extend({defaultClass:workClass.optional(),defaultEnvironment:z.string().regex(/^[a-z][a-z0-9-]{0,39}$/).nullable().optional()}),
       output:topicSchema,mutate:true,run:async({repoId,defaultClass,defaultEnvironment})=>{
         const route=requireTopic(routes,repoId);

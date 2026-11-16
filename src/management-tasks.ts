@@ -23,7 +23,7 @@ export function taskOperations(routes:ReadonlyMap<string,TopicRuntime>,host:type
   }
   return [
     {name:'task_authority',description:'Verify the current delegated human GitHub identity and repository write access for this owner endpoint.',input:target,output:authority,mutate:false,run:args=>call('task_authority',args)},
-    {name:'task_create',description:'Create one native GitHub Task for work explicitly approved by the bound human owner. Supply the same requestId when retrying that request. GitHub delivers the normal Task event to LEO.',input,output:created,mutate:true,run:async args=>{
+    {name:'task_create',description:'Create one native GitHub Task for work explicitly approved by the bound human owner. Supply the same requestId when retrying that request. GitHub delivers the normal Task event to JAM.',input,output:created,mutate:true,run:async args=>{
       if(args.body.includes('jam-bot:owner-task:') || !parseTaskCard(args.title,args.body,undefined,requireTopic(routes,args.repoId).topic.defaultClass))throw new ManagementError(400,'invalid_task','Invalid Task scope or reserved receipt marker.');
       return call('task_create',args);
     }}

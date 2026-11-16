@@ -274,7 +274,7 @@ test('signed admission protects independent cards immediately and recovers a dur
   let journal=new Journal(path); journal.start(topic);
   const event={delivery:randomUUID(),issue:12,title:'Change',body:'Approved scope',action:'task' as const,approvalSource:'typed' as const,
     typeId:44,actorId:10,actorLogin:'owner',authorId:10,authorLogin:'owner'};
-  // A running assignment blocks Leo's native consumer but must not defer the next task's lock.
+  // A running assignment blocks JAM's native consumer but must not defer the next task's lock.
   journal.enqueue({...event,issue:11,delivery:randomUUID()});
   assert.ok(journal.next());
   let providerLocked=false, mutations=0;
@@ -300,7 +300,7 @@ test('signed admission protects independent cards immediately and recovers a dur
   assert.equal(mutations,1);
 });
 
-test('an already closed or retyped issue is rejected before Leo and concurrent redelivery shares one lock',async t=>{
+test('an already closed or retyped issue is rejected before JAM and concurrent redelivery shares one lock',async t=>{
   const journal=new Journal(':memory:');journal.start(topic);t.after(()=>journal.db.close());
   const runtime={topic,journal,state:'/state'};
   const approval={...event,action:'task' as const,approvalSource:'typed' as const,typeId:44,authorId:10,authorLogin:'owner',actorId:10,actorLogin:'owner'};

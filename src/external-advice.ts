@@ -83,7 +83,7 @@ export async function externalReview(state:string,topic:Topic,cards:Card[],phase
   const onSlow=async(evidence:ConsultationProgress)=>{
     // Keep the original request alive. A running provider cannot be retried as a failed call.
     const decision=await choose({kind:'in_flight',evidence});
-    if(decision==='ESCALATE')throw Error('The stage owner escalated an active consultation to LEO; inspect the existing request before retrying');
+    if(decision==='ESCALATE')throw Error('The stage owner escalated an active consultation to JAM; inspect the existing request before retrying');
     if(decision!=='WAIT')throw Error('An active consultant must finish or be reconciled before another call');
   };
   let record=await readJson<Evidence>(path).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;});
@@ -135,7 +135,7 @@ export async function externalReview(state:string,topic:Topic,cards:Card[],phase
   if(decision!=='CONTINUE' && advice.some(a=>a.status==='error')){
     const failed=advice.filter(a=>a.status==='error').map(a=>a.name).join(', ');
     const when=record.attempts?.length?'after the selective retry':'after the initial call';
-    throw new ConsultationEscalation('The '+owner+' escalated '+failed+' to LEO '+when+'; review the retained '+phase+' consultation.');
+    throw new ConsultationEscalation('The '+owner+' escalated '+failed+' to JAM '+when+'; review the retained '+phase+' consultation.');
   }
   return {advice,inputDigest};
 }

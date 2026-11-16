@@ -136,7 +136,7 @@ export class Journal {
 
   complete(ack: Receipt, recovered=false) {
     this.transaction(() => {
-      // The same transaction that records Leo's verified receipt creates the execution intent.
+      // The same transaction that records JAM's verified receipt creates the execution intent.
       const result=this.db.prepare(`UPDATE intake SET state='received', reason=NULL,receipt=?,
         workerState=CASE WHEN action='task' THEN 'pending' END
         WHERE (state='running' OR (? AND state='review' AND reason='Service stopped during dispatch')) AND issue=? AND delivery=?`)
@@ -207,7 +207,7 @@ export class Journal {
     if (session==='unused' && (decision==='acked' || this.lead().established)) throw new Error('An established session must resume');
     this.transaction(() => {
       if (decision==='acked' && this.db.prepare('SELECT action FROM intake WHERE delivery=?').get(delivery)?.action==='task')
-        throw new Error('Task receipt requires a verified Leo acknowledgment. Inspect the session then requeue or abandon.');
+        throw new Error('Task receipt requires a verified JAM acknowledgment. Inspect the session then requeue or abandon.');
       const result=this.db.prepare("UPDATE intake SET state=?, reason=NULL WHERE delivery=? AND state='review'").run(states[decision]!,delivery);
       if (result.changes!==1) throw new Error('Delivery is not awaiting review');
       this.db.prepare('UPDATE topic SET established=?').run(Number(session==='resume'));

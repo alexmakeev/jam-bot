@@ -48,7 +48,7 @@ export async function mandatoryReview(job:MandatoryReview,escalate:(reason:strin
   const stop=async(reason:string):Promise<never>=>{
     checkpoint.failure=reason;await atomicJson(path,checkpoint);
     for(const issue of job.issues)recordProgress(job.state,issue,'review-blocked:'+job.role+':'+job.revision,
-      'Mandatory '+job.role+' review of `'+job.revision+'` is blocked. '+reason+'. LEO will deliver the evidence to the architect for diagnosis.');
+      'Mandatory '+job.role+' review of `'+job.revision+'` is blocked. '+reason+'. JAM will deliver the evidence to the architect for diagnosis.');
     await escalate(reason);throw Error(reason);
   };
   const done=async(receipt:Receipt)=>{
@@ -76,7 +76,7 @@ export async function mandatoryReview(job:MandatoryReview,escalate:(reason:strin
     const attempt={challenge:randomUUID(),startedAt:Date.now()} as Attempt;
     saved.attempts.push(attempt);await atomicJson(path,saved);
     if(saved.attempts.length>1)for(const issue of job.issues)recordProgress(job.state,issue,'review-retry:'+job.role+':'+job.revision,
-      'LEO reconciled the original '+job.role+' assignment for `'+job.revision+'` and found no verified review. One bounded native review retry has been assigned.');
+      'JAM reconciled the original '+job.role+' assignment for `'+job.revision+'` and found no verified review. One bounded native review retry has been assigned.');
     try{return await done(await deps.run({...job,input:saved.input},attempt.challenge));}
     catch(error){
       if(job.signal.aborted)throw error;

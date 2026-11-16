@@ -37,11 +37,11 @@ async function main(): Promise<void> {
       if (row?.state === 'received') {
         const ack = JSON.parse(row.receipt);
         if (ack?.disposition !== 'intake_received' || ack.issue !== number || ack.delivery !== row.delivery)
-          throw new Error('Invalid Leo receipt');
+          throw new Error('Invalid JAM receipt');
         delivery = row.delivery;
       } else await delay(2000);
     }
-    if (!delivery) throw new Error('Timed out waiting for the signed delivery and Leo acknowledgment');
+    if (!delivery) throw new Error('Timed out waiting for the signed delivery and JAM acknowledgment');
   }
   const root = await mkdtemp(join(tmpdir(), 'jam-live-'));
   const worktree = join(root, 'worktree');

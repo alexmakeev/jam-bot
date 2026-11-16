@@ -1,16 +1,16 @@
-# Leo Developer work profile
+# JAM Developer work profile
 
 Create an open issue with native type **Task**, or assign that type to a finished draft. The service checks the signed actor's current repository write access and locks the conversation. A draft without the Task type can be edited before approval.
 
 ## Work cards
 
-Use the title and description to explain the work. The repository's Leo Developer profile defaults to development. List the approved editable paths in a leading `Files: src/example.ts, tests/example.test.ts` line before the task description. An explicit `Class: assignment` or `Class: consultation` line can select another route. A development card can include a leading `Design: requested` line. Leo requests a visual brief from a named designer and supplies it to the architect before the implementation specification. Ordinary tasks require no class label or approval phrase.
+Use the title and description to explain the work. The repository's JAM Developer profile defaults to development. List the approved editable paths in a leading `Files: src/example.ts, tests/example.test.ts` line before the task description. An explicit `Class: assignment` or `Class: consultation` line can select another route. A development card can include a leading `Design: requested` line. JAM requests a visual brief from a named designer and supplies it to the architect before the implementation specification. Ordinary tasks require no class label or approval phrase.
 
 | Class | Work and completion |
 | --- | --- |
-| Assignment | A named teammate carries out the request and returns its deliverable to Leo. The service posts the result and closes the issue. |
+| Assignment | A named teammate carries out the request and returns its deliverable to JAM. The service posts the result and closes the issue. |
 | Consultation | A named consultant answers the approved question. The issue closes with the recommendation. |
-| Development | The architect prepares a specification. The developer receives the scope and accepted specification, edits the authorized files in a separate worktree, and submits a tested revision for review. Leo groups ready revisions for the integrator. The service closes the cards after the tested candidate reaches dev. |
+| Development | The architect prepares a specification. The developer receives the scope and accepted specification, edits the authorized files in a separate worktree, and submits a tested revision for review. JAM groups ready revisions for the integrator. The service closes the cards after the tested candidate reaches dev. |
 
 The native Task type and local approval record identify the work. The service adds only the current phase label. The active phase appears as one of `status:queued`, `status:planning`, `status:in-progress`, `status:in-validation` or `status:blocked`. The provider's closed state records completion. See [PRD JB-20](PRD.md) for the batching policy.
 
@@ -47,7 +47,7 @@ Both recipes require at least one matching test, use the pinned offline toolchai
 
 The receiver queues short GitHub progress entries in the topic’s SQLite outbox as each assignment, adviser decision, verified result or handoff occurs. A separate publisher drains it while native teammates are running. Publication verifies the issue and the GitHub App’s numeric bot identity. If a comment POST loses its response, the publisher looks for the exact authenticated entry. An ambiguous create stays visible in `review list` until reconciled. Review, consultation and validation reports use downloadable Markdown issue artifacts.
 
-Role checkpoints pin the approved input, Leo session and native challenge before dispatch. On restart the receiver checks the original native mailbox first. If the process is gone and there is no verifiable reply, it permits one bounded replacement for a tool-free role. A refusal, conflicting revision, uncertain process or unverifiable mandatory review holds the work for diagnosis. Developer checkpoints record the intended before/after contents and Git tree before the single commit. Integration records the selected base, batch members and merged heads before publishing. Deployment reports require separate confirmation of the exact running revision from the development host.
+Role checkpoints pin the approved input, JAM session and native challenge before dispatch. On restart the receiver checks the original native mailbox first. If the process is gone and there is no verifiable reply, it permits one bounded replacement for a tool-free role. A refusal, conflicting revision, uncertain process or unverifiable mandatory review holds the work for diagnosis. Developer checkpoints record the intended before/after contents and Git tree before the single commit. Integration records the selected base, batch members and merged heads before publishing. Deployment reports require separate confirmation of the exact running revision from the development host.
 
 For a card that predates the timeline, `review backfill ISSUE` in the existing receiver reconstructs available entries from stored native and test receipts. It identifies those comments as historical. Repeating it reconciles existing entries. The supported scope is one local receiver with its persistent state and native session history intact.
 

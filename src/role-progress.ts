@@ -36,11 +36,11 @@ export function roleChecklist(owner:Owner,history:Update[]){
       ['Publish the verified revision to dev',has('integrated:'),round.some(row=>row.identity.startsWith('integration-review:') && row.summary.includes('returned PASS'))]);
   }
   const paused=current.at(-1)?.identity.startsWith('blocked:');
-  const lines=tasks.map(([label,done,active])=>'- '+(done?'✅':active && !paused?'🟨':'◻️')+' '+label);
+  const lines=tasks.map(([label,done,active])=>(done?'✅':active && !paused?'🟨':'◻️')+' '+label);
   const last=current.at(-1);
   const final=(last?.identity==='card-result-verified'||last?.identity.startsWith('deployment:')&&last.summary.endsWith('Deployment complete.'))?current.filter(row=>row.identity.startsWith('integrated:')).at(-1):undefined;
   const status=final?final.summary+(last?.identity.startsWith('deployment:')?' Deployment verified.':''):last?.summary??'';
-  return '**'+owner+': '+({Architect:'architecture and reviews',Worker:'implementation and validation',Integrator:'integration and publication'}[owner])+'**\n\n'+lines.join('\n')+'\n\n'+status;
+  return '**'+owner+': '+({Architect:'architecture and reviews',Worker:'implementation and validation',Integrator:'integration and publication'}[owner])+'**\n\n'+lines.join('  \n')+'\n\n'+status;
 }
 
 export function briefDecision(markdown:string, fallback:string){

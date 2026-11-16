@@ -1,6 +1,6 @@
 # JAM-Bot
 
-MIT-licensed project in active design. See [PRD](docs/PRD.md), [architecture](docs/ARCHITECTURE.md), and [glossary](docs/GLOSSARY.md). The repository includes the [local recovery experiment](https://github.com/alexmakeev/jam-bot/issues/1) and an opt-in [multi-repository webhook-to-Leo service](docs/SERVICE.md). Project maintainers can configure [responsibilities and decision routing](docs/PROJECT-RESPONSIBILITIES.md).
+MIT-licensed project in active design. See [PRD](docs/PRD.md), [architecture](docs/ARCHITECTURE.md), and [glossary](docs/GLOSSARY.md). The repository includes the [local recovery experiment](https://github.com/alexmakeev/jam-bot/issues/1) and an opt-in [multi-repository webhook-to-JAM service](docs/SERVICE.md). Project maintainers can configure [responsibilities and decision routing](docs/PROJECT-RESPONSIBILITIES.md).
 
 ## Run the experiment
 

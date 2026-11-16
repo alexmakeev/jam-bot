@@ -7,7 +7,7 @@ flowchart LR
     GitHub -->|HTTPS| AM32[Existing test route]
     AM32 -->|Reverse SSH forwarding| Mac[Mac loopback]
     Mac --> Receiver[Ubuntu container]
-    Receiver -->|Verified issue event| Leo
+    Receiver -->|Verified issue event| JAM
     Agent[macOS user LaunchAgent] -->|Starts Docker Desktop at login| Docker[Docker Engine]
     Docker -->|Restarts the service process| Receiver
     Agent -->|Supervises the test tunnel| AM32
@@ -17,7 +17,7 @@ flowchart LR
 
 Keep the interactive Compose service for existing experiment commands. Add a dedicated service using the same Ubuntu 22.04 image, running as the existing jam user with an init process and a Docker restart policy. Run `node dist/src/webhook-service.js` as the foreground application. Publish port 19739 on host IPv4 loopback. Use the existing Claude subscription directory with read/write access for credential renewal. Persist SQLite WAL and checkpoints on a named Docker volume writable by UID 1000. Use Node.js 22.13 or later and keep the service working directory stable. An exclusive kernel lock on the state volume prevents a second service from taking ownership of the configured topics. Managed interactive Claude and the service additionally lock the same credential directory before starting so that refresh and session writes have one writer. Supply the webhook signing secret from a private host file and mount the GitHub App private key read-only at its own path. Set the allowed repositories and installations in local configuration. The service shares the existing subscription directory and container home with the managed interactive command. The process runs with the restricted Claude configuration described in [signed intake](WEBHOOK-LEO.md). A third-party process that opens the same profile directly can bypass the advisory lock; use a separate profile for concurrent sessions. SSH credentials and the Docker socket stay on the host.
 
-`GET /health` reports receiver readiness. `POST /github` accepts signed deliveries for the configured installation. The receiver owns durable intake and the handoff to Leo. A successfully started container alone does not establish successful intake or handoff.
+`GET /health` reports receiver readiness. `POST /github` accepts signed deliveries for the configured installation. The receiver owns durable intake and the handoff to JAM. A successfully started container alone does not establish successful intake or handoff.
 
 ## Login and recovery
 
