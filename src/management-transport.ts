@@ -19,7 +19,7 @@ class HttpError extends Error { constructor(readonly status:number,message:strin
 const resources=[
   ['GET','/status','server_status'],['GET','/topics','list_topics'],['POST','/topics','connect_project'],
   ['GET','/installations','list_installations'],['GET','/installations/{installationId}/projects','available_projects'],
-  ['GET','/topics/{repoId}','topic_status'],['PATCH','/topics/{repoId}','configure_topic'],
+  ['GET','/topics/{repoId}','topic_status'],['POST','/topics/{repoId}/tasks','task_create'],['GET','/topics/{repoId}/task-authority','task_authority'],['PATCH','/topics/{repoId}','configure_topic'],
   ['GET','/topics/{repoId}/environments','environment_list'],['GET','/topics/{repoId}/environments/{environment}','environment_get'],
   ['PUT','/topics/{repoId}/environments/{environment}','environment_upsert'],['GET','/topics/{repoId}/environments/{environment}/status','environment_status'],
   ['POST','/topics/{repoId}/environments/{environment}/deployments','start_environment_deployment'],

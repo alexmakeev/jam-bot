@@ -9,6 +9,11 @@ const authority=new AsyncLocalStorage<string>();
 export function withEnvironmentAuthority<T>(bearer:string,action:()=>T):T {return authority.run(bearer,action);}
 export function withoutEnvironmentAuthority<T>(action:()=>T):T {return authority.exit(action);}
 export async function runEnvironment(input:EnvironmentAction,signal?:AbortSignal):Promise<EnvironmentResult>{
+  return ownerHostRequest<EnvironmentResult>(input,signal);
+}
+
+/** Only the active authenticated management request can sign calls to the private host. */
+export async function ownerHostRequest<T>(input:object,signal?:AbortSignal):Promise<T>{
   const token=authority.getStore();
   if(!token)throw Error('Environment changes require an authenticated management request');
   const root=process.env.JAM_DEPLOY_EXCHANGE;

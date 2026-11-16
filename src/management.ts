@@ -1,5 +1,6 @@
 import {z} from 'zod';
 import {availableProjects,availableInstallations} from './github-app.js';
+import {taskOperations} from './management-tasks.js';
 import {IntegrationQueue} from './integration-queue.js';
 import {deploymentJobs} from './management-jobs.js';
 import {environmentOperations} from './management-environments.js';
@@ -90,7 +91,7 @@ export async function createManagement(state:string,routes:Map<string,TopicRunti
         catch {throw new ManagementError(409,'review_conflict','This worker is not awaiting reconciliation.');}
         return {updated:true};
       }},
-    ...environments, ...deploymentJobs(routes,environments.find(op=>op.name==='environment_deploy')!,active)
+    ...taskOperations(routes), ...environments, ...deploymentJobs(routes,environments.find(op=>op.name==='environment_deploy')!,active)
   ];
   return {operations,settle:()=>Promise.allSettled(active),invoke:async(name:string,raw:unknown)=>{
     const op=operations.find(item=>item.name===name);

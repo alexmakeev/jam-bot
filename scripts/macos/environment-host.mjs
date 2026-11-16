@@ -1,4 +1,5 @@
 // This host-only process owns Docker access and reads the operator's private recipe catalog.
+import {hostTask} from './management-task-host.mjs';
 import {execFile} from 'node:child_process';
 import {createHash,createHmac,randomUUID} from 'node:crypto';
 import {constants} from 'node:fs';
@@ -81,6 +82,7 @@ export async function serve(root,exchange,tokenPath) {
     CREATE TABLE IF NOT EXISTS environments(k TEXT PRIMARY KEY,owner TEXT NOT NULL,lastGood TEXT,container TEXT,pending TEXT);`);
   const inspect=async id=>JSON.parse(await docker(['inspect',id]))[0];
   async function run(x){
+    if(x.action==='task_create'||x.action==='task_authority')return hostTask(x,host.serverId,db,()=>privateConfig(join(root,'task-owner.json')));
     const key=x.serverId+'/'+x.repoId+'/'+x.environment;
     let recipe=selectEnvironmentRecipe(host.recipes,x.repoId,x.environment);
     const developmentSite=x.repoId===1457276291 && x.environment==='calculator' && recipe?.autoDeployCalculator===true
