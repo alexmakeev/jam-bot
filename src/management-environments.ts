@@ -24,13 +24,15 @@ const settings = z.strictObject({
   secretRefs:z.array(alias).max(16).refine(values=>new Set(values).size===values.length,'Duplicate secret reference').default([]),
 });
 const definition = z.strictObject({
-  environment, tier:z.enum(['development','staging','stable']), settings,
+  environment, binding:z.literal('existing-local').optional(), tier:z.enum(['development','staging','stable']), settings,
 });
 const target = z.strictObject(targetFields);
 const identified = target.extend({environment});
 const receiptInput=identified.extend({includePublication:z.boolean().optional()});
 const deployInput = receiptInput.extend({revision,approvalCommentId:z.int().positive().optional()});
+const observedHttp=z.strictObject({url:z.url(),status:z.int().min(100).max(599).nullable()});
 const deployment = z.strictObject({
+  observation:z.strictObject({web:observedHttp,api:observedHttp.optional(),dependency:z.strictObject({project:z.string(),service:z.string(),running:z.boolean(),healthy:z.boolean(),containerId:z.string().regex(/^[0-9a-f]{64}$/).nullable()}).optional()}).optional(),
   publication:z.strictObject({url:z.string().url(),manifestSha256:z.string().regex(/^[0-9a-f]{64}$/),objectCount:z.number().int().positive(),verifiedAt:z.string().datetime(),cacheVerified:z.literal(true)}).optional(),
   environment,running:z.boolean(),healthy:z.boolean(),revision:revision.nullable(),image:z.string().nullable(),endpoint:endpoint.nullable().optional(),
 });
@@ -91,6 +93,7 @@ export function environmentOperations(_state:string,routes:ReadonlyMap<string,To
       catch(error) {
         if ((error as NodeJS.ErrnoException).code!=='EEXIST') throw error;
         const prior=await get(route,value.environment);
+        if(prior.binding!==value.binding)throw new ManagementError(409,'binding_conflict','An existing environment cannot change its binding mode.');
         if (prior.tier!==value.tier) throw new ManagementError(409,'tier_conflict','An existing environment cannot change its lifecycle tier.');
         await rename(temporary,path);
       }
@@ -135,16 +138,23 @@ export function environmentOperations(_state:string,routes:ReadonlyMap<string,To
       run:async input=>({environments:await list(getTarget(input))})},
     {name:'environment_get',description:'Get one environment definition.',input:identified,output:definition,mutate:false,
       run:async input=>get(getTarget(input),input.environment)},
-    {name:'environment_upsert',description:'Save application settings and names of host-approved secrets for an environment. Its lifecycle tier is immutable.',
+    {name:'environment_upsert',description:'Save environment settings or bind a host-registered existing-local preview. Its tier and binding mode are immutable.',
       input:target.extend(definition.shape),output:definition,mutate:true,run:async input=>{
         const route=getTarget(input);
-        const value=definition.parse({environment:input.environment,tier:input.tier,settings:input.settings});
+        const value=definition.parse({environment:input.environment,tier:input.tier,settings:input.settings,...(input.binding?{binding:input.binding}:{})});
+        if(value.binding==='existing-local'){
+          if(value.settings.endpoint || Object.keys(value.settings.appVariables).length || value.settings.secretRefs.length || value.settings.logLevel!=='info')
+            throw new ManagementError(400,'existing_settings','Use the host-approved observation settings for this existing preview.');
+          const observed=await host({serverId:instanceId,repoId:route.topic.repoId,environment:value.environment,binding:value.binding,tier:value.tier,action:'status'});
+          if(!observed.observation)throw new ManagementError(409,'missing_preview','This host did not verify a registered preview.');
+        }
         return save(route,value);
       }},
     {name:'environment_deploy',description:'Deploy an immutable revision using the host-approved environment recipe. Stable requires an exact owner or maintainer approval comment.',
       input:deployInput,output:deployment,mutate:true,run:async input=>{
         const route=getTarget(input);
         const env=await get(route,input.environment);
+        if(env.binding)throw new ManagementError(409,'observation_only','This existing preview is managed by its own launcher.');
         if (env.tier==='stable') {
           if (!input.approvalCommentId) throw new ManagementError(403,'stable_approval_required','A separate approval comment is required for this stable deployment.');
           try {
@@ -161,6 +171,10 @@ export function environmentOperations(_state:string,routes:ReadonlyMap<string,To
       input:receiptInput,output:deployment,mutate:action==='stop',run:async(input:z.infer<typeof receiptInput>)=>{
         const route=getTarget(input);
         const env=await get(route,input.environment);
+        if(env.binding){
+          if(action==='stop')throw new ManagementError(409,'observation_only','This existing preview is managed by its own launcher.');
+          return host({serverId:instanceId,repoId:route.topic.repoId,environment:env.environment,binding:env.binding,tier:env.tier,action});
+        }
         return host({serverId:instanceId,repoId:route.topic.repoId,environment:env.environment,action,...(input.includePublication?{includePublication:true}:{}),...hostSettings(env)});
       }
     })),

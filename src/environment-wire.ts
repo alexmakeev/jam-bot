@@ -2,10 +2,14 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 
 export type EnvironmentAction = {
   serverId:string;repoId:number;environment:string;action:'deploy'|'status'|'stop';revision?:string;
-  includePublication?:boolean;tier?:'development'|'staging'|'stable';config?:{LOG_LEVEL?:'debug'|'info'|'warn'|'error'};secretRefs?:string[];appVariables?:Record<string,string>;endpoint?:{address:'127.0.0.1';port:number};
+  binding?:'existing-local';includePublication?:boolean;tier?:'development'|'staging'|'stable';config?:{LOG_LEVEL?:'debug'|'info'|'warn'|'error'};secretRefs?:string[];appVariables?:Record<string,string>;endpoint?:{address:'127.0.0.1';port:number};
 };
 export type StaticPublication = {url:string;manifestSha256:string;objectCount:number;verifiedAt:string;cacheVerified:true};
-export type EnvironmentResult = {publication?:StaticPublication;environment:string;running:boolean;healthy:boolean;revision:string|null;image:string|null;endpoint?:{address:string;port:number}|null};
+export interface PreviewObservation {
+  web:{url:string;status:number|null};api?:{url:string;status:number|null};
+  dependency?:{project:string;service:string;running:boolean;healthy:boolean;containerId:string|null};
+}
+export type EnvironmentResult = {observation?:PreviewObservation;publication?:StaticPublication;environment:string;running:boolean;healthy:boolean;revision:string|null;image:string|null;endpoint?:{address:string;port:number}|null};
 export function signEnvironment(token:string,channel:'request'|'response',body:string) {
   return createHmac('sha256',token).update('jam-environment-v1/'+channel+'\n').update(body).digest('hex');
 }

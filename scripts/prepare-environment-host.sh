@@ -31,6 +31,7 @@ renameSync(verifier,join(dir,'owner.sha256'));
 JS
 (cd "$root" && npm run build)
 install -m 600 "$root/dist/src/environment-wire.js" "$dir/runtime/environment-wire.js"
+install -m 600 "$root/scripts/macos/existing-preview.mjs" "$dir/runtime/existing-preview.mjs"
 install -m 600 "$root/scripts/macos/management-task-host.mjs" "$dir/runtime/management-task-host.mjs"
 install -m 600 "$root/scripts/macos/environment-host.mjs" "$dir/runtime/environment-host.mjs"
 install -m 600 "$root/scripts/macos/s3-release.mjs" "$root/scripts/macos/s3-artifact.mjs" "$dir/runtime/"

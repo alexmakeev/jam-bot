@@ -64,3 +64,28 @@ test('management environments isolate projects, retain settings across reopening
   await assert.rejects(invoke('deploy',{...stable,revision:'b'.repeat(40),approvalCommentId:76}));
   assert.equal(calls.length,4);
 });
+
+test('binding an existing local preview needs a matching host observation and preserves host ownership',async t=>{
+  const dir=mkdtempSync(join(tmpdir(),'jam-bind-'));
+  const topic={repoId:1,repository:'example/project',installation:9,cwd:dir};
+  const route={topic,state:dir,journal:new Journal(join(dir,'journal.sqlite'))};
+  t.after(()=>{route.journal.db.close();rmSync(dir,{recursive:true,force:true});});
+  const routes=new Map([[topicKey(9,1),route]]);
+  let registered=false;const actions:string[]=[];
+  function ops(){return environmentOperations(dir,routes,serverId,async input=>{
+    actions.push(input.action);
+    return {environment:'preview',running:true,healthy:true,revision:null,image:null,...(registered?{observation:{web:{url:'http://127.0.0.1:5173/',status:200}}}:{})};
+  });}
+  const run=async(name:string,fields:object={})=>{const op=ops().find(op=>op.name==='environment_'+name)!;
+    return op.output.parse(await op.run(op.input.parse({serverId,repoId:1,environment:'preview',...fields})));};
+  const definition={tier:'development',binding:'existing-local',settings:{}};
+  await assert.rejects(run('upsert',definition),/did not verify/);
+  registered=true;await run('upsert',definition);await run('upsert',definition);
+  assert.equal((await run('get')).binding,'existing-local');
+  await run('status');
+  await assert.rejects(run('upsert',{...definition,settings:{endpoint:{address:'127.0.0.1',port:9999}}}));
+  await assert.rejects(run('upsert',{tier:'development',settings:{}}),/binding mode/);
+  await assert.rejects(run('deploy',{revision:sha}),/own launcher/);
+  await assert.rejects(run('stop'),/own launcher/);
+  assert.deepEqual(actions,['status','status','status','status']);
+});

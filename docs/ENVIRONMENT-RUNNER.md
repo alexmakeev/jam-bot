@@ -56,3 +56,22 @@ The receiver submits `deploy`, `status` or `stop` through a dedicated local exch
 The runner reconciles journaled operations on startup, including a recorded rollback phase. Before updating its known-good record it checks the observed image, ownership, published endpoint and consecutive health observations. A failed update restores the previously registered image when possible. If there is no known-good release, it stops the failed service. Project labels, a private project ownership value, a stored container identity and the current deployment generation constrain reconciliation. Docker administrators are within the host trust boundary. A conflicting resource requires operator inspection.
 
 Install with `scripts/macos/install-environment-host.sh` or the main Mac service installer. The host needs Node with `node:sqlite`, Docker Compose, and permission to run Docker. `JAM_HOST_NODE` can select the executable. Restart the broker with `launchctl kickstart -k gui/$(id -u)/local.jam-bot.environment-host`. Removing its LaunchAgent leaves registered data volumes and application services available for explicit retirement.
+
+## Bind an existing preview on the same host
+
+Use an observation binding when the existing project launcher already owns the web service and its dependencies. Add an exact repository ID and environment name to the host's private recipe catalog. Example recipe for a web server, API and optional existing Compose dependency:
+
+```json
+{
+  "repoId": 12345,
+  "environment": "local-preview",
+  "tier": "development",
+  "existingLocal": {
+    "web": {"port": 5173, "path": "/"},
+    "api": {"port": 3000, "path": "/health"},
+    "docker": {"project": "project-dev", "service": "db"}
+  }
+}
+```
+
+Use the project's actual ports and Compose labels. Omit optional API and Docker checks when the project has none. Reload the management host after updating the catalog. Call `environment_upsert` on the selected repository with the same environment and tier, `binding: "existing-local"` and `settings: {}`. The server saves the verified binding to the topic's `environments/<name>/definition.json`. Repeating the upsert preserves the environment. Use `environment_status` to see the web and API URLs and HTTP status codes, plus the matched dependency's container identity and state. Health requires a successful response from each configured endpoint and a running dependency that passes its configured Docker health check, when present. Probes stay on loopback and stop at redirects. The existing project's launcher retains responsibility for starting, stopping and updating the stack.

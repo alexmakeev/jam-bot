@@ -1,3 +1,4 @@
+import {observeExistingPreview} from './existing-preview.mjs';
 import {releaseStaticSite} from './s3-release.mjs';
 // This host-only process owns Docker access and reads the operator's private recipe catalog.
 import {hostTask} from './management-task-host.mjs';
@@ -87,6 +88,12 @@ export async function serve(root,exchange,tokenPath) {
     if(x.action==='task_create'||x.action==='task_authority')return hostTask(x,host.serverId,db,()=>privateConfig(join(root,'task-owner.json')));
     const key=x.serverId+'/'+x.repoId+'/'+x.environment;
     let recipe=selectEnvironmentRecipe(host.recipes,x.repoId,x.environment);
+    if(recipe?.existingLocal || x.binding){
+      if(x.action!=='status' || x.binding!=='existing-local' || !recipe?.existingLocal || recipe.environment!==x.environment ||
+        recipe.repoId!==x.repoId || x.tier!==recipe.tier || x.serverId!==host.serverId ||
+        !allowedKeys(x,['id','at','serverId','repoId','environment','tier','action','binding']))throw Error('Existing preview is outside host scope');
+      return observeExistingPreview(recipe.environment,recipe.existingLocal,docker);
+    }
     const developmentSite=x.repoId===1457276291 && x.environment==='calculator' && recipe?.autoDeployCalculator===true
       ? {port:19853,index:'calculator-dev-releases.json'}
       : x.repoId===1457276329 && x.environment==='sum' && recipe?.autoDeploySum===true
