@@ -126,7 +126,9 @@ async function publishOne(state:string,topic:Topic,credentials:()=>Promise<[Api,
       const marker='<!-- jam-bot:progress:'+key+' -->';
       if(files.some(f=>!f.url.startsWith('https://github.com/'+topic.repository+'/issues/'+issue+'/artifacts/')))throw Error('Result artifact belongs to another work card');
       const roleBoard=/^\*\*(Architect|Worker|Integrator):/.test(base);
-      const selected=roleBoard?files.filter(f=>/^(spec|tests|integration)-/.test(f.name)).slice(-1):files;
+      const primaryOrder=base.startsWith('**Worker:')?['tests-','review-']:['integration-','spec-','tests-','review-'];
+      const primary=primaryOrder.map(prefix=>files.filter(file=>file.name.startsWith(prefix)).at(-1)).find(Boolean);
+      const selected=roleBoard?(primary?[primary]:[]):files;
       const body=selected.length?base.slice(0,-marker.length).trimEnd()+(base.startsWith('**')?'\n\n**Files:** ':' ')+selected.map(f=>'['+f.name+']('+f.url+')').join(' · ')+'\n\n'+marker:base;
       db.prepare('INSERT OR IGNORE INTO event_versions VALUES(?,?,?)').run(issue,key,body);
       let received:Comment|undefined;
