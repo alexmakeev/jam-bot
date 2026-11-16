@@ -9,7 +9,7 @@ const authority=new AsyncLocalStorage<string>();
 export function withEnvironmentAuthority<T>(bearer:string,action:()=>T):T {return authority.run(bearer,action);}
 export function withoutEnvironmentAuthority<T>(action:()=>T):T {return authority.exit(action);}
 export async function runEnvironment(input:EnvironmentAction,signal?:AbortSignal):Promise<EnvironmentResult>{
-  return ownerHostRequest<EnvironmentResult>({...input,includePublication:true},signal);
+  return ownerHostRequest<EnvironmentResult>(input,signal);
 }
 
 /** Only the active authenticated management request can sign calls to the private host. */

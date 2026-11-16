@@ -28,7 +28,8 @@ const definition = z.strictObject({
 });
 const target = z.strictObject(targetFields);
 const identified = target.extend({environment});
-const deployInput = identified.extend({revision,approvalCommentId:z.int().positive().optional()});
+const receiptInput=identified.extend({includePublication:z.boolean().optional()});
+const deployInput = receiptInput.extend({revision,approvalCommentId:z.int().positive().optional()});
 const deployment = z.strictObject({
   publication:z.strictObject({url:z.string().url(),manifestSha256:z.string().regex(/^[0-9a-f]{64}$/),objectCount:z.number().int().positive(),verifiedAt:z.string().datetime(),cacheVerified:z.literal(true)}).optional(),
   environment,running:z.boolean(),healthy:z.boolean(),revision:revision.nullable(),image:z.string().nullable(),endpoint:endpoint.nullable().optional(),
@@ -153,14 +154,14 @@ export function environmentOperations(_state:string,routes:ReadonlyMap<string,To
             throw new ManagementError(503,'approval_unavailable','Stable approval could not be verified with GitHub.');
           }
         }
-        return host({serverId:instanceId,repoId:route.topic.repoId,environment:env.environment,action:'deploy',revision:input.revision,...hostSettings(env)});
+        return host({serverId:instanceId,repoId:route.topic.repoId,environment:env.environment,action:'deploy',revision:input.revision,...(input.includePublication?{includePublication:true}:{}),...hostSettings(env)});
       }},
     ...(['status','stop'] as const).map(action=>({
       name:'environment_'+action,description:action==='status'?'Inspect the host runtime for a configured environment.':'Stop the configured runtime for one project environment.',
-      input:identified,output:deployment,mutate:action==='stop',run:async(input:z.infer<typeof identified>)=>{
+      input:receiptInput,output:deployment,mutate:action==='stop',run:async(input:z.infer<typeof receiptInput>)=>{
         const route=getTarget(input);
         const env=await get(route,input.environment);
-        return host({serverId:instanceId,repoId:route.topic.repoId,environment:env.environment,action,...hostSettings(env)});
+        return host({serverId:instanceId,repoId:route.topic.repoId,environment:env.environment,action,...(input.includePublication?{includePublication:true}:{}),...hostSettings(env)});
       }
     })),
   ];
