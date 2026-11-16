@@ -7,14 +7,14 @@ export function progressOwner(identity:string):Owner {
 }
 
 export function roleChecklist(owner:Owner,history:Update[]){
-  const start=owner==='Worker'?history.map(row=>row.identity.startsWith('rework:')).lastIndexOf(true):-1;
+  const start=owner==='Worker'?history.map(row=>/^(rework:|worker-revision:|worker-correction:)/.test(row.identity)).lastIndexOf(true):-1;
   const current=history.slice(Math.max(start,0));
   const has=(prefix:string)=>current.some(row=>row.identity.startsWith(prefix));
   const tasks:[string,boolean][]=[];
   if(owner==='Architect'){
     tasks.push(['Prepare the architecture draft',has('architecture:')]);
   }else if(owner==='Worker'){
-    tasks.push(['Implement the approved scope',has('implementation:')]);
+    tasks.push(['Implement the approved scope',has('implementation:') || has('worker-revision:')]);
   }else{
     tasks.push(['Assemble the candidate',has('integration:')]);
   }
@@ -37,8 +37,8 @@ export function roleChecklist(owner:Owner,history:Update[]){
   }
   const lines=tasks.map(([label,ok])=>'- ['+(ok?'x':' ')+'] '+label);
   const last=current.at(-1);
-  const final=last?.identity==='card-result-verified'?current.filter(row=>row.identity.startsWith('integrated:')).at(-1):undefined;
-  const status=final?.summary??last?.summary??'';
+  const final=(last?.identity==='card-result-verified'||last?.identity.startsWith('deployment:')&&last.summary.endsWith('Deployment complete.'))?current.filter(row=>row.identity.startsWith('integrated:')).at(-1):undefined;
+  const status=final?final.summary+(last?.identity.startsWith('deployment:')?' Deployment verified.':''):last?.summary??'';
   return '**'+owner+': '+({Architect:'architecture and reviews',Worker:'implementation and validation',Integrator:'integration and publication'}[owner])+'**\n\n'+lines.join('\n')+'\n\n'+status;
 }
 

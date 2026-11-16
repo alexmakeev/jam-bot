@@ -148,6 +148,7 @@ async function reviewedImplementation(p:ProfileRun,project:Project,scope:string,
     }
     const sha=await git(project.tree,'rev-parse','HEAD');
     parent=sha;
+    recordProgress(p.state,p.issue,'worker-revision:'+sha,'Candidate `'+sha.slice(0,12)+'` is ready for review.');
     const evidencePath=join(directory(p.state,p.issue),'review-evidence',sha+'.json');
     let evidence=await readJson<ReviewEvidence>(evidencePath).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;});
     if(!evidence){
@@ -170,6 +171,7 @@ async function reviewedImplementation(p:ProfileRun,project:Project,scope:string,
     }finally{reviewJournal.db.close();}
     await atomicJson(join(directory(p.state,p.issue),'reviews',sha+'.json'),{sha,passing,feedback,consultation});
     if(passing && /^PASS\b/i.test(feedback.trim()))return {sha,elapsedMs};
+    recordProgress(p.state,p.issue,'worker-correction:'+sha,'The reviewer requested changes. The worker is revising the candidate against the attached review.');
     feedback=reviewPacket({findings:feedback,externalAdvice:advice,testReport:tests},12000);
     if(attempt===0)await atomicJson(join(directory(p.state,p.issue),'correction.json'),{project,sha,attempt:1,integrationHead:correction?.integrationHead,feedback});
   }
