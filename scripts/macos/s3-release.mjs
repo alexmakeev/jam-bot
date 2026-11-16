@@ -17,6 +17,18 @@ async function privateJson(file){
   const st=await lstat(file);if(!st.isFile()||st.nlink!==1||st.uid!==process.getuid()||(st.mode&0o077)||st.size>8192)throw Error('Invalid secret file');
   return JSON.parse(await readFile(file,'utf8'));
 }
+// Finish already-started requests before reporting a failure or switching the site's entry point.
+export async function forObjects(keys,action){
+  let next=0,failed;
+  async function worker(){
+    while(!failed && next<keys.length){
+      const key=keys[next++];
+      try{await action(key);}catch(error){failed=error;}
+    }
+  }
+  await Promise.all(Array.from({length:Math.min(keys.length,4)},worker));
+  if(failed)throw failed;
+}
 export function validateStaticSite(recipe,x){
   const c=recipe.staticSite;
   if(recipe.environment!==x.environment||recipe.repoId!==x.repoId||!['development','staging','stable'].includes(recipe.tier)||
@@ -73,19 +85,18 @@ export async function releaseStaticSite(root,recipe,x){
   const objects={...build.objects,'build-manifest.json':hash(await readFile(join(build.dir,'build-manifest.json')))};
   if(saved?.revision===x.revision && saved.build.manifest===build.receipt.manifest && saved.publicBase===c.publicBase && saved.bucket===c.bucket && saved.prefix===(c.prefix??'')){
     let intact=true;
-    for(const [key,digest] of Object.entries(objects)){
+    await forObjects(Object.keys(objects),async key=>{
       const existing=await request('GET',key);
-      if(!existing||hash(existing.body)!==digest){intact=false;break;}
-      try{await verifyCache(key,digest);}catch{intact=false;break;}
-    }
+      if(!existing||hash(existing.body)!==objects[key]){intact=false;return;}
+      try{await verifyCache(key,objects[key]);}catch{intact=false;}
+    });
     if(intact)return result(true,saved);
   }
-  const uploadOrder=Object.keys(objects).filter(k=>k!=='index.html').concat('index.html');
-  for(const key of uploadOrder){
+  async function upload(key){
     const body=await readFile(join(build.dir,key));
     if(hash(body)!==objects[key])throw Error('Release bytes changed after validation');
     const prior=await request('GET',key);
-    if(prior&&hash(prior.body)===objects[key])continue;
+    if(prior&&hash(prior.body)===objects[key])return;
     if(prior&&key.startsWith('assets/releases/'))throw Error('Immutable asset key is occupied by different bytes');
     const headers={'Content-Type':mime[key.split('.').pop()]??'application/octet-stream','Cache-Control':'no-cache'};
     if(prior && prior.headers.get('etag'))headers['If-Match']=prior.headers.get('etag');
@@ -94,8 +105,11 @@ export async function releaseStaticSite(root,recipe,x){
     const stored=await request('GET',key);
     if(!stored || hash(stored.body)!==objects[key])throw Error('Object store did not retain verified bytes');
   }
+  await forObjects(Object.keys(build.objects).filter(k=>k!=='index.html'),upload);
+  await upload('build-manifest.json');
+  await upload('index.html');
   await purge();
-  for(const [key,digest] of Object.entries(objects))await verifyCache(key,digest);
+  await forObjects(Object.keys(objects),key=>verifyCache(key,objects[key]));
   const receipt={revision:x.revision,repoId:x.repoId,environment:x.environment,bucket:c.bucket,prefix:c.prefix??'',publicBase:c.publicBase,objects,verifiedAt:new Date().toISOString(),build:build.receipt};
   const tmp=path+'.'+randomUUID();await writeFile(tmp,JSON.stringify(receipt)+'\n',{mode:0o600});await rename(tmp,path);
   return result(true,receipt);

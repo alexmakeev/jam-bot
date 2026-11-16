@@ -4,7 +4,7 @@ import {mkdtemp,mkdir,writeFile,rm,symlink} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {collectAssets} from '../scripts/macos/s3-artifact.mjs';
-import {validateStaticSite} from '../scripts/macos/s3-release.mjs';
+import {validateStaticSite,forObjects} from '../scripts/macos/s3-release.mjs';
 test('static build rejects escaping links, mutable assets and a mismatched manifest',async()=>{
   const dir=await mkdtemp(join(tmpdir(),'s3-proof-'));
   try{
@@ -23,4 +23,14 @@ test('static deployment uses only the operator-bound resource, secret, repositor
   assert.equal(validateStaticSite(recipe,x),recipe.staticSite);
   for(const patch of [{repoId:11},{secretRefs:[]},{secretRefs:['other']},{appVariables:{APP_BUCKET:'elsewhere'}},{endpoint:{port:10999}}])assert.throws(()=>validateStaticSite(recipe,{...x,...patch}));
   for(const patch of [{s3Endpoint:'http://example.com'},{prefix:'../'},{cache:{mode:'ssh-resource',resource:'ok; id',sshHost:'host'}}])assert.throws(()=>validateStaticSite({...recipe,staticSite:{...recipe.staticSite,...patch}},x));
+});
+
+test('asset batches drain in-flight uploads before a failure can return to the publisher',async()=>{
+  let active=0,peak=0,done=0;
+  await assert.rejects(forObjects(Array.from({length:12},(_,n)=>n),async key=>{
+    active++;peak=Math.max(active,peak);
+    try {await new Promise(resolve=>setTimeout(resolve,key===1?1:10));if(key===1)throw Error('injected object failure');done++;}
+    finally {active--;}
+  }),/injected object failure/);
+  assert.equal(peak,4);assert.equal(active,0);assert.equal(done,3);
 });
