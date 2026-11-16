@@ -35,11 +35,16 @@ export function roleChecklist(owner:Owner,history:Update[]){
       ['Approve the tested revision',round.some(row=>row.identity.startsWith('integration-review:')&&row.summary.includes('returned PASS'))],
       ['Publish the verified revision to dev',has('integrated:')]);
   }
-  const latest=history.slice(-4);
   const lines=tasks.map(([label,ok])=>'- ['+(ok?'x':' ')+'] '+label);
-  for(const row of history.filter(row=>row.identity.startsWith('rework:')||row.identity.startsWith('fix-spec:')))lines.push('- [x] '+row.summary);
-  const prior=history.slice(0,-4).map(row=>'- '+row.summary).join('\n');
-  return '**'+owner+': '+({Architect:'architecture and reviews',Worker:'implementation and validation',Integrator:'integration and publication'}[owner])+'**\n\n'+lines.join('\n')+
-    '\n\n**Latest updates**\n'+latest.map(row=>'- '+row.summary).join('\n')+
-    (prior&&prior.length<42000?'\n\n<details><summary>Earlier updates</summary>\n\n'+prior+'\n\n</details>':'');
+  const last=current.at(-1);
+  const final=last?.identity==='card-result-verified'?current.filter(row=>row.identity.startsWith('integrated:')).at(-1):undefined;
+  const status=final?.summary??last?.summary??'';
+  return '**'+owner+': '+({Architect:'architecture and reviews',Worker:'implementation and validation',Integrator:'integration and publication'}[owner])+'**\n\n'+lines.join('\n')+'\n\n'+status;
+}
+
+export function briefDecision(markdown:string, fallback:string){
+  const lines=markdown.split('\n').map(line=>line.trim());
+  const marked=lines.find(line=>/^Decision:\s+/i.test(line))?.replace(/^Decision:\s+/i,'');
+  const choice=marked??lines.find(line=>line.length>=25 && line.length<=260 && !/^(?:#|[|`<>]|Candidate |\s*$)/.test(line));
+  return choice && choice.length<=300 ? choice.replace(/^[-*] /,'').replaceAll('@','＠'):fallback;
 }

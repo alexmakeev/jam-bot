@@ -1,3 +1,4 @@
+import {briefDecision} from './role-progress.js';
 import {loadProjectValues,responsible} from './project-values.js';
 import {DatabaseSync} from 'node:sqlite';
 import { issueComment } from './issue-comment.js';
@@ -116,7 +117,7 @@ export async function publishSpecification({topic,issue,markdown,signal,authoriz
   const commentId=await confirmedProgress(state,topic,issue,key);
   const correction=markdown.startsWith('# Correction for issue ');
   const step=(correction?'fix-spec:':'spec-ready:')+artifact.sha256;
-  recordProgress(state,issue,step,correction?'Integrator returned the candidate for correction. See the attached fix specification.':'Architect published the verified specification.',undefined,[artifact]);
+  recordProgress(state,issue,step,correction?'Returned for correction. '+briefDecision(markdown.split('\n').slice(4).join('\n'),'See the fix specification.') : briefDecision(markdown,'The approved specification is ready for implementation.'),undefined,[artifact]);
   await confirmedProgress(state,topic,issue,step);
   const receipt={...artifact,commentId};
   await atomicJson(join(directory,name+'.artifact-receipt.json'),receipt);

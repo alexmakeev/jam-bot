@@ -3,7 +3,7 @@ import {join} from 'node:path';
 import {digestOf,specName} from './specification-upload.js';
 import type {issueClient} from './github-app.js';
 
-export type ArtifactKind='review'|'tests'|'consultation'|'plan'|'assignment'|'design';
+export type ArtifactKind='review'|'tests'|'consultation'|'plan'|'assignment'|'design'|'integration';
 type Api=Awaited<ReturnType<typeof issueClient>>;
 type Item={number:number;id:number;html_url:string;name:string;type:string;body:string;creator:{id:number};updated_by_actor?:{id:number}|null};
 type Comment={id:number;issue_url:string;body:string;user:{id:number}};
