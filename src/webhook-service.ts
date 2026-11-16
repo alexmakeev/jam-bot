@@ -18,7 +18,7 @@ import { BranchValidation } from './branch-validation.js';
 import { integrateReady, validateReviewedHead } from './developer-profile.js';
 import { configuredManagement } from './management-transport.js';
 import {InstallationGrants} from './installation-grants.js';
-import { projectConnector,restoreManagedTopics } from './management-projects.js';
+import { pausedRepositories,projectConnector,restoreManagedTopics } from './management-projects.js';
 import { createManagement } from './management.js';
 import { webhook } from './webhook.js';
 
@@ -117,7 +117,7 @@ async function main() {
   await requireOwnerLock(join(state,'owner.lock'));
   const secret = (await readFile(required('JAM_WEBHOOK_SECRET_FILE'),'utf8')).trim();
   if (!secret) throw new Error('Missing signing secret');
-  const routes = await openTopics(state);
+  const routes = await openTopics(state,pausedRepositories(state));
   await restoreManagedTopics(state,routes);
   const admissions=new TaskAdmission();
 

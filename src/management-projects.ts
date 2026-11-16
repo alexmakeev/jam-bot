@@ -58,6 +58,10 @@ async function attach(state:string,routes:Map<string,TopicRuntime>,binding:Bindi
   return {route,added:true};
 }
 
+export function pausedRepositories(state:string):Set<number> {
+  return catalog(state,db=>new Set(db.prepare('SELECT repoId FROM project_locations WHERE paused=1').all().map(row=>Number(row.repoId))));
+}
+
 export async function restoreManagedTopics(state:string,routes:Map<string,TopicRuntime>) {
   for(const [key,route] of routes){
     const paused=catalog(state,db=>db.prepare('SELECT paused FROM project_locations WHERE repoId=?').get(route.topic.repoId)?.paused===1);

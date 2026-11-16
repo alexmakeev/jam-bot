@@ -41,10 +41,11 @@ export async function openTopic(state:string, topic:Topic):Promise<TopicRuntime>
   } catch (error) { journal.db.close(); throw error; }
 }
 
-export async function openTopics(root: string): Promise<Map<string,TopicRuntime>> {
+export async function openTopics(root: string, paused:ReadonlySet<number>=new Set(), env=process.env): Promise<Map<string,TopicRuntime>> {
   const routes = new Map<string,TopicRuntime>();
   try {
-    for (const {topic,state} of configuredTopics(root)) {
+    for (const {topic,state} of configuredTopics(root,env)) {
+      if(paused.has(topic.repoId)) continue;
       routes.set(topicKey(topic.installation,topic.repoId),await openTopic(state,topic));
     }
     return routes;

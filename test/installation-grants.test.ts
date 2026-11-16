@@ -10,8 +10,8 @@ import {webhook} from '../src/webhook.js';
 import {InstallationGrants} from '../src/installation-grants.js';
 import {createManagement} from '../src/management.js';
 import {managementTransport,type ManagementHandler} from '../src/management-transport.js';
-import {projectConnector,restoreManagedTopics} from '../src/management-projects.js';
-import {openTopic,type TopicRuntime} from '../src/topics.js';
+import {pausedRepositories,projectConnector,restoreManagedTopics} from '../src/management-projects.js';
+import {openTopics,type TopicRuntime} from '../src/topics.js';
 
 test('signed grant batches, partial retries, revocation and regrant preserve an installer-owned topic across restart',async t=>{
  const state=await mkdtemp(join(tmpdir(),'jam-install-grant-'));t.after(()=>rm(state,{recursive:true,force:true}));
@@ -21,8 +21,9 @@ test('signed grant batches, partial retries, revocation and regrant preserve an 
  const granted=new Set([11,12]);let transient=true,starts=0,stops=0;
  const routes=new Map<string,TopicRuntime>();
  const bootstrap=async()=>{
-  const legacy=await openTopic(state,{repoId:11,installation:33,repository:'fixture/legacy',cwd:join(state,'leo')});
-  routes.set('33/11',legacy);await restoreManagedTopics(state,routes);
+  const installed=await openTopics(state,pausedRepositories(state),{...env,JAM_REPOSITORY:'fixture/legacy',JAM_REPOSITORY_ID:'11'});
+  for(const [key,route] of installed)routes.set(key,route);
+  await restoreManagedTopics(state,routes);
  };
  await bootstrap();
  const lead=routes.get('33/11')!.journal.lead().id;
