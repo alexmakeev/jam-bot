@@ -1,4 +1,4 @@
-import {progressOwner,roleChecklist} from './role-progress.js';
+import {progressOwner,roleChecklist,statusBlock} from './role-progress.js';
 import {DatabaseSync} from 'node:sqlite';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
@@ -85,7 +85,8 @@ export function recordProgress(state:string,issue:number,identity:string,summary
       const active=latest.some(r=>r.key!==fingerprint('card-accepted'));
       const block=/paused|blocked|waiting for project profile/i.test(String(latest.at(-1)?.summary));
       const work=board.kind==='development'?'Implement and verify the change':board.kind==='consultation'?'Prepare the consultation':'Prepare the assignment';
-      summary='**JAM · work card progress**\n\n✅ Task accepted  \n'+(done?'✅':block?'⏸️':active?'🟨':'◻️')+' '+work+'  \n'+(done?'✅':'◻️')+' Deliver the verified result'+
+      summary='**🍯 JAM · work card progress**\n\n'+statusBlock(['✅ Task accepted',
+        (done?'✅':block?'⏸️':active?'🟨':'◻️')+' '+work,(done?'✅':'◻️')+' Deliver the verified result'])+
         '\n\n**Latest updates**\n'+latest.map(row=>'- '+row.summary).join('\n');
       const earlier=history.slice(0,-5).map(row=>'- '+row.summary).join('\n');
       if(earlier && earlier.length+summary.length<45000)summary+='\n\n<details><summary>Earlier updates</summary>\n\n'+earlier+'\n\n</details>';
@@ -146,8 +147,8 @@ async function publishOne(state:string,topic:Topic,credentials:()=>Promise<[Api,
       }
       const marker='<!-- jam-bot:progress:'+key+' -->';
       if(files.some(f=>!f.url.startsWith('https://github.com/'+topic.repository+'/issues/'+issue+'/artifacts/')))throw Error('Result artifact belongs to another work card');
-      const roleBoard=/^\*\*(Architect|Worker|Integrator):/.test(base);
-      const primaryOrder=base.startsWith('**Worker:')?['tests-','review-']:['integration-','spec-','plan-','tests-','review-'];
+      const roleBoard=/^\*\*(?:🍯 JAM )?(Architect|Worker|Integrator):/.exec(base);
+      const primaryOrder=roleBoard?.[1]==='Worker'?['tests-','review-']:['integration-','spec-','plan-','tests-','review-'];
       const primary=primaryOrder.map(prefix=>files.filter(file=>file.name.startsWith(prefix)).at(-1)).find(Boolean);
       const selected=roleBoard?(primary?[primary]:[]):files;
       const body=selected.length?base.slice(0,-marker.length).trimEnd()+(base.startsWith('**')?'\n\n**Files:** ':' ')+selected.map(f=>'['+f.name+']('+f.url+')').join(' · ')+'\n\n'+marker:base;

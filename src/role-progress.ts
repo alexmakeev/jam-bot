@@ -6,6 +6,10 @@ export function progressOwner(identity:string):Owner {
   return 'Worker';
 }
 
+export function statusBlock(lines:string[]){
+  return '```text\n'+lines.map(line=>'  '+line).join('\n')+'\n```';
+}
+
 export function roleChecklist(owner:Owner,history:Update[]){
   const start=owner==='Worker'?history.map(row=>/^(rework:|worker-revision:|worker-correction:)/.test(row.identity)).lastIndexOf(true):-1;
   const current=history.slice(Math.max(start,0));
@@ -42,7 +46,7 @@ export function roleChecklist(owner:Owner,history:Update[]){
   const last=current.at(-1);
   const final=(last?.identity==='card-result-verified'||last?.identity.startsWith('deployment:')&&last.summary.endsWith('Deployment complete.'))?current.filter(row=>row.identity.startsWith('integrated:')).at(-1):undefined;
   const status=final?final.summary+(last?.identity.startsWith('deployment:')?' Deployment verified.':''):last?.summary??'';
-  return '**'+owner+': '+({Architect:'architecture and reviews',Worker:'implementation and validation',Integrator:'integration and publication'}[owner])+'**\n\n'+lines.join('  \n')+'\n\n'+status;
+  return '**🍯 JAM '+owner+': '+({Architect:'architecture and reviews',Worker:'implementation and validation',Integrator:'integration and publication'}[owner])+'**\n\n'+statusBlock(lines)+'\n\n'+status;
 }
 
 export function briefDecision(markdown:string, fallback:string){

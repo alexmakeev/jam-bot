@@ -214,7 +214,9 @@ test('parallel adviser reviews have independent noninteractive status marks',asy
   const html=roleChecklist('Architect',['architecture:1:requested','architecture-adviser:1:Codex:running','architecture-adviser:1:Antigravity:running','architecture-adviser:1:Codex:ok'].map(identity=>({identity,summary:'Reviewing'})));
   assert.match(html,/✅ Codex review/);assert.match(html,/🟨 Antigravity review/);assert.match(html,/◻️ Publish/);
   assert.doesNotMatch(html,/^[-*] /m);
-  assert.match(html,/✅ Codex review {2}\n🟨 Antigravity review/);
+  assert.match(html,/^\*\*🍯 JAM Architect:.*\*\*\n\n```text\n  ✅ /);
+  assert.match(html,/  ✅ Codex review\n  🟨 Antigravity review/);
+  assert.match(html,/\n```\n\nReviewing$/);
 });
 
 test('human comments preserve the question and start one new editable progress comment',async t=>{
