@@ -53,7 +53,9 @@ export async function inspectProject(repository:string, installation:number) {
     throw Error('The selected installation needs active Issues write access.');
   const read=await appReader(repository,String(installation));
   const repo=await read('repos/'+repository);
-  return {repository: String(repo.full_name), repoId:Number(repo.id), installation};
+  if(!Number.isSafeInteger(binding.account?.id)||repo.owner?.id!==binding.account.id||
+     repo.owner?.login?.toLowerCase()!==binding.account.login?.toLowerCase())throw Error('Repository installation account changed');
+  return {repository:String(repo.full_name),repoId:Number(repo.id),installation,accountId:Number(binding.account.id)};
 }
 
 // An owner may discover a new installation before this server has a topic for it.

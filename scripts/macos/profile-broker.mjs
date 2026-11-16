@@ -20,6 +20,9 @@ const git = async (cwd,args) => (await run('git',['-c','core.hooksPath=/dev/null
   {cwd,timeout:60000,maxBuffer:2**20,env:{...process.env,GIT_TERMINAL_PROMPT:'0'}})).stdout.trimEnd();
 const gh = async path => JSON.parse((await run('gh',['api',path],{timeout:30000,maxBuffer:2**20})).stdout);
 
+async function revoked(repo){
+  try{await lstat(join(root,'revoked',repo.toLowerCase()));return true;}catch(error){if(error.code==='ENOENT')return false;throw error;}
+}
 async function regular(path,limit) {
   const st=await lstat(path);
   if (!st.isFile() || st.nlink!==1 || st.size>limit) throw Error('Invalid broker input file');
@@ -47,6 +50,7 @@ async function execute(dir) {
   await regular(join(dir,'request.json'),1024*1024);
   const req=JSON.parse(await readFile(join(dir,'request.json'),'utf8'));
   if (!Object.hasOwn(projects,req.repo) || !/^[\w.-]+\/[\w.-]+$/.test(req.repo)) throw Error('Repository outside publisher scope');
+  if(await revoked(req.repo))throw Error('GitHub App repository grant was revoked');
   if(req.action==='project-profile'){
     if(!Number.isSafeInteger(req.repoId)||req.repoId<=0)throw Error('Missing repository identity');
     const policy=projects[req.repo].releaseProfile;
@@ -108,6 +112,7 @@ async function execute(dir) {
       await authorizedFiles(req);
       await queueCalculator(projects[req.repo],req);
       await queueSandbox(projects[req.repo],req);
+      if(await revoked(req.repo))throw Error('GitHub App repository grant was revoked');
       await git(temp,['push','--force-with-lease=refs/heads/dev:'+req.expected,'origin',req.sha+':refs/heads/dev']);
       if(!(await git(temp,['ls-remote','origin','refs/heads/dev'])).startsWith(req.sha+'\t'))throw Error('Publication requires reconciliation');
     }
@@ -175,7 +180,7 @@ do {
       consultations.add(active);
     }else await reply(dir);
   }
-  await reconcileCalculator(projects[calculatorRepo],{exchange:root});
-  await reconcileSandbox(projects[sandboxRepo],{exchange:root});
+  if(!await revoked(calculatorRepo))await reconcileCalculator(projects[calculatorRepo],{exchange:root});
+  if(!await revoked(sandboxRepo))await reconcileSandbox(projects[sandboxRepo],{exchange:root});
   if(consultations.size)await Promise.race([...consultations,delay(1000)]);
 }while(consultations.size);

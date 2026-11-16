@@ -24,10 +24,9 @@ const inventory=z.strictObject({serverId:z.uuid(),topics:z.array(topicSchema)});
 const page=z.int().positive().default(1);
 const ok=z.strictObject({updated:z.literal(true)});
 
-export async function createManagement(state:string,routes:Map<string,TopicRuntime>,onTopicAdded:(topic:TopicRuntime)=>void=()=>{}) {
+export async function createManagement(state:string,routes:Map<string,TopicRuntime>,onTopicAdded:(topic:TopicRuntime)=>void=()=>{},connect=projectConnector(state,routes,onTopicAdded)) {
   const serverId=serverIdentity(state);
   const name=process.env.JAM_SERVER_NAME || 'JAM-Bot';
-  const connect=projectConnector(state,routes,onTopicAdded);
   const projects=()=>Array.from(routes.values(),describe).sort((a,b)=>a.repository.localeCompare(b.repository));
   const active=new Set<Promise<void>>();
   const environments=await environmentOperations(state,routes,serverId);

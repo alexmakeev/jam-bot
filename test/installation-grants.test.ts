@@ -1,0 +1,75 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {createHash,createHmac,randomUUID} from 'node:crypto';
+import {mkdtemp,writeFile,readFile,rm} from 'node:fs/promises';
+import {join} from 'node:path';
+import {tmpdir} from 'node:os';
+import {Client} from '@modelcontextprotocol/sdk/client/index.js';
+import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import {webhook} from '../src/webhook.js';
+import {InstallationGrants} from '../src/installation-grants.js';
+import {createManagement} from '../src/management.js';
+import {managementTransport,type ManagementHandler} from '../src/management-transport.js';
+import {projectConnector,restoreManagedTopics} from '../src/management-projects.js';
+import {openTopic,type TopicRuntime} from '../src/topics.js';
+
+test('signed grant batches, partial retries, revocation and regrant preserve an installer-owned topic across restart',async t=>{
+ const state=await mkdtemp(join(tmpdir(),'jam-install-grant-'));t.after(()=>rm(state,{recursive:true,force:true}));
+ const env={JAM_GITHUB_APP_ID:'8',JAM_INSTALLATION_ID:'33'};
+ const install={id:33,app_id:8,account:{id:21,login:'fixture'}};
+ const repos=[{id:11,full_name:'fixture/legacy'},{id:12,full_name:'fixture/added'}];
+ const granted=new Set([11,12]);let transient=true,starts=0,stops=0;
+ const routes=new Map<string,TopicRuntime>();
+ const bootstrap=async()=>{
+  const legacy=await openTopic(state,{repoId:11,installation:33,repository:'fixture/legacy',cwd:join(state,'leo')});
+  routes.set('33/11',legacy);await restoreManagedTopics(state,routes);
+ };
+ await bootstrap();
+ const lead=routes.get('33/11')!.journal.lead().id;
+ routes.get('33/11')!.journal.db.exec("INSERT INTO intake(delivery,issue,action,title,body,state,workerState) VALUES('prior',6,'task','Previous task','','acked','complete')");
+ await writeFile(join(state,'leo','marker'),'retained');
+ const connect=projectConnector(state,routes,()=>{starts++;},async(name,installation)=>{
+  const repo=repos.find(r=>r.full_name===name);
+  if(!repo||!granted.has(repo.id))throw Error('No grant');
+  if(repo.id===12&&transient)throw Error('Temporary network failure');
+  return {repoId:repo.id,repository:name,installation,accountId:21};
+ },async()=>{stops++;});
+ const discover=async()=>({total:granted.size,projects:repos.filter(r=>granted.has(r.id)).map(r=>({repoId:r.id,sourceUri:'https://github.com/'+r.full_name}))});
+ let grants=new InstallationGrants(state,routes,connect,env,discover);
+ const api=await createManagement(state,routes,()=>{},connect);
+ let management:ManagementHandler;
+ const key=randomUUID(),server=webhook(routes,key,undefined,undefined,(req,res)=>management(req,res),{accept:(...args:Parameters<typeof grants.accept>)=>grants.accept(...args)} as InstallationGrants);
+ await new Promise<void>(ok=>server.listen(0,'127.0.0.1',ok));
+ const address=server.address();assert.ok(address && typeof address==='object');
+ const host='127.0.0.1:'+address.port,url='http://'+host;
+ management=managementTransport(api,'sha256:'+createHash('sha256').update(key).digest('hex'),[host]);
+ const mcp=new Client({name:'acceptance',version:'1'});
+ await mcp.connect(new StreamableHTTPClientTransport(new URL(url+'/mcp'),{requestInit:{headers:{authorization:'Bearer '+key}}}));
+ const inventory=async()=>((await mcp.callTool({name:'list_topics',arguments:{}})).structuredContent as any).topics.map((r:any)=>r.repoId);
+ t.after(async()=>{await mcp.close();server.closeAllConnections();server.close();grants.db.close();for(const r of routes.values())r.journal.db.close();});
+ const send=async (action:string,rows:typeof repos,delivery:string=randomUUID(),signature:string=key,installation=install)=>{
+  const body=JSON.stringify({action,installation,[action==='created'?'repositories':action==='removed'?'repositories_removed':'repositories_added']:rows});
+  return (await fetch(url+'/github',{method:'POST',headers:{'x-github-delivery':delivery,'x-github-event':action==='created'?'installation':'installation_repositories',
+    'x-hub-signature-256':'sha256='+createHmac('sha256',signature).update(body).digest('hex')},body})).status;
+ };
+ const drain=async()=>{while(await grants.next()){}};
+ assert.equal(await send('added',repos,randomUUID(),'forged'),403);
+ assert.equal(await send('added',repos,randomUUID(),key,{...install,id:34}),403);
+ const first=randomUUID();assert.equal(await send('created',repos,first),202);await drain();
+ assert.equal(starts,0);transient=false;grants.db.prepare('UPDATE installation_grants SET available=0').run();await drain();
+ assert.equal(starts,1);assert.deepEqual(await inventory(),[12,11]);assert.ok(routes.get('33/12')!.topic.cwd.endsWith('/projects/fixture/added/leo'));
+ assert.equal(await send('created',repos,first),202);await drain();assert.equal(starts,1);
+ assert.equal(await send('added',[{...repos[0]!,id:77}]),202);await drain();assert.ok(!routes.has('33/77'));
+ granted.delete(11);assert.equal(await send('removed',[repos[0]!]),202);await drain();
+ assert.equal(stops,1);assert.deepEqual(await inventory(),[12]);
+ assert.equal(await send('added',[repos[0]!]),202);await drain();assert.deepEqual(await inventory(),[12]);
+ for(const r of routes.values())r.journal.db.close();routes.clear();grants.db.close();
+ await bootstrap();grants=new InstallationGrants(state,routes,connect,env,discover);
+ assert.deepEqual(await inventory(),[12]);
+ granted.add(11);assert.equal(await send('added',[repos[0]!]),202);await drain();
+ assert.equal(starts,2);assert.equal(routes.get('33/11')!.state,state);
+ assert.equal(routes.get('33/11')!.journal.lead().id,lead);
+ assert.equal(await readFile(join(state,'leo','marker'),'utf8'),'retained');
+ assert.equal(routes.get('33/11')!.journal.db.prepare("SELECT workerState FROM intake WHERE delivery='prior'").get()?.workerState,'complete');
+ assert.equal(await send('removed',[repos[0]!]),202);await drain();assert.deepEqual(await inventory(),[12,11]);assert.equal(stops,1);assert.equal(starts,2);
+});

@@ -1,3 +1,4 @@
+import type {InstallationGrants} from './installation-grants.js';
 import {decisionReply,wakeDecision} from './material-decision.js';
 import { storeReleaseApprovalHint } from './release-approval-hint.js';
 import { createHmac, timingSafeEqual } from 'node:crypto';
@@ -10,7 +11,7 @@ import { hasTaskWriteAccess, taskClass } from './task-approval.js';
 type Routes = ReadonlyMap<string, TopicRuntime>;
 
 const limit = 2 * 1024 * 1024;
-async function receive(req: IncomingMessage, res: ServerResponse, routes: Routes, secret: string, canApprove: typeof hasTaskWriteAccess, admission:TaskAdmission) {
+async function receive(req: IncomingMessage, res: ServerResponse, routes: Routes, secret: string, canApprove: typeof hasTaskWriteAccess, admission:TaskAdmission,grants?:InstallationGrants) {
   const end = (status: number, data?: string) => { res.writeHead(status); res.end(data); };
   if (req.method === 'GET' && req.url === '/health') {
     for (const {journal} of routes.values()) journal.db.prepare('SELECT 1').get();
@@ -33,6 +34,8 @@ async function receive(req: IncomingMessage, res: ServerResponse, routes: Routes
   try { data = JSON.parse(bytes.toString('utf8')); } catch { return end(400); }
   if (!data || typeof data !== 'object' || Array.isArray(data)) return end(400);
   const type = req.headers['x-github-event'];
+  if((type==='installation'&&['created','deleted'].includes(data.action))||(type==='installation_repositories'&&['added','removed'].includes(data.action)))
+    return end(grants?grants.accept(type,req.headers['x-github-delivery'],data):204);
   const approvalComment=type==='issue_comment' && data.action==='created' && data.comment?.body?.startsWith?.('Approve JAM-Bot stable release of ');
   const decision=type==='issue_comment' && data.action==='created' && typeof data.comment?.body==='string' && decisionReply.exec(data.comment.body);
   if (!decision && !approvalComment && (type !== 'issues' || !['opened','typed'].includes(data.action))) return end(204);
@@ -75,10 +78,10 @@ async function receive(req: IncomingMessage, res: ServerResponse, routes: Routes
     actorId:actor.id,actorLogin:actor.login,authorId:author.id,authorLogin:author.login,kind,title:issue.title,body:issue.body ?? ''});
   return end(status);
 }
-export function webhook(routes: Routes, secret: string, canApprove=hasTaskWriteAccess, admission=new TaskAdmission(), management?:ManagementHandler) {
+export function webhook(routes: Routes, secret: string, canApprove=hasTaskWriteAccess, admission=new TaskAdmission(), management?:ManagementHandler,grants?:InstallationGrants) {
   return createServer({ requestTimeout:30_000, headersTimeout:15_000, maxHeaderSize:16384 }, (req,res) => {
     const isManagement=req.url==='/mcp' || req.url?.startsWith('/api/v1/');
-    const handled=management && isManagement ? management(req,res) : receive(req,res,routes,secret,canApprove,admission);
+    const handled=management && isManagement ? management(req,res) : receive(req,res,routes,secret,canApprove,admission,grants);
     handled.catch(() => {
       if (!res.headersSent) res.writeHead(503);
       res.end();

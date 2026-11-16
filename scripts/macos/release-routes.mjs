@@ -1,5 +1,8 @@
 // Repository guidance selects concrete, operator-registered routes. It cannot supply executables or credentials.
 import {execFile} from 'node:child_process';
+import {lstat} from 'node:fs/promises';
+import {join} from 'node:path';
+import {homedir} from 'node:os';
 import {promisify} from 'node:util';
 
 const exec=promisify(execFile);
@@ -55,6 +58,8 @@ export function due(route,{now=Date.now(),sourceReadyAt,approved=false}){
 export async function repositoryRoutes(repository,policy,command=exec){
   if(!/^[A-Za-z0-9-]+\/[\w.-]+$/.test(repository)||!policy||!Number.isSafeInteger(policy.repoId)||
     !/^[a-zA-Z0-9][a-zA-Z0-9/_-]{0,63}$/.test(policy.profileRef))throw Error('Invalid installed project release policy');
+  try{await lstat(join(process.env.JAM_PROFILE_EXCHANGE??join(homedir(),'.jam-bot','profile-exchange'),'revoked',repository.toLowerCase()));throw Error('GitHub App repository grant was revoked');}
+  catch(error){if(error.code!=='ENOENT')throw error;}
   const api=async path=>JSON.parse((await command('gh',['api','repos/'+repository+path],{timeout:30000,maxBuffer:512*1024})).stdout);
   if((await api('')).id!==policy.repoId)throw Error('Repository identity changed');
   const revision=(await api('/commits/'+encodeURIComponent(policy.profileRef))).sha;

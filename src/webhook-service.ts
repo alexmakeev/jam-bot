@@ -1,6 +1,6 @@
 import {refreshProjectValues} from './project-values.js';
 import {DecisionPending,pauseDecision} from './material-decision.js';
-import { readdir, readFile, readlink } from 'node:fs/promises';
+import { readdir, readFile, readlink,mkdir,rm,writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { PublisherSeedUnavailable } from './profile-checkout.js';
@@ -17,7 +17,8 @@ import { IntegrationQueue } from './integration-queue.js';
 import { BranchValidation } from './branch-validation.js';
 import { integrateReady, validateReviewedHead } from './developer-profile.js';
 import { configuredManagement } from './management-transport.js';
-import { restoreManagedTopics } from './management-projects.js';
+import {InstallationGrants} from './installation-grants.js';
+import { projectConnector,restoreManagedTopics } from './management-projects.js';
 import { createManagement } from './management.js';
 import { webhook } from './webhook.js';
 
@@ -62,7 +63,7 @@ async function consume({journal,topic,state}: TopicRuntime, signal: AbortSignal)
             journal.deferPublisherSeed(execution.delivery);
             continue;
           }
-          if(signal.aborted && journal.specificationCheckpoint(execution.issue))return;
+          if(signal.aborted)return;
           journal.finishWorker(execution.delivery,err instanceof Error ? err.message : 'Worker dispatch failed');
           console.error('Worker dispatch requires review',topic.repository,execution.issue);
         }
@@ -119,20 +120,38 @@ async function main() {
   const routes = await openTopics(state);
   await restoreManagedTopics(state,routes);
   const admissions=new TaskAdmission();
-  await admissions.recover(routes.values());
+
   const stop = new AbortController();
   const consumers=new Set<Promise<void>>();
   let failure:unknown;
+  let serving=false;
+  const started=new Map<number,{abort:AbortController;done:Promise<void>}>();
   const start=(route:TopicRuntime)=>{
-    if(stop.signal.aborted)return;
-    const task=withoutEnvironmentAuthority(()=>Promise.all([consume(route,stop.signal),publishTimeline(route.state,route.topic,stop.signal)]).then(()=>{})).catch(err=>{if(!stop.signal.aborted){failure=err;stop.abort();}});
+    if(!serving||stop.signal.aborted||started.has(route.topic.repoId))return;
+    const abort=new AbortController(),signal=AbortSignal.any([abort.signal,stop.signal]);
+    const task=withoutEnvironmentAuthority(async()=>{
+      await admissions.recover([route]);
+      const tasks=[consume(route,signal),publishTimeline(route.state,route.topic,signal)];
+      try{await Promise.all(tasks);}finally{abort.abort();await Promise.allSettled(tasks);}
+    }).catch(err=>{if(!stop.signal.aborted && routes.has(route.topic.installation+'/'+route.topic.repoId)){failure=err;stop.abort();}});
+    started.set(route.topic.repoId,{abort,done:task});
     consumers.add(task);
     void task.finally(()=>consumers.delete(task));
   };
   let control:Awaited<ReturnType<typeof createManagement>>|undefined;
   const requests=new Set<Promise<Record<string,unknown>>>();
+  const connect=projectConnector(state,routes,start,undefined,async route=>{
+    const worker=started.get(route.topic.repoId);
+    if(worker){worker.abort.abort();await worker.done;started.delete(route.topic.repoId);}
+  },async(repository,paused)=>{
+    const [owner,name]=repository.toLowerCase().split('/');
+    const dir=join(process.env.JAM_PROFILE_EXCHANGE??'/var/lib/jam-profile-exchange','revoked',owner!);
+    if(paused){await mkdir(dir,{recursive:true});await writeFile(join(dir,name!),'revoked\n');}
+    else await rm(join(dir,name!),{force:true});
+  });
+  const grants=new InstallationGrants(state,routes,connect);
   const management=await configuredManagement(async()=>{
-    const api=await createManagement(state,routes,start);
+    const api=await createManagement(state,routes,start,connect);
     control=api;
     return {operations:api.operations,invoke:async(name,input)=>{
       const pending=api.invoke(name,input);
@@ -140,8 +159,12 @@ async function main() {
       try {return await pending;} finally {requests.delete(pending);}
     }};
   });
-  const server=webhook(routes,secret,undefined,admissions,management);
+  const server=webhook(routes,secret,undefined,admissions,management,grants);
   await new Promise<void>((ok,fail)=>{server.once('error',fail);server.listen(19739,'0.0.0.0',ok);});
+  // Reconcile acknowledged membership changes before resuming earlier assignments.
+  while(await grants.next()){}
+  serving=true;
+  const grantWorker=grants.run(stop.signal).catch(error=>{failure=error;stop.abort();});
   const done=new Promise<void>(ok=>stop.signal.addEventListener('abort',()=>ok(),{once:true}));
   const shutdown=()=>stop.abort();
   process.once('SIGTERM',shutdown);
@@ -153,7 +176,8 @@ async function main() {
   } finally {
     const closed=new Promise<void>(ok=>server.close(()=>ok()));
     server.closeIdleConnections();
-    await Promise.all([closed,...consumers]);
+    await Promise.all([closed,grantWorker,...consumers]);
+    grants.db.close();
     await Promise.allSettled(requests);
     await control?.settle();
     for(const route of routes.values())route.journal.db.close();
