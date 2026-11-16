@@ -29,11 +29,11 @@ import {randomUUID} from 'node:crypto';
 const [dir,repo,image,recipe]=process.argv.slice(2);
 const {projectRecipes}=await import(pathToFileURL(dir+'/profile-recipes.mjs'));
 const file=dir+'/config.json';
-let projects={};
-try { projects=projectRecipes(JSON.parse(readFileSync(file,'utf8'))); } catch(error) { if(error.code!=='ENOENT') throw error; }
+let projects={},config={};
+try { config=JSON.parse(readFileSync(file,'utf8')); projects=projectRecipes(config); } catch(error) { if(error.code!=='ENOENT') throw error; }
 projects[repo]={...projects[repo],image,recipe};
 const tmp=file+'.'+randomUUID()+'.tmp';
-writeFileSync(tmp,JSON.stringify({projects},null,2)+'\n',{flag:'wx',mode:0o600});
+writeFileSync(tmp,JSON.stringify({...config,projects},null,2)+'\n',{flag:'wx',mode:0o600});
 renameSync(tmp,file);
 NODE
 launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
