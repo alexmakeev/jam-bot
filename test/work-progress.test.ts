@@ -205,7 +205,7 @@ test('development handoffs retain separate role comments and reset worker checks
   }
   const db=new DatabaseSync(join(dir,'work-progress.sqlite'));
   const bodies=db.prepare('SELECT body FROM events ORDER BY rowid').all().map(row=>String(row.body));db.close();
-  assert.equal(bodies.length,3);assert.match(bodies[0]!,/✅ Codex review/);assert.match(bodies[0]!,/◻️ Antigravity review/);
+  assert.equal(bodies.length,3);assert.match(bodies[0]!,/✅ Codex review/);assert.match(bodies[0]!,/❌ Antigravity review\n    Error:/);
   assert.match(bodies[1]!,/Worker:.*\n[^]*◻️ Pass review/);assert.match(bodies[2]!,/Correction attached/);assert.match(bodies[2]!,/◻️ Publish the verified revision/);
 });
 
@@ -235,4 +235,12 @@ test('human comments preserve the question and start one new editable progress c
     recordProgress(dir,6,'scope-plan:one','❓ @owner — which files do you approve?',{purpose:'plan',markdown:'Plan for this issue.'});
     const after=rows();assert.equal(after.length,2);assert.deepEqual(after[0],before[0]);assert.match(String(after[1]?.body),/Verified/);
   }
+});
+
+test('GitHub rate-limit pauses respect response headers and distinguish permission errors',async()=>{
+  const {rateLimitReset}=await import('../src/github-app.js');
+  assert.equal(rateLimitReset(429,new Headers({'retry-after':'120'}),'',1000),121000);
+  assert.equal(rateLimitReset(403,new Headers({'x-ratelimit-remaining':'0','x-ratelimit-reset':'260'}),'',1000),260000);
+  assert.equal(rateLimitReset(403,new Headers(),'secondary rate limit',1000),61000);
+  assert.equal(rateLimitReset(403,new Headers(),'not permitted',1000),undefined);
 });

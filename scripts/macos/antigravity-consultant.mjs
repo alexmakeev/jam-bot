@@ -1,4 +1,5 @@
 import {execFile} from 'node:child_process';
+import {providerFailureReason} from './consultants.mjs';
 import {randomUUID} from 'node:crypto';
 import {promisify} from 'node:util';
 
@@ -36,7 +37,7 @@ export async function consultAntigravity({profile,packet,signal,question,onOutpu
     return result.slice(0,6000);
   }catch(error){
     const transient=!signal?.aborted && /timeout|timed out|deadline exceeded|connection reset|temporarily unavailable|service unavailable|429|503/i.test(String(error.stderr??''));
-    throw Object.assign(Error(signal?.aborted?'Antigravity consultation cancelled':'Antigravity consultation unavailable'),{transient});
+    throw Object.assign(Error(signal?.aborted?'Antigravity consultation cancelled':'Antigravity consultation unavailable'),{transient,reason:providerFailureReason(String(error.stderr??''))});
   }
   finally{await exec('docker',['rm','--force',name],{timeout:10000}).catch(()=>{});}
 }

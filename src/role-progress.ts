@@ -14,7 +14,7 @@ export function roleChecklist(owner:Owner,history:Update[]){
   const start=owner==='Worker'?history.map(row=>/^(rework:|worker-revision:|worker-correction:)/.test(row.identity)).lastIndexOf(true):-1;
   const current=history.slice(Math.max(start,0));
   const has=(prefix:string)=>current.some(row=>row.identity.startsWith(prefix));
-  const tasks:[string,boolean,boolean?][]=[];
+  const tasks:[string,boolean,boolean?,string?][]=[];
   if(owner==='Architect' && has('scope-plan:') && !has('architecture:')){
     tasks.push(['Prepare the scope plan',true],['Attach the scope plan',true]);
   }else if(owner==='Architect'){
@@ -26,13 +26,16 @@ export function roleChecklist(owner:Owner,history:Update[]){
   }
   const phase={Architect:'architecture',Worker:'implementation',Integrator:'diagnosis'}[owner];
   const prefix=phase+'-adviser:';
-  const advisers=new Map<string,string>();
+  const advisers=new Map<string,{status:string;label:string;reason?:string}>();
   for(const row of current.filter(row=>row.identity.startsWith(prefix))){
     const [, ,name,status]=row.identity.split(':');
-    if(name && status)advisers.set(name,status);
+    if(name && status){
+      const [label,reason]=row.summary.split(' — ');
+      advisers.set(name,{status,label:label?.endsWith(' review')?label:name+' review',reason});
+    }
   }
-  for(const [name,status] of advisers)tasks.push([name+' review',status==='ok',status==='running']);
-  if(owner==='Architect' && (!has('scope-plan:') || has('architecture:')))tasks.push(['Publish the specification',has('spec-ready:'),has('architecture:') && advisers.size>0 && [...advisers.values()].every(status=>status==='ok')]);
+  for(const {label,status,reason} of advisers.values())tasks.push([label,status==='ok',status==='running',status==='error'||status==='unavailable'?reason??'Provider did not return a verified review.':undefined]);
+  if(owner==='Architect' && (!has('scope-plan:') || has('architecture:')))tasks.push(['Publish the specification',has('spec-ready:'),has('architecture:') && advisers.size>0 && [...advisers.values()].every(a=>a.status==='ok')]);
   if(owner==='Worker')tasks.push(['Pass review and branch validation',has('validated:'),has('consultant:') || has('validation:')]);
   if(owner==='Integrator'){
     const lastCandidate=history.map(row=>row.identity.startsWith('integration:')).lastIndexOf(true);
@@ -42,7 +45,7 @@ export function roleChecklist(owner:Owner,history:Update[]){
       ['Publish the verified revision to dev',has('integrated:'),round.some(row=>row.identity.startsWith('integration-review:') && row.summary.includes('returned PASS'))]);
   }
   const paused=current.at(-1)?.identity.startsWith('blocked:');
-  const lines=tasks.map(([label,done,active])=>(done?'✅':active && !paused?'🟨':'◻️')+' '+label);
+  const lines=tasks.map(([label,done,active,error])=>error?'❌ '+label+'\n    Error: '+error:(done?'✅':active && !paused?'🟨':'◻️')+' '+label);
   const last=current.at(-1);
   const final=(last?.identity==='card-result-verified'||last?.identity.startsWith('deployment:')&&last.summary.endsWith('Deployment complete.'))?current.filter(row=>row.identity.startsWith('integrated:')).at(-1):undefined;
   const status=final?final.summary+(last?.identity.startsWith('deployment:')?' Deployment verified.':''):last?.summary??'';

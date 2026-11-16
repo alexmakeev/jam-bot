@@ -5,7 +5,7 @@ import {createHash} from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
 import {collectDeploymentProgress} from './deployment-progress.js';
 import {publishIssueSpec,type ArtifactKind} from './issue-specification.js';
-import {issueClient,publisherIdentity} from './github-app.js';
+import {GitHubRequestError,issueClient,publisherIdentity} from './github-app.js';
 import type {Topic} from './intake-journal.js';
 
 export const fingerprint=(input:string)=>createHash('sha256').update(input).digest('hex');
@@ -119,6 +119,8 @@ function session(topic:Topic):Promise<[Api,number]>{
   return value;
 }
 // A periodic publisher and a synchronous handoff can target the same comment.
+const publicationPause=new Map<number,number>();
+const nextCommentWrite=new Map<number,number>();
 const publishing=new Map<string,Promise<boolean>>();
 export async function publishProgress(state:string,topic:Topic,credentials=()=>session(topic),selection?:{issue:number;key:string}){
   const previous=publishing.get(state);
@@ -126,9 +128,18 @@ export async function publishProgress(state:string,topic:Topic,credentials=()=>s
   publishing.set(state,run);
   try{return await run;}finally{if(publishing.get(state)===run)publishing.delete(state);}
 }
+async function paceCommentWrite(installation:number){
+  for(;;){
+    const wait=Math.max(publicationPause.get(installation)??0,nextCommentWrite.get(installation)??0)-Date.now();
+    if(wait<=0)break;
+    await delay(wait);
+  }
+  nextCommentWrite.set(installation,Date.now()+1000);
+}
 async function publishOne(state:string,topic:Topic,credentials:()=>Promise<[Api,number]>,selection?:{issue:number;key:string}){
   const db=open(state);
   try{
+    if((publicationPause.get(topic.installation)??0)>Date.now())return false;
     const event=selection?db.prepare("SELECT * FROM events WHERE issue=? AND key=? AND status!='sent'").get(selection.issue,selection.key):
       db.prepare("SELECT * FROM events WHERE status!='sent' AND retryAt<=unixepoch() ORDER BY rowid LIMIT 1").get();
     if(!event)return false;
@@ -168,10 +179,11 @@ async function publishOne(state:string,topic:Topic,credentials:()=>Promise<[Api,
       if(received && (event.receipt!==null && event.receipt!==received.id))throw Error('Result comment identity changed');
       if(received && received.body!==body){
         if(received.body!==base && !db.prepare('SELECT 1 FROM event_versions WHERE issue=? AND key=? AND body=?').get(issue,key,received.body))throw Error('Owned result comment was edited externally');
+        await paceCommentWrite(topic.installation);
         received=await api('/issues/comments/'+received.id,'PATCH',{body});
       }
       if(!received && db.prepare("UPDATE events SET status='sending' WHERE issue=? AND key=? AND status='pending' AND receipt IS NULL").run(issue,key).changes){
-        try{received=await api(path,'POST',{body});}
+        try{await paceCommentWrite(topic.installation);received=await api(path,'POST',{body});}
         catch(error){
           const status=(error as {status?:number}).status;
           if(status && [400,401,403,404,422,429].includes(status))
@@ -184,7 +196,9 @@ async function publishOne(state:string,topic:Topic,credentials:()=>Promise<[Api,
       db.prepare("UPDATE events SET receipt=?,status=CASE WHEN version=? THEN 'sent' ELSE 'dirty' END WHERE issue=? AND key=?").run(received.id,event.version!,issue,key);
     } catch(error) {
       if((error as {status?:number}).status===401)sessions.delete(topic.installation+'/'+topic.repoId+'/'+topic.repository);
-      db.prepare('UPDATE events SET retryAt=unixepoch()+60 WHERE issue=? AND key=?').run(issue,key);
+      const retryAt=error instanceof GitHubRequestError?error.retryAt:undefined;
+      if(retryAt)publicationPause.set(topic.installation,Math.max(retryAt,publicationPause.get(topic.installation)??0));
+      db.prepare('UPDATE events SET retryAt=? WHERE issue=? AND key=?').run(Math.ceil((retryAt??Date.now()+60000)/1000),issue,key);
     }
     return true;
   }finally{db.close();}
@@ -253,6 +267,8 @@ export async function reconcileProgress(state:string,topic:Topic,issue:number,cr
 export async function confirmedProgress(state:string,topic:Topic,issue:number,identity:string) {
   const lookup=open(state);let key:string;try{key=eventKey(lookup,issue,identity);}finally{lookup.close();}
   for(let attempt=0;attempt<6;attempt++){
+    const pause=(publicationPause.get(topic.installation)??0)-Date.now();
+    if(pause>0)await delay(pause);
     await publishProgress(state,topic,undefined,{issue,key});
     const db=open(state);
     try{

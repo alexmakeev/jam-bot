@@ -35,3 +35,13 @@ test('confirmed failures preserve timings and may retry only existing named subs
   assert.match(advice[0].text,/Temporary provider failure/);assert.equal(attempts,1);assert.equal(advice[0].status,'error');assert.deepEqual(states,['running','error']);
   assert.ok(Date.parse(advice[0].finishedAt)>=Date.parse(advice[0].startedAt));
 });
+
+test('advisers publish the observed model and bounded actionable errors without raw diagnostics',async()=>{
+  const updates=[];
+  const {advice}=await consultAll([profile],'architecture',packet,{codex:async({onModel})=>{
+    onModel('test-model');throw Object.assign(Error('private stderr'),{reason:'auth',unavailable:true});
+  }},async status=>updates.push(status));
+  assert.equal(advice[0].model,'test-model');
+  assert.equal(updates.at(-1).reason,'Authentication failed. Sign in to this consultant again.');
+  assert.ok(!JSON.stringify(updates).includes('private stderr'));
+});

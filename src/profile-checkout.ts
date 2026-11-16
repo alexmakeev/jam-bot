@@ -14,7 +14,7 @@ export async function git(cwd:string,...args:string[]) {
 }
 
 export type ReviewPhase='architecture'|'implementation'|'diagnosis';
-export interface ConsultationProgress {phase:ReviewPhase;updatedAt:string;providers:{name:string;provider:string;status:string;startedAt:string;updatedAt:string;finishedAt?:string}[]}
+export interface ConsultationProgress {phase:ReviewPhase;updatedAt:string;providers:{name:string;provider:string;model?:string;reason?:string;status:string;startedAt:string;updatedAt:string;finishedAt?:string}[]}
 export interface Advice {name:string;provider:string;model?:string;startedAt?:string;finishedAt?:string;status:'ok'|'unavailable'|'error';text:string}
 interface Request {repoId?:number;scope?:string;action:'project-profile'|'seed'|'test-head'|'test'|'publish'|'consult';phase?:ReviewPhase;packet?:string;only?:string[];repo:string;sha?:string;base?:string;expected?:string;cards?:{issue:number;approval:TaskApproval}[]}
 export interface BrokerResult {sha:string;markdown?:string;owner?:string;advice?:Advice[];dev?:string;tests?:string[];log?:string;alreadyPublished?:boolean;awaitDeployment?:boolean}
@@ -92,7 +92,7 @@ export async function exchange(repository:string, request:Request,signal:AbortSi
       if(onProgress || slow){
         const current=await readJson<ConsultationProgress>(join(dir,'progress.json')).catch(e=>{if(!missing(e) && !(e instanceof SyntaxError))throw e;});
         if(current && current.phase===request.phase && Array.isArray(current.providers)){
-          const key=JSON.stringify(current.providers.map(p=>[p.name,p.status]));
+          const key=JSON.stringify(current.providers.map(p=>[p.name,p.model,p.status,p.reason]));
           if(onProgress && key!==progressKey){await onProgress(current);progressKey=key;}
           if(slow && !reply && current.providers.some(p=>p.status==='running')){
             lastCheck=Date.now();observedSlow=true;await onSlow!(current);

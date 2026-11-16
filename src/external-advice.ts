@@ -55,13 +55,16 @@ export async function externalReview(state:string,topic:Topic,cards:Card[],phase
   const notify=(key:string,body:string)=>{for(const issue of ids)recordProgress(state,issue,phase+':'+inputDigest+':'+key,body);};
   const owner={architecture:'architect',implementation:'developer',diagnosis:'integrator'}[phase];
   const version='`'+inputDigest.slice(0,12)+'`';
+  const adviserUpdate=(a:{name:string;provider:string;model?:string;status:string;reason?:string},attempt:string)=>{
+    const label=a.provider==='codex'?'Codex':a.provider==='antigravity'?'Antigravity':a.name;
+    const model=a.model && /^[a-zA-Z0-9][a-zA-Z0-9 ._()/-]{0,99}$/.test(a.model)?' ('+a.model+')':'';
+    const reason=(a.status==='error'||a.status==='unavailable')?(a.reason??'Provider returned no diagnostic detail.').replace(/[\r\n`]/g,' ').slice(0,240):'';
+    for(const issue of ids)recordProgress(state,issue,phase+'-adviser:'+inputDigest+':'+a.name+':'+a.status+':'+attempt+':'+sha(model+reason).slice(0,12),label+model+' review'+(reason?' — '+reason:''));
+  };
   const progress=(retry:boolean)=>async(snapshot:ConsultationProgress)=>{
     for(const adviser of snapshot.providers){
       if(!/^[a-zA-Z0-9_. -]{1,80}$/.test(adviser.name) || !['running','ok','unavailable','error'].includes(adviser.status))continue;
-      if(adviser.status==='running'){
-        const name=adviser.provider==='antigravity'?'Antigravity ('+adviser.name+')':adviser.name;
-        for(const issue of ids)recordProgress(state,issue,phase+'-adviser:'+inputDigest+':'+name+':running',name+' is reviewing the '+phase+' input.');
-      }
+      adviserUpdate(adviser,retry?'retry':'initial');
       const attempt=retry?'selective retry':'initial call';
       const key=(retry?'retry-':'')+adviser.name+adviser.status;
       const text=adviser.status==='running'?owner+' dispatched the '+attempt+' to '+adviser.name+' for '+phase+' input '+version+'. Awaiting the adviser.'
@@ -115,12 +118,9 @@ export async function externalReview(state:string,topic:Topic,cards:Card[],phase
   }
   if(record.attempts?.length && advice.some(a=>a.status==='error'))
     decision=await choose({kind:'retry_exhausted',evidence:advice});
+  for(const adviser of advice)adviserUpdate({...adviser,reason:adviser.text},'final');
   for(const issue of ids){
     await atomicJson(join(state,'assignments',String(issue),'consultations',phase+'.json'),record);
-    for(const adviser of advice){
-      const name=adviser.provider==='antigravity'?'Antigravity ('+adviser.name+')':adviser.name;
-      recordProgress(state,issue,phase+'-adviser:'+inputDigest+':'+name+':'+adviser.status,name+' review outcome: '+adviser.status+'.');
-    }
     if(advice.length){
       await report?.(topic,issue,record);
       for(const [attempt,replies] of (record.attempts??[advice]).entries()){

@@ -2,7 +2,15 @@ import { readFile } from 'node:fs/promises';
 import { createSign } from 'node:crypto';
 
 export class GitHubRequestError extends Error {
-  constructor(readonly status: number) { super('GitHub App request failed: HTTP ' + status); }
+  constructor(readonly status: number, readonly retryAt?:number) { super('GitHub App request failed: HTTP ' + status); }
+}
+
+export function rateLimitReset(status:number,headers:Headers,message:string,now=Date.now()){
+  if(status!==403 && status!==429)return;
+  const seconds=headers.get('retry-after');
+  const reset=headers.get('x-ratelimit-remaining')==='0'?Number(headers.get('x-ratelimit-reset'))*1000:0;
+  if(status!==429 && seconds===null && !reset && !/rate limit|abuse detection/i.test(message))return;
+  return Math.max(reset||0,now+(seconds && /^\d+$/.test(seconds)?Math.max(1,Number(seconds)):60)*1000);
 }
 
 async function request(path: string, token: string, method = 'GET', body?: object): Promise<any> {
@@ -12,7 +20,10 @@ async function request(path: string, token: string, method = 'GET', body?: objec
       'X-GitHub-Api-Version': '2022-11-28', 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined
   });
-  if (!response.ok) throw new GitHubRequestError(response.status);
+  if (!response.ok) {
+    const message=(response.status===403||response.status===429)?await response.text():'';
+    throw new GitHubRequestError(response.status,rateLimitReset(response.status,response.headers,message));
+  }
   if (response.status === 204) return;
   return response.json();
 }
