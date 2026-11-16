@@ -5,7 +5,7 @@ Canonical English terms apply to all project documents. Russian aliases help map
 | Canonical term | Meaning and Russian aliases |
 | --- | --- |
 | JAM-Bot | Product name (джем-бот); repository: jam-bot. |
-| coordinator / Leo | Repository's root agent and primary conversational contact (координатор, Лео). |
+| coordinator / LEO | Repository's root agent and primary conversational contact (координатор, Лео). |
 | developer / issue worker | Agent responsible for implementing an approved work card (разработчик, воркер задачи). |
 | architect | Role producing a sufficient specification before development (архитектор). |
 | integrator | Role assembling and verifying a candidate; a fresh instance also handles RC fixes (интегратор). |

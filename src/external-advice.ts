@@ -78,7 +78,7 @@ export async function externalReview(state:string,topic:Topic,cards:Card[],phase
   const onSlow=async(evidence:ConsultationProgress)=>{
     // Keep the original request alive. A running provider cannot be retried as a failed call.
     const decision=await choose({kind:'in_flight',evidence});
-    if(decision==='ESCALATE')throw Error('The stage owner escalated an active consultation to Leo; inspect the existing request before retrying');
+    if(decision==='ESCALATE')throw Error('The stage owner escalated an active consultation to LEO; inspect the existing request before retrying');
     if(decision!=='WAIT')throw Error('An active consultant must finish or be reconciled before another call');
   };
   let record=await readJson<Evidence>(path).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;});

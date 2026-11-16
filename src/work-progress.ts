@@ -14,7 +14,9 @@ function open(state:string) {
     CREATE TABLE IF NOT EXISTS events(issue INTEGER,key TEXT,body TEXT,status TEXT DEFAULT 'pending',
     receipt INTEGER,retryAt INTEGER DEFAULT 0,PRIMARY KEY(issue,key))`);
   if(!db.prepare("SELECT 1 FROM pragma_table_info('events') WHERE name='markdown'").get())db.exec('ALTER TABLE events ADD COLUMN markdown TEXT; ALTER TABLE events ADD COLUMN purpose TEXT;');
-  db.exec(`CREATE TABLE IF NOT EXISTS event_reports(issue INTEGER,key TEXT,purpose TEXT,digest TEXT,markdown TEXT,PRIMARY KEY(issue,key,purpose,digest));
+  db.exec(`CREATE TABLE IF NOT EXISTS dashboards(issue INTEGER PRIMARY KEY,kind TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS milestones(issue INTEGER,key TEXT,summary TEXT,PRIMARY KEY(issue,key));
+    CREATE TABLE IF NOT EXISTS event_reports(issue INTEGER,key TEXT,purpose TEXT,digest TEXT,markdown TEXT,PRIMARY KEY(issue,key,purpose,digest));
     CREATE TABLE IF NOT EXISTS event_links(issue INTEGER,key TEXT,name TEXT,url TEXT,PRIMARY KEY(issue,key,name,url));
     CREATE TABLE IF NOT EXISTS event_versions(issue INTEGER,key TEXT,body TEXT,PRIMARY KEY(issue,key,body))`);
   if(!db.prepare("SELECT 1 FROM pragma_table_info('events') WHERE name='version'").get())db.exec('ALTER TABLE events ADD COLUMN version INTEGER NOT NULL DEFAULT 0;');
@@ -22,13 +24,42 @@ function open(state:string) {
 }
 type Report={purpose:ArtifactKind;markdown:string};
 type Link={name:string;url:string};
+const dashboard=fingerprint('work-card-dashboard:v1');
+export function beginDashboard(state:string,issue:number,kind:string){
+  const db=open(state);
+  try{db.prepare('INSERT OR IGNORE INTO dashboards SELECT ?,? WHERE NOT EXISTS (SELECT 1 FROM events WHERE issue=?)').run(issue,kind,issue);
+    if(!db.prepare('SELECT 1 FROM dashboards WHERE issue=?').get(issue))return;}
+  finally{db.close();}
+  recordProgress(state,issue,'card-accepted','Task and human approval verified.');
+}
+function eventKey(db:DatabaseSync,issue:number,identity:string){
+  const key=fingerprint(identity);
+  return db.prepare('SELECT 1 FROM milestones WHERE issue=? AND key=?').get(issue,key)?dashboard:key;
+}
 export function recordProgress(state:string,issue:number,identity:string,summary:string,report?:Report|Report[],links:Link[]=[]){
   const db=open(state);
   try{
     db.exec('BEGIN IMMEDIATE');
-    const key=fingerprint(identity),body=summary+'\n\n<!-- jam-bot:progress:'+key+' -->';
-    db.prepare('INSERT OR IGNORE INTO events(issue,key,body) VALUES(?,?,?)').run(issue,key,body);
+    let key=fingerprint(identity);
+    const board=db.prepare('SELECT kind FROM dashboards WHERE issue=?').get(issue);
     let changed=false;
+    if(board && !identity.startsWith('scope-plan:') && !identity.startsWith('material-decision:')){
+      changed=Boolean(db.prepare('INSERT OR IGNORE INTO milestones VALUES(?,?,?)').run(issue,key,summary).changes);
+      const history=db.prepare('SELECT key,summary FROM milestones WHERE issue=? ORDER BY rowid').all(issue);
+      const latest=history.slice(-5);
+      const done=Boolean(db.prepare('SELECT 1 FROM milestones WHERE issue=? AND key=?').get(issue,fingerprint('card-result-verified')));
+      const active=latest.some(r=>r.key!==fingerprint('card-accepted'));
+      const block=/paused|blocked|waiting for project profile/i.test(String(latest.at(-1)?.summary));
+      const work=board.kind==='development'?'Implement and verify the change':board.kind==='consultation'?'Prepare the consultation':'Prepare the assignment';
+      summary='**LEO · work card progress**\n\n- ✅ Task accepted\n- '+(done?'✅':block?'⏸️':active?'🔄':'⚪')+' '+work+'\n- '+(done?'✅':'⚪')+' Deliver the verified result'+
+        '\n\n**Latest updates**\n'+latest.map(row=>'- '+row.summary).join('\n');
+      const earlier=history.slice(0,-5).map(row=>'- '+row.summary).join('\n');
+      if(earlier && earlier.length+summary.length<45000)summary+='\n\n<details><summary>Earlier updates</summary>\n\n'+earlier+'\n\n</details>';
+      key=dashboard;
+    }
+    const body=summary+'\n\n<!-- jam-bot:progress:'+key+' -->';
+    db.prepare('INSERT OR IGNORE INTO events(issue,key,body) VALUES(?,?,?)').run(issue,key,body);
+    if(board && key===dashboard && changed)db.prepare('UPDATE events SET body=? WHERE issue=? AND key=?').run(body,issue,key);
     for(const r of !report?[]:Array.isArray(report)?report:[report]){
       if(db.prepare('INSERT OR IGNORE INTO event_reports VALUES(?,?,?,?,?)').run(issue,key,r.purpose,fingerprint(r.markdown),r.markdown).changes)changed=true;
     }
@@ -52,7 +83,15 @@ function session(topic:Topic):Promise<[Api,number]>{
   void value.catch(()=>{if(sessions.get(key)?.value===value)sessions.delete(key);});
   return value;
 }
+// A periodic publisher and a synchronous handoff can target the same comment.
+const publishing=new Map<string,Promise<boolean>>();
 export async function publishProgress(state:string,topic:Topic,credentials=()=>session(topic),selection?:{issue:number;key:string}){
+  const previous=publishing.get(state);
+  const run=(previous??Promise.resolve()).catch(()=>{}).then(()=>publishOne(state,topic,credentials,selection));
+  publishing.set(state,run);
+  try{return await run;}finally{if(publishing.get(state)===run)publishing.delete(state);}
+}
+async function publishOne(state:string,topic:Topic,credentials:()=>Promise<[Api,number]>,selection?:{issue:number;key:string}){
   const db=open(state);
   try{
     const event=selection?db.prepare("SELECT * FROM events WHERE issue=? AND key=? AND status!='sent'").get(selection.issue,selection.key):
@@ -73,7 +112,7 @@ export async function publishProgress(state:string,topic:Topic,credentials=()=>s
       }
       const marker='<!-- jam-bot:progress:'+key+' -->';
       if(files.some(f=>!f.url.startsWith('https://github.com/'+topic.repository+'/issues/'+issue+'/artifacts/')))throw Error('Result artifact belongs to another work card');
-      const body=files.length?base.slice(0,-marker.length).trimEnd()+' '+files.map(f=>'['+f.name+']('+f.url+')').join(' · ')+'\n\n'+marker:base;
+      const body=files.length?base.slice(0,-marker.length).trimEnd()+(key===dashboard?'\n\n**Files:** ':' ')+files.map(f=>'['+f.name+']('+f.url+')').join(' · ')+'\n\n'+marker:base;
       db.prepare('INSERT OR IGNORE INTO event_versions VALUES(?,?,?)').run(issue,key,body);
       let received:Comment|undefined;
       if(event.receipt!==null){
@@ -159,7 +198,7 @@ export async function reconcileProgress(state:string,topic:Topic,issue:number,cr
 }
 
 export async function confirmedProgress(state:string,topic:Topic,issue:number,identity:string) {
-  const key=fingerprint(identity);
+  const lookup=open(state);let key:string;try{key=eventKey(lookup,issue,identity);}finally{lookup.close();}
   for(let attempt=0;attempt<6;attempt++){
     await publishProgress(state,topic,undefined,{issue,key});
     const db=open(state);
@@ -174,7 +213,7 @@ export async function confirmedProgress(state:string,topic:Topic,issue:number,id
 
 export function storedResultComment(state:string,issue:number,identity:string) {
   const db=open(state);
-  try{return Number(db.prepare("SELECT receipt FROM events WHERE issue=? AND key=? AND status='sent'").get(issue,fingerprint(identity))?.receipt??0);}
+  try{return Number(db.prepare("SELECT receipt FROM events WHERE issue=? AND key=? AND status='sent'").get(issue,eventKey(db,issue,identity))?.receipt??0);}
   finally{db.close();}
 }
 
@@ -190,6 +229,6 @@ export function adoptVerifiedLegacyResult(state:string,issue:number,identity:str
 
 export function hasProgressIdentity(state:string,issue:number,identity:string){
   const db=open(state);
-  try{return Boolean(db.prepare('SELECT 1 FROM events WHERE issue=? AND key=?').get(issue,fingerprint(identity)));}
+  try{return Boolean(db.prepare('SELECT 1 FROM events WHERE issue=? AND key=?').get(issue,eventKey(db,issue,identity)));}
   finally{db.close();}
 }

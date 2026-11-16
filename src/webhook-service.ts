@@ -1,3 +1,4 @@
+import {parseTaskCard} from './profile-card.js';
 import {refreshProjectValues} from './project-values.js';
 import {DecisionPending,pauseDecision} from './material-decision.js';
 import { readdir, readFile, readlink,mkdir,rm,writeFile } from 'node:fs/promises';
@@ -5,7 +6,7 @@ import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { PublisherSeedUnavailable } from './profile-checkout.js';
 import {prepareReviewNotices,migrateReviewNotices,deliverReviewNotice} from './review-escalation.js';
-import {publishTimeline,pendingProgress} from './work-progress.js';
+import {beginDashboard,recordProgress,publishTimeline,pendingProgress} from './work-progress.js';
 import { Journal } from './intake-journal.js';
 import { withoutEnvironmentAuthority } from './environment-runner.js';
 import { TaskAdmission } from './task-admission.js';
@@ -73,15 +74,28 @@ async function consume({journal,topic,state}: TopicRuntime, signal: AbortSignal)
       const event = journal.next();
       if (!event) { await delay(500); continue; }
       try {
-        if(event.action==='task')await validateTaskApproval(topic,event.issue,approvalFromEvent(event));
-        const profile=event.action==='task'?await refreshProjectValues(topic,state,event.issue,signal):undefined;
+        if(event.action==='task'){
+          await validateTaskApproval(topic,event.issue,approvalFromEvent(event));
+          const card=parseTaskCard(event.title,event.body,event.kind,topic.defaultClass);
+          if(card)beginDashboard(state,event.issue,card.kind);
+        }
+        let profile;
+        if(event.action==='task'){
+          try{profile=await refreshProjectValues(topic,state,event.issue,signal);}
+          catch(err){
+            if(!(err instanceof Error) || !/^Profile broker: Repository outside (?:publisher|profile reader) scope$/.test(err.message))throw err;
+            journal.deferProfile(event.delivery);
+            recordProgress(state,event.issue,'waiting-profile','Waiting for project profile read access. LEO will retry automatically.');
+            continue;
+          }
+        }
         const ack = await notifyLeo(event,journal.lead(),topic.cwd,topic.repository,signal,profile?.markdown);
         journal.complete(ack);
-        console.log('Leo acknowledged issue',topic.repository,event.issue);
+        console.log('LEO acknowledged issue',topic.repository,event.issue);
       } catch (err) {
         if(signal.aborted)return;
         journal.fail(event.delivery,err instanceof Error ? err.message : 'Dispatch failed');
-        console.error('Leo intake requires review',topic.repository,event.issue);
+        console.error('LEO intake requires review',topic.repository,event.issue);
       }
     }
   } finally { await validations.settle(); }

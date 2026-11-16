@@ -125,7 +125,7 @@ export class Journal {
 
   next(): Intake | undefined {
     return this.transaction(() => {
-      const row = this.db.prepare(`SELECT * FROM intake WHERE state='queued'
+      const row = this.db.prepare(`SELECT * FROM intake WHERE state='queued' AND seedRetryAt<=unixepoch()
         AND NOT EXISTS(SELECT 1 FROM intake WHERE state IN ('review','running') OR workerState IN ('running','review'))
         ORDER BY rowid LIMIT 1`).get();
       if (!row) return;
@@ -166,6 +166,11 @@ export class Journal {
   checkpointSpecification(issue:number, checkpoint:string|null) {
     const result=this.db.prepare("UPDATE intake SET specCheckpoint=? WHERE issue=? AND action='task' AND workerState='running'").run(checkpoint,issue);
     if(result.changes!==1) throw Error('Missing active worker for specification handoff');
+  }
+
+  deferProfile(delivery:string) {
+    const result=this.db.prepare("UPDATE intake SET state='queued',seedRetryAt=unixepoch()+60,reason='Waiting for profile read access' WHERE delivery=? AND state='running' AND receipt IS NULL AND workerState IS NULL").run(delivery);
+    if(result.changes!==1)throw Error('Cannot defer after dispatch');
   }
 
   deferPublisherSeed(delivery:string) {

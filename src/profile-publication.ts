@@ -5,7 +5,7 @@ import { digestOf, specName } from './specification-upload.js';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import {publishIssueSpec} from './issue-specification.js';
-import {adoptVerifiedLegacyResult,recordProgress,confirmedProgress,fingerprint,storedResultComment,reconcileProgress} from './work-progress.js';
+import {hasProgressIdentity,adoptVerifiedLegacyResult,recordProgress,confirmedProgress,fingerprint,storedResultComment,reconcileProgress} from './work-progress.js';
 import {atomicJson,readJson} from './storage.js';
 import { GitHubRequestError, issueClient, publisherIdentity } from './github-app.js';
 import type { Topic } from './intake-journal.js';
@@ -79,7 +79,10 @@ export async function completeCard(topic: Topic, issue: number, summary: string,
   const api = await issueClient(topic.repository,topic.installation);
   const path = '/issues/'+issue;
   if(existingResult)await confirmedProgress(dirname(topic.cwd),topic,issue,existingResult);
-  else await authenticatedComment(topic,issue,issueComment('completion',summary));
+  if(hasProgressIdentity(dirname(topic.cwd),issue,'card-accepted')){
+    recordProgress(dirname(topic.cwd),issue,'card-result-verified',existingResult?'Result verified and ready for issue closure.':summary);
+    await confirmedProgress(dirname(topic.cwd),topic,issue,'card-result-verified');
+  }else if(!existingResult)await authenticatedComment(topic,issue,issueComment('completion',summary));
   if((await api(path)).state!=='closed')
   await api(path,'PATCH',{state:'closed',state_reason:'completed'});
   const labels: {name:string}[] = await api(path+'/labels?per_page=100');

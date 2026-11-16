@@ -163,3 +163,35 @@ test('adopting a verified legacy specification comment preserves its original ID
   assert.equal(await publishProgress(state,topic,creds),false);
   assert.equal(patches,1);assert.equal(owned.id,90);
 });
+
+test('one live checklist survives replay, retains late files and finishes on its original comment',async t=>{
+  const {beginDashboard,storedResultComment}=await import('../src/work-progress.js');
+  const dir=await mkdtemp(join(tmpdir(),'checklist-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+  const rows:{id:number;user:{id:number};body:string;issue_url:string}[]=[];
+  const api=async(path:string,method?:string,data?:object)=>{
+    if(path==='')return {id:10};
+    if(method==='POST'){rows.push({id:87,user:{id:40},body:(data as {body:string}).body,issue_url:'https://api.github.com/repos/owner/repo/issues/6'});return rows[0];}
+    if(method==='PATCH')rows[0]!.body=(data as {body:string}).body;
+    return path.includes('comments?')?rows:rows[0];
+  };
+  const publish=()=>publishProgress(dir,topic,async()=>[api,40]);
+  beginDashboard(dir,6,'assignment');await publish();assert.match(rows[0]!.body,/⚪ Prepare/);
+  recordProgress(dir,6,'waiting-profile','Waiting for project profile read access.');await publish();
+  assert.match(rows[0]!.body,/⏸️/);
+  beginDashboard(dir,6,'assignment');
+  recordProgress(dir,6,'result','The lessons are ready.',undefined,[{name:'lessons.md',url:'https://github.com/owner/repo/issues/6/artifacts/1'}]);
+  recordProgress(dir,6,'card-result-verified','Result verified.');await Promise.all([publish(),publish()]);
+  assert.equal(rows.length,1);assert.match(rows[0]!.body,/✅ Deliver/);assert.match(rows[0]!.body,/lessons.md/);
+  assert.equal(storedResultComment(dir,6,'result'),87);assert.equal(storedResultComment(dir,6,'unknown'),0);
+});
+test('a denied profile before LEO dispatch retries the same approved intake after reopening the journal',async t=>{
+  const {Journal}=await import('../src/intake-journal.js');
+  const dir=await mkdtemp(join(tmpdir(),'profile-retry-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+  const path=join(dir,'intake.sqlite');let journal=new Journal(path);
+  journal.start(topic);journal.enqueue({issue:6,delivery:'original',action:'task',title:'Lessons',body:'All five lessons'});
+  assert.equal(journal.next()?.issue,6);journal.deferProfile('original');assert.equal(journal.next(),undefined);journal.db.close();
+  journal=new Journal(path);journal.start(topic);journal.db.exec('update intake set seedRetryAt=0');
+  assert.equal(journal.next()?.body,'All five lessons');
+  journal.complete({delivery:'original',issue:6,disposition:'intake_received'});assert.throws(()=>journal.deferProfile('original'));
+  assert.equal(journal.nextWorker()?.delivery,'original');assert.equal(journal.nextWorker(),undefined);journal.db.close();
+});

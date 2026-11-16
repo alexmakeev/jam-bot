@@ -41,10 +41,10 @@ export async function checkpointRole(job:RoleStage,next:string,run=runRoleStage,
       checkpoint.attempt++;checkpoint.startedAt=Date.now();checkpoint.challenge=randomUUID();
       await atomicJson(path,checkpoint);
       name=job.role+'-'+job.issue+'-'+checkpoint.challenge.slice(0,6);
-      recordProgress(job.state,job.issue,id+'-retry','Leo recovered incomplete '+job.role+' input `'+version+'`. The previous process ended without a verified response. Replacement '+name+' will resume it.');
+      recordProgress(job.state,job.issue,id+'-retry','LEO recovered incomplete '+job.role+' input `'+version+'`. The previous process ended without a verified response. Replacement '+name+' will resume it.');
       reconcile=false;
     }
-    recordProgress(job.state,job.issue,id+'-assigned-'+checkpoint.attempt,'Leo assigned '+job.role+' ('+name+') input `'+version+'`. Awaiting the native teammate’s response.');
+    recordProgress(job.state,job.issue,id+'-assigned-'+checkpoint.attempt,'LEO assigned '+job.role+' ('+name+') input `'+version+'`. Awaiting the native teammate’s response.');
     try{receipt=await run(job,checkpoint.challenge);}
     catch(error){
       if(job.signal.aborted)throw error;

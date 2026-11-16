@@ -265,7 +265,7 @@ export async function runDeveloperProfile(p:ProfileRun) {
     const journal=new Journal(join(state,'intake.sqlite'));
     try {new BranchValidation(journal.db).submit({issue,branch:project.branch,sha},elapsedMs);journal.checkpointSpecification(issue,'ready');}
     finally {journal.db.close();}
-  }catch(err){if(!signal.aborted){recordProgress(state,issue,'blocked:'+fingerprint(String(err)),'Leo paused this work card after an incomplete stage. The checkpoint is retained for diagnosis.');await setCardProgress(topic,issue,'blocked').catch(()=>{});}throw err;}
+  }catch(err){if(!signal.aborted){recordProgress(state,issue,'blocked:'+fingerprint(String(err)),'LEO paused this work card after an incomplete stage. The checkpoint is retained for diagnosis.');await setCardProgress(topic,issue,'blocked').catch(()=>{});}throw err;}
 }
 
 export async function validateReviewedHead(runtime:TopicRuntime,head:ReadyBranch,signal:AbortSignal) {
