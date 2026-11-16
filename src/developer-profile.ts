@@ -1,3 +1,4 @@
+import {reconcileIssueArtifacts} from './issue-artifact-recovery.js';
 import {refreshProjectValues} from './project-values.js';
 import {requestedDecision,requireMaterialDecision} from './material-decision.js';
 import { lstat, mkdir, readFile, realpath } from 'node:fs/promises';
@@ -280,12 +281,16 @@ export async function validateReviewedHead(runtime:TopicRuntime,head:ReadyBranch
     if(sha!==head.sha || project.branch!==head.branch)throw Error('Reviewed head no longer matches handoff');
     recordProgress(runtime.state,head.issue,'validation:'+sha,'Validator received reviewed head `'+sha+'` for its final branch checks.');
     const cached=await readJson<{sha:string}>(join(dir,'reviewed-head-tests.json')).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;});
-    if(cached?.sha===sha)return;
+    if(cached?.sha===sha){
+      await confirmedProgress(runtime.state,runtime.topic,head.issue,'validated:'+sha);
+      return;
+    }
     const checked=await exchange(project.store,{action:'test-head',scope:'reviewed-head:'+head.issue,repo:runtime.topic.repository,sha,
       base:project.base,expected:project.expected,cards:[{issue:head.issue,approval}]},signal);
     if(checked.sha!==sha)throw Error('Validation returned a different revision');
     const changed=(await git(project.tree,'diff','--name-only',project.base,sha)).split('\n');
     recordProgress(runtime.state,head.issue,'validated:'+sha,'Updated '+(changed.length<=2?changed.map(name=>'`'+name+'`').join(' and '):changed.length+' files')+'. Branch checks passed at `'+sha.slice(0,12)+'`. Ready for integration.',{purpose:'tests',markdown:'# Branch validation\n\nCandidate `'+sha+'`\n\n'+(checked.log??'The configured test recipe passed.')});
+    await confirmedProgress(runtime.state,runtime.topic,head.issue,'validated:'+sha);
     await atomicJson(join(dir,'reviewed-head-tests.json'),{sha,tests:checked.tests,log:checked.log});
   } catch(err) {
     if(!signal.aborted)await setCardProgress(runtime.topic,head.issue,'blocked').catch(()=>{});
@@ -351,7 +356,10 @@ export async function integrateReady(runtime:TopicRuntime,signal:AbortSignal,que
       if(ready.sha!==head.sha || ready.project.branch!==head.branch)throw Error('Recorded branch mismatch');
       return {...head,...ready};
     }));
-    for(const e of entries)await reconcileProgress(state,topic,e.issue);
+    for(const e of entries){
+      await reconcileProgress(state,topic,e.issue);
+      await reconcileIssueArtifacts(state,topic,e.issue);
+    }
     const seed=await exchange(store,{action:'seed',repo:topic.repository},signal);
     let candidate=await readJson<{sha:string;base:string;expected:string}>(marker).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;});
     const publishReceipt=join(dir,'published.json');
@@ -398,7 +406,7 @@ export async function integrateReady(runtime:TopicRuntime,signal:AbortSignal,que
       const review=await mandatoryReview({role:'integrator',state,cwd:topic.cwd,session:journal.lead().id,issue:entries[0]!.issue,issues:entries.map(e=>e.issue),revision:candidate.sha,signal,
         input:'You are deciding whether to publish this exact tested candidate to dev. Evaluate implementation, test outcomes, and proposed integration. Return PASS or FAIL on the first line, followed by reasons. The publisher reruns the suite and performs the guarded dev push only after your approval. Closing the issue and cleanup also follow publication.\n'+
           JSON.stringify({base:candidate.base, devBefore:candidate.expected || null, candidate:candidate.sha, featureHeads:entries.map(e=>({issue:e.issue,branch:e.branch,sha:e.sha})), candidateStatus:await git(candidateTree,'status','--porcelain'), commit:await git(candidateTree,'log','-1','--oneline','--stat')})+'\n'+
-          JSON.stringify(entries.map(e=>({issue:e.issue,task:e.card.task,spec:e.spec})))+'\n'+
+          JSON.stringify(await Promise.all(entries.map(async e=>({issue:e.issue,task:e.card.task,spec:e.spec,workerValidation:await readJson(join(directory(state,e.issue),'reviewed-head-tests.json'))}))))+'\n'+
           diff+'\n'+tested.log},async reason=>{
         prepareReviewNotices(journal.db);
         for(const entry of entries)queueReviewNotice(journal.db,entry.issue,candidate!.sha,'integrator',reason);
