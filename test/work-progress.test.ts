@@ -195,3 +195,16 @@ test('a denied profile before LEO dispatch retries the same approved intake afte
   journal.complete({delivery:'original',issue:6,disposition:'intake_received'});assert.throws(()=>journal.deferProfile('original'));
   assert.equal(journal.nextWorker()?.delivery,'original');assert.equal(journal.nextWorker(),undefined);journal.db.close();
 });
+
+test('development handoffs retain separate role comments and reset worker checks on integration correction',async t=>{
+  const {beginDashboard}=await import('../src/work-progress.js');
+  const dir=await mkdtemp(join(tmpdir(),'role-checklists-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+  beginDashboard(dir,4,'development');
+  for(const [id,msg] of [['architecture:1:requested','Draft ready'],['architecture-adviser:1:Codex:ok','Codex responded'],['architecture-adviser:1:Antigravity:error','Unavailable'],['spec-ready:abc','Published'],['validated:abc','Passed'],['integration:abc','Checking candidate'],['fix-spec:abc','Correction attached'],['rework:abc','Worker received correction']]){
+    recordProgress(dir,4,id!,msg!);
+  }
+  const db=new DatabaseSync(join(dir,'work-progress.sqlite'));
+  const bodies=db.prepare('SELECT body FROM events ORDER BY rowid').all().map(row=>String(row.body));db.close();
+  assert.equal(bodies.length,3);assert.match(bodies[0]!,/\[x\] Codex review/);assert.match(bodies[0]!,/\[ \] Antigravity review/);
+  assert.match(bodies[1]!,/Worker:.*\n[^]*\[ \] Pass review/);assert.match(bodies[2]!,/Correction attached/);assert.match(bodies[2]!,/\[ \] Publish the verified revision/);
+});

@@ -1,3 +1,4 @@
+import {progressOwner,roleChecklist} from './role-progress.js';
 import {DatabaseSync} from 'node:sqlite';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
@@ -16,6 +17,7 @@ function open(state:string) {
   if(!db.prepare("SELECT 1 FROM pragma_table_info('events') WHERE name='markdown'").get())db.exec('ALTER TABLE events ADD COLUMN markdown TEXT; ALTER TABLE events ADD COLUMN purpose TEXT;');
   db.exec(`CREATE TABLE IF NOT EXISTS dashboards(issue INTEGER PRIMARY KEY,kind TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS milestones(issue INTEGER,key TEXT,summary TEXT,PRIMARY KEY(issue,key));
+    CREATE TABLE IF NOT EXISTS role_updates(issue INTEGER,key TEXT,board TEXT,identity TEXT,summary TEXT,PRIMARY KEY(issue,key));
     CREATE TABLE IF NOT EXISTS event_reports(issue INTEGER,key TEXT,purpose TEXT,digest TEXT,markdown TEXT,PRIMARY KEY(issue,key,purpose,digest));
     CREATE TABLE IF NOT EXISTS event_links(issue INTEGER,key TEXT,name TEXT,url TEXT,PRIMARY KEY(issue,key,name,url));
     CREATE TABLE IF NOT EXISTS event_versions(issue INTEGER,key TEXT,body TEXT,PRIMARY KEY(issue,key,body))`);
@@ -27,13 +29,15 @@ type Link={name:string;url:string};
 const dashboard=fingerprint('work-card-dashboard:v1');
 export function beginDashboard(state:string,issue:number,kind:string){
   const db=open(state);
-  try{db.prepare('INSERT OR IGNORE INTO dashboards SELECT ?,? WHERE NOT EXISTS (SELECT 1 FROM events WHERE issue=?)').run(issue,kind,issue);
+  try{db.prepare('INSERT OR IGNORE INTO dashboards SELECT ?,? WHERE NOT EXISTS (SELECT 1 FROM events WHERE issue=?)').run(issue,kind==='development'?'development/roles':kind,issue);
     if(!db.prepare('SELECT 1 FROM dashboards WHERE issue=?').get(issue))return;}
   finally{db.close();}
   recordProgress(state,issue,'card-accepted','Task and human approval verified.');
 }
 function eventKey(db:DatabaseSync,issue:number,identity:string){
   const key=fingerprint(identity);
+  const role=db.prepare('SELECT board FROM role_updates WHERE issue=? AND key=?').get(issue,key);
+  if(role)return String(role.board);
   return db.prepare('SELECT 1 FROM milestones WHERE issue=? AND key=?').get(issue,key)?dashboard:key;
 }
 export function recordProgress(state:string,issue:number,identity:string,summary:string,report?:Report|Report[],links:Link[]=[]){
@@ -43,7 +47,15 @@ export function recordProgress(state:string,issue:number,identity:string,summary
     let key=fingerprint(identity);
     const board=db.prepare('SELECT kind FROM dashboards WHERE issue=?').get(issue);
     let changed=false;
-    if(board && !identity.startsWith('scope-plan:') && !identity.startsWith('material-decision:')){
+    const routine=board && !identity.startsWith('scope-plan:') && !identity.startsWith('material-decision:');
+    if(routine && board.kind==='development/roles'){
+      const owner=progressOwner(identity);
+      const boardKey=fingerprint('work-card-role:'+owner);
+      changed=Boolean(db.prepare('INSERT OR IGNORE INTO role_updates VALUES(?,?,?,?,?)').run(issue,key,boardKey,identity,summary).changes);
+      key=boardKey;
+      const rows=db.prepare('SELECT identity,summary FROM role_updates WHERE issue=? AND board=? ORDER BY rowid').all(issue,key);
+      summary=roleChecklist(owner,rows.map(row=>({identity:String(row.identity),summary:String(row.summary)})));
+    }else if(routine){
       changed=Boolean(db.prepare('INSERT OR IGNORE INTO milestones VALUES(?,?,?)').run(issue,key,summary).changes);
       const history=db.prepare('SELECT key,summary FROM milestones WHERE issue=? ORDER BY rowid').all(issue);
       const latest=history.slice(-5);
@@ -59,7 +71,7 @@ export function recordProgress(state:string,issue:number,identity:string,summary
     }
     const body=summary+'\n\n<!-- jam-bot:progress:'+key+' -->';
     db.prepare('INSERT OR IGNORE INTO events(issue,key,body) VALUES(?,?,?)').run(issue,key,body);
-    if(board && key===dashboard && changed)db.prepare('UPDATE events SET body=? WHERE issue=? AND key=?').run(body,issue,key);
+    if(routine && changed)db.prepare('UPDATE events SET body=? WHERE issue=? AND key=?').run(body,issue,key);
     for(const r of !report?[]:Array.isArray(report)?report:[report]){
       if(db.prepare('INSERT OR IGNORE INTO event_reports VALUES(?,?,?,?,?)').run(issue,key,r.purpose,fingerprint(r.markdown),r.markdown).changes)changed=true;
     }
@@ -112,7 +124,7 @@ async function publishOne(state:string,topic:Topic,credentials:()=>Promise<[Api,
       }
       const marker='<!-- jam-bot:progress:'+key+' -->';
       if(files.some(f=>!f.url.startsWith('https://github.com/'+topic.repository+'/issues/'+issue+'/artifacts/')))throw Error('Result artifact belongs to another work card');
-      const body=files.length?base.slice(0,-marker.length).trimEnd()+(key===dashboard?'\n\n**Files:** ':' ')+files.map(f=>'['+f.name+']('+f.url+')').join(' · ')+'\n\n'+marker:base;
+      const body=files.length?base.slice(0,-marker.length).trimEnd()+(base.startsWith('**')?'\n\n**Files:** ':' ')+files.map(f=>'['+f.name+']('+f.url+')').join(' · ')+'\n\n'+marker:base;
       db.prepare('INSERT OR IGNORE INTO event_versions VALUES(?,?,?)').run(issue,key,body);
       let received:Comment|undefined;
       if(event.receipt!==null){

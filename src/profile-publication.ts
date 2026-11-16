@@ -114,6 +114,10 @@ export async function publishSpecification({topic,issue,markdown,signal,authoriz
       adoptVerifiedLegacyResult(state,issue,key,old.id,link);
   }
   const commentId=await confirmedProgress(state,topic,issue,key);
+  const correction=markdown.startsWith('# Correction for issue ');
+  const step=(correction?'fix-spec:':'spec-ready:')+artifact.sha256;
+  recordProgress(state,issue,step,correction?'Integrator returned the candidate for correction. See the attached fix specification.':'Architect published the verified specification.',undefined,[artifact]);
+  await confirmedProgress(state,topic,issue,step);
   const receipt={...artifact,commentId};
   await atomicJson(join(directory,name+'.artifact-receipt.json'),receipt);
 }
@@ -121,7 +125,7 @@ export async function publishSpecification({topic,issue,markdown,signal,authoriz
 export async function publishDirectResult(topic:Topic,issue:number,kind:'assignment'|'consultation',output:string){
   issueComment('completion',output);
   const state=dirname(topic.cwd),key='direct-result:'+fingerprint(output);
-  const short=output.length<=350 && !output.includes('\n');
+  const short=output.length<=350 && !output.includes('\n') && /^[\x20-\x7e]+$/.test(output);
   recordProgress(state,issue,key,short?output:'The '+kind+' is complete. The attached result contains the full response.',
     short?undefined:{purpose:kind,markdown:output});
   return key;
