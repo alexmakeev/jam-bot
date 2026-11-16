@@ -72,3 +72,23 @@ test('the owner sees the live request and can wait without starting another cons
     assert.equal(persisted.decision,'WAIT');
   }finally{await rm(dir,{recursive:true,force:true});}
 });
+test('a saved escalation distinguishes first failure from an exhausted retry across recovery',async()=>{
+  for(const retry of [false,true]){
+    const dir=await mkdtemp(join(tmpdir(),'jam-escalation-'));
+    const kinds:string[]=[];
+    let calls=0;
+    const broker:typeof exchange=async()=>{
+      calls++;
+      return {sha:'',advice:[{name:'Carbon',provider:'antigravity',status:'error',text:'Provider failed'}]};
+    };
+    try{
+      const run=()=>externalReview(dir,topic,[{issue:2,approval}],'implementation',{revision:'test'},new AbortController().signal,
+        async input=>{kinds.push(input.kind);return retry && input.kind==='confirmed_failure'?'RETRY':'ESCALATE';},broker);
+      const reason=retry?/after the selective retry/:/after the initial call/;
+      await assert.rejects(run(),reason);
+      await assert.rejects(run(),reason);
+      assert.equal(calls,retry?2:1);
+      assert.deepEqual(kinds,retry?['confirmed_failure','retry_exhausted']:['confirmed_failure']);
+    }finally{await rm(dir,{recursive:true,force:true});}
+  }
+});

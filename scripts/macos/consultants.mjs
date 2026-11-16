@@ -85,7 +85,7 @@ export async function consultAll(entries,phase,packet,adapters={codex:consultCod
       if(typeof result!=='string'||!result.trim())throw Error('Empty consultant response');
       receipt={...identity,status:'ok',text:result.trim().slice(0,6000)};
     }catch(error){
-      receipt={...identity,status:error.unavailable?'unavailable':'error',text:signal.aborted?'Configured consultation timeout reached':error.unavailable?'Provider subscription unavailable':'Provider could not complete this consultation'};
+      receipt={...identity,status:error.unavailable?'unavailable':'error',text:signal.aborted?'Configured consultation timeout reached':error.unavailable?'Provider subscription unavailable':error.transient?'Temporary provider failure during consultation':'Provider could not complete this consultation'};
     }
     if(heartbeat)clearInterval(heartbeat);
     const finishedAt=new Date().toISOString();

@@ -14,9 +14,10 @@ const adviceSchema=z.array(z.object({name:z.string().regex(/^[a-zA-Z0-9_. -]{1,8
 type Advice=z.infer<typeof adviceSchema>;
 type Fields=Record<string,string>;
 type Card={issue:number;approval:TaskApproval};
-export type DecisionInput={kind:'in_flight';evidence:ConsultationProgress}|{kind:'confirmed_failure';evidence:Advice};
+export type DecisionInput={kind:'in_flight';evidence:ConsultationProgress}|{kind:'confirmed_failure'|'retry_exhausted';evidence:Advice};
 export type Decide=(input:DecisionInput)=>Promise<string>;
 interface Evidence {phase:ReviewPhase;repository:string;cards:number[];inputDigest:string;advice:Advice;attempts?:Advice[]}
+export class ConsultationEscalation extends Error {}
 export interface ExternalReview {advice:Advice;inputDigest:string}
 
 function bounded(key:string,value:string,limit:number){
@@ -74,7 +75,7 @@ export async function externalReview(state:string,topic:Topic,cards:Card[],phase
     if(prior && (input.kind==='in_flight'||JSON.stringify(prior.input)===JSON.stringify(input)))return prior.decision;
     const output=await decide(input);
     const decision=/^\s*(WAIT|RETRY|CONTINUE|ESCALATE)\b/i.exec(output)?.[1]?.toUpperCase();
-    if(!decision)throw Error('Stage owner did not provide a consultation recovery decision');
+    if(!decision || (input.kind==='retry_exhausted' && !['CONTINUE','ESCALATE'].includes(decision)) || (input.kind==='confirmed_failure' && decision==='WAIT'))throw Error('Stage owner did not provide a consultation recovery decision');
     await atomicJson(join(state,'consultations',inputDigest+'.'+input.kind+'.json'),{at:new Date().toISOString(),phase,input,decision,output});
     notify(input.kind+'-'+decision,owner+' chose '+decision+' on consultation '+version+'. Next: '+(decision==='RETRY'?'retry only the failed advisers.':decision==='WAIT'?'await the active advisers.':'follow the recorded decision.'));
     return decision;
@@ -100,11 +101,11 @@ export async function externalReview(state:string,topic:Topic,cards:Card[],phase
   for(const result of (record.attempts?.[0]??advice))notify(result.name+result.status,result.name+' returned '+result.status+' for '+phase+' consultation '+version+'. Next: '+owner+' evaluates the response.');
   const retry=advice.filter(a=>a.status==='error').map(a=>a.name);
   let decision:string|undefined;
-  if(retry.length)decision=await choose({kind:'confirmed_failure',evidence:advice});
+  if(retry.length && !record.attempts?.length)decision=await choose({kind:'confirmed_failure',evidence:advice});
   if(retry.length && decision==='RETRY' && (record.attempts?.length??1)<2){
     const result=await call(join(state,'project.git'),{action:'consult',repo:topic.repository,cards,phase,packet,only:retry},signal,onSlow,progress(true));
     const received=adviceSchema.parse(result.advice);
-    if(received.length!==retry.length || !retry.every(name=>received.filter(a=>a.name===name).length===1))
+    if(received.length!==retry.length || !retry.every(name=>received.filter(a=>a.name===name && a.provider===advice.find(original=>original.name===name)?.provider).length===1))
       throw Error('Consultant retry returned different profiles');
     for(const result of received)notify('retry-'+result.name+result.status,result.name+' returned '+result.status+' on the selective retry for '+version+'. Next: '+owner+' evaluates the response.');
     const previous=advice;
@@ -112,6 +113,8 @@ export async function externalReview(state:string,topic:Topic,cards:Card[],phase
     record={...record,advice,attempts:[previous,received]};
     await atomicJson(path,record);
   }
+  if(record.attempts?.length && advice.some(a=>a.status==='error'))
+    decision=await choose({kind:'retry_exhausted',evidence:advice});
   for(const issue of ids){
     await atomicJson(join(state,'assignments',String(issue),'consultations',phase+'.json'),record);
     for(const adviser of advice){
@@ -129,6 +132,10 @@ export async function externalReview(state:string,topic:Topic,cards:Card[],phase
       }
     }
   }
-  if(decision!=='CONTINUE' && advice.some(a=>a.status==='error'))throw Error('Configured consultant failed after retry; inspect retained consultation evidence');
+  if(decision!=='CONTINUE' && advice.some(a=>a.status==='error')){
+    const failed=advice.filter(a=>a.status==='error').map(a=>a.name).join(', ');
+    const when=record.attempts?.length?'after the selective retry':'after the initial call';
+    throw new ConsultationEscalation('The '+owner+' escalated '+failed+' to LEO '+when+'; review the retained '+phase+' consultation.');
+  }
   return {advice,inputDigest};
 }

@@ -32,6 +32,6 @@ test('confirmed failures preserve timings and may retry only existing named subs
   const {advice}=await consultAll([profile],'diagnosis',packet,{codex:async()=>{
     attempts++;if(attempts===1)throw Object.assign(Error('retry'),{transient:true});return 'Use the failing seed';
   }},async event=>states.push(event.status));
-  assert.equal(attempts,1);assert.equal(advice[0].status,'error');assert.deepEqual(states,['running','error']);
+  assert.match(advice[0].text,/Temporary provider failure/);assert.equal(attempts,1);assert.equal(advice[0].status,'error');assert.deepEqual(states,['running','error']);
   assert.ok(Date.parse(advice[0].finishedAt)>=Date.parse(advice[0].startedAt));
 });
