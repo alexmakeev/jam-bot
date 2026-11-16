@@ -12,6 +12,7 @@ import { TaskAdmission } from './task-admission.js';
 import { approvalFromEvent, validateTaskApproval } from './task-approval.js';
 import { notifyLeo,recoveredIntake } from './leo-intake.js';
 import { dispatchApprovedWorker,WORKER_ACCEPTANCE_BODY } from './approved-worker.js';
+import {deliverConnectionNotice} from './connection-notice.js';
 import { configuredTopics, openTopics, type TopicRuntime } from './topics.js';
 import { IntegrationQueue } from './integration-queue.js';
 import { BranchValidation } from './branch-validation.js';
@@ -131,7 +132,7 @@ async function main() {
     const abort=new AbortController(),signal=AbortSignal.any([abort.signal,stop.signal]);
     const task=withoutEnvironmentAuthority(async()=>{
       await admissions.recover([route]);
-      const tasks=[consume(route,signal),publishTimeline(route.state,route.topic,signal)];
+      const tasks=[consume(route,signal),publishTimeline(route.state,route.topic,signal),deliverConnectionNotice(route,signal)];
       try{await Promise.all(tasks);}finally{abort.abort();await Promise.allSettled(tasks);}
     }).catch(err=>{if(!stop.signal.aborted && routes.has(route.topic.installation+'/'+route.topic.repoId)){failure=err;stop.abort();}});
     started.set(route.topic.repoId,{abort,done:task});
