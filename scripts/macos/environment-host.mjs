@@ -1,3 +1,4 @@
+import {releaseStaticSite} from './s3-release.mjs';
 // This host-only process owns Docker access and reads the operator's private recipe catalog.
 import {hostTask} from './management-task-host.mjs';
 import {execFile} from 'node:child_process';
@@ -22,9 +23,10 @@ function allowedKeys(obj,keys){return obj && typeof obj==='object' && !Array.isA
 const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
 const validPort=n=>Number.isInteger(n)&&n>=1024&&n<=65535;
 function validate(input,host,recipe){
-  if(!allowedKeys(input,['id','at','serverId','repoId','environment','action','revision','tier','config','secretRefs','appVariables','endpoint'])||
+  if(!allowedKeys(input,['id','at','serverId','repoId','environment','action','revision','tier','config','secretRefs','appVariables','endpoint','includePublication'])||
     !uuid.test(input.id)||!Number.isSafeInteger(input.at)||input.serverId!==host.serverId||!Number.isSafeInteger(input.repoId)||input.repoId<1||
     typeof input.environment!=='string'||!alias.test(input.environment)||!['deploy','status','stop'].includes(input.action))throw Error('Invalid request or destination');
+  if(input.includePublication!==undefined && typeof input.includePublication!=='boolean')throw Error('Invalid receipt preference');
   if(!recipe||input.tier!==recipe.tier)throw Error('Environment or tier is outside host recipes');
   if(input.action!=='deploy'){if(input.revision!==undefined)throw Error('Only deploy accepts a revision');return;}
   if(!revision.test(input.revision)||!Object.hasOwn(recipe.releases,input.revision)||!image.test(recipe.releases[input.revision]))throw Error('Release is not registered on this host');
@@ -107,6 +109,7 @@ export async function serve(root,exchange,tokenPath) {
       recipe={...recipe,releases:{...releases,...recipe.releases}};
     }
     validate(x,host,recipe);
+    if(recipe.staticSite)return releaseStaticSite(root,recipe,x);
     const project='jamenv-'+digest(key).slice(0,24);
     db.prepare('INSERT OR IGNORE INTO environments(k,owner) VALUES(?,?)').run(key,randomUUID());
     let row=db.prepare('SELECT * FROM environments WHERE k=?').get(key);

@@ -30,6 +30,7 @@ const target = z.strictObject(targetFields);
 const identified = target.extend({environment});
 const deployInput = identified.extend({revision,approvalCommentId:z.int().positive().optional()});
 const deployment = z.strictObject({
+  publication:z.strictObject({url:z.string().url(),manifestSha256:z.string().regex(/^[0-9a-f]{64}$/),objectCount:z.number().int().positive(),verifiedAt:z.string().datetime(),cacheVerified:z.literal(true)}).optional(),
   environment,running:z.boolean(),healthy:z.boolean(),revision:revision.nullable(),image:z.string().nullable(),endpoint:endpoint.nullable().optional(),
 });
 type Definition = z.infer<typeof definition>;

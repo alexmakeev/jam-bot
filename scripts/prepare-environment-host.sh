@@ -33,4 +33,7 @@ JS
 install -m 600 "$root/dist/src/environment-wire.js" "$dir/runtime/environment-wire.js"
 install -m 600 "$root/scripts/macos/management-task-host.mjs" "$dir/runtime/management-task-host.mjs"
 install -m 600 "$root/scripts/macos/environment-host.mjs" "$dir/runtime/environment-host.mjs"
+install -m 600 "$root/scripts/macos/s3-release.mjs" "$root/scripts/macos/s3-artifact.mjs" "$dir/runtime/"
+mkdir -p "$dir/runtime/node_modules/aws4"
+install -m 600 "$root"/node_modules/aws4/{aws4.js,lru.js,package.json} "$dir/runtime/node_modules/aws4/"
 printf '%s\n' '{"type":"module"}' > "$dir/runtime/package.json"
