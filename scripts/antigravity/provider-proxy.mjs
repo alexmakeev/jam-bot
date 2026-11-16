@@ -17,7 +17,8 @@ const proxy=createServer((_req,res)=>res.writeHead(403).end());
 proxy.on('connect',(req,client,head)=>{
   const match=/^([a-z0-9.-]+):443$/.exec(req.url);
   if(!match||!allowed.has(match[1])){console.error('Rejected provider destination',match?.[1]?.slice(0,150));client.end('HTTP/1.1 403 Forbidden\r\n\r\n');return;}
-  const upstream=connect(443,match[1],()=>{
+  // This isolated bridge has an IPv4 egress route. Address-family racing can expire viable IPv4 connections.
+  const upstream=connect({port:443,host:match[1],family:4},()=>{
     client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
     if(head.length)upstream.write(head);
     client.pipe(upstream);upstream.pipe(client);
