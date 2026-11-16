@@ -168,6 +168,19 @@ async function publishOne(state:string,topic:Topic,credentials:()=>Promise<[Api,
   }finally{db.close();}
 }
 export async function publishTimeline(state:string,topic:Topic,signal:AbortSignal){
+  // Re-render existing role comments from their stored evidence after a format upgrade.
+  const db=open(state);
+  try{
+    db.exec('BEGIN IMMEDIATE');
+    for(const row of db.prepare('SELECT DISTINCT issue,board FROM role_updates').all()){
+      const history=db.prepare('SELECT identity,summary FROM role_updates WHERE issue=? AND board=? ORDER BY rowid').all(row.issue!,row.board!).map(r=>({identity:String(r.identity),summary:String(r.summary)}));
+      const owner=(['Architect','Worker','Integrator'] as const).find(role=>fingerprint('work-card-role:'+role)===row.board);
+      if(!owner)continue;
+      const body=roleChecklist(owner,history)+'\n\n<!-- jam-bot:progress:'+row.board+' -->';
+      db.prepare("UPDATE events SET body=?,version=version+1,status=CASE WHEN receipt IS NULL THEN status ELSE 'dirty' END,retryAt=0 WHERE issue=? AND key=? AND body<>?").run(body,row.issue!,row.board!,body);
+    }
+    db.exec('COMMIT');
+  }finally{db.close();}
   while(!signal.aborted){
     await collectDeploymentProgress(state,topic);
     if(!await publishProgress(state,topic))await delay(1000,undefined,{signal}).catch(()=>{});
