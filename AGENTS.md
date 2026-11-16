@@ -20,3 +20,5 @@
 - Read managed project .jam-bot/VALUES.md before changes and after recovery; absence does not block initially approved work. Human-facing Codex alone may load the relevant optional vocab.<lang>.json.
 - Recovery compares actual code, card and checkpoint. Warn on conflicting ownership and prevent duplicate execution.
 - Stable requires explicit human approval of the exact build SHA. Keep original/fix specs as .md attachments in the original issue, never substitute repository links.
+
+- When a card stalls, identify the missing JAM-Bot behavior and correct the shared workflow. During an autonomy acceptance run, observe only. Report the blocker in the original issue and wait for a human request before manually advancing it. A run with operator intervention must be repeated on a fresh test card to establish autonomy (JB-33).
