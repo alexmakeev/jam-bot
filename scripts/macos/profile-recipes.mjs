@@ -45,7 +45,7 @@ async function calculatorPreview({tree,sha,image,name,checks,site,base}) {
   };
   const [html,source]=await Promise.all([blob('web/index.html'),blob(site==='sum'?'src/sum.ts':'src/triangular.ts')]);
   const server=site==='sum'||checks.includes('staticSvg')?await blob('web/server.mjs'):undefined;
-  const baseline=checks.includes('staticSvg')?await blob('web/index.html',base):undefined;
+  const baseline=site==='sum'?undefined:await blob('web/index.html',base);
   return runBrowser({html,source,server,baseline,sha,image,name,checks,site});
 }
 

@@ -16,12 +16,13 @@ const browser=await chromium.launch({args:['--disable-dev-shm-usage']});
 try {
   if(checks.includes('staticSvg'))await staticDragons(browser,{html,module,server,baseline,deployed});
   else if(site==='sum')await checkSumPage(browser,html,module,server,checks);
-  else for(const [width,height] of [[1440,900],[390,844],[320,740]]){
+  else for(const [width,height] of [[1440,900],[390,844],[320,740],[1280,900],[800,900],[375,844]]){
     const context=await browser.newContext({viewport:{width,height},serviceWorkers:'block',reducedMotion:'reduce'});
     const errors=[];
     const page=await context.newPage();
     page.setDefaultTimeout(6000);
     page.on('pageerror',()=>errors.push('uncaught page error'));
+    page.on('console',message=>{if(message.type()==='error')errors.push('console error');});
     await context.route('**/*',route=>{
       switch(route.request().url()){
         case base:return route.fulfill({contentType:'text/html; charset=utf-8',body:html});
@@ -31,11 +32,59 @@ try {
     });
     await page.goto(base);
     const form=page.locator('form'),input=form.locator('input'),output=form.locator('output');
-    for(const [value,expected] of [['0',/\b1$/],['5',/\b120$/],['6',/\b720$/],['-1',/целое/i]]){
+    assert.match((await output.innerText()).trim(),/\b120$/,'Initial factorial result');
+    if(await input.getAttribute('aria-describedby')){
+      assert.equal(await input.getAttribute('type'),'number');
+      assert.equal(await input.getAttribute('step'),'any');
+      assert.equal(await input.getAttribute('value'),'5');
+      assert.equal(await input.evaluate(el=>el.required),true);
+      const description=await input.evaluate(el=>{
+        const ids=el.getAttribute('aria-describedby').trim().split(/\s+/);
+        const all=[...document.querySelectorAll('[id]')];
+        if(new Set(all.map(e=>e.id)).size!==all.length)throw Error('Duplicate document id');
+        const targets=ids.map(id=>document.getElementById(id));
+        if(targets.some(e=>!e||e.tagName!=='P'||!e.closest('main')))throw Error('Description must resolve to an intro paragraph');
+        return targets.map(e=>e.textContent.trim()).join(' ');
+      });
+      const cdp=await context.newCDPSession(page);
+      try{
+        const tree=await cdp.send('Accessibility.getFullAXTree');
+        const node=tree.nodes.find(n=>n.role?.value==='spinbutton');
+        assert.equal(node?.name?.value,'Последнее число');
+        assert.equal(node?.description?.value,description,'Accessible input description');
+      }finally{await cdp.detach();}
+      console.log('PASS input description at '+width+': unique ids, intro paragraph target, spinbutton name and full description verified; '+description);
+      const withoutDescription=text=>text.replace(/\s(?:id|aria-describedby)="[^"]*"/g,'');
+      if(baseline && withoutDescription(html).trim()===withoutDescription(baseline).trim()){
+        const reference=await context.newPage();
+        await reference.route(base,route=>route.fulfill({contentType:'text/html; charset=utf-8',body:baseline}));
+        await reference.goto(base);
+        assert.equal(await page.locator('h1').innerText(),await reference.locator('h1').innerText());
+        assert.equal(await page.locator('main p').first().innerText(),await reference.locator('main p').first().innerText());
+        const current=pngjs.PNG.sync.read(await page.screenshot({caret:'hide'}));
+        const original=pngjs.PNG.sync.read(await reference.screenshot({caret:'hide'}));
+        assert.equal(current.width,original.width);assert.equal(current.height,original.height);
+        let changed=0;
+        for(let i=0;i<current.data.length;i+=4)if([0,1,2].some(c=>Math.abs(current.data[i+c]-original.data[i+c])>24))changed++;
+        const fraction=changed/(current.width*current.height);
+        assert.ok(fraction<=0.01,'Visual parity against base at '+width+': changed pixel fraction '+fraction);
+        console.log('PASS screenshot parity at '+width+': changed pixel fraction '+fraction+' (maximum 0.01)');
+        await reference.close();
+        console.log('PASS baseline parity at '+width+': heading, intro copy and rendered screenshot unchanged');
+      }
+      console.log('PASS HTML acceptance: intro target and document id uniqueness; aria-describedby resolution; type=number step=any value=5 required; heading and paragraph preserved for description-only changes');
+    }
+    for(const [value,expected] of [['0',/\b1$/],['4',/\b24$/],['5',/\b120$/],['6',/\b720$/],['-1',/целое/i],['2.5',/целое/i]]){
       await input.fill(value);
       await input.press('Enter');
       assert.match((await output.innerText()).trim(),expected,'Keyboard result for '+value);
+      console.log('PASS keyboard input '+value+' at '+width+': '+(await output.innerText()).trim());
     }
+    const previousOutput=await output.innerText();
+    await input.fill('');await input.press('Enter');
+    assert.equal(await input.evaluate(el=>el.validity.valueMissing),true);
+    assert.equal(await output.innerText(),previousOutput,'Empty required input preserves output');
+    console.log('PASS empty input at '+width+': valueMissing, submission blocked, output preserved; initial result 120');
     if(checks.includes('reset')){
       const reset=form.getByRole('button',{name:/^Сбросить$/i});
       assert.equal(await reset.count(),1,'Expected one Russian reset button');
@@ -95,7 +144,7 @@ try {
       }),'Obscured form control at '+width);
     }
     assert.deepEqual(errors,[]);
-    console.log('PASS '+width+'x'+height+' scrollWidth='+metrics.scroll+' colored dragon samples='+metrics.sides.map(r=>r.pixels).join('/')+'; controls reachable; keyboard factorial and invalid input passed');
+    console.log('PASS '+width+'x'+height+' scrollWidth='+metrics.scroll+' colored dragon pixel counts (left, right)='+metrics.sides.map(r=>r.pixels).join(', ')+'; controls reachable; keyboard factorial and invalid input passed');
     await context.close();
   }
   if(checks.includes('dragons'))await checkDragonSpec(browser,base,html,module);
