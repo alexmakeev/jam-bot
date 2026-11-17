@@ -22,8 +22,13 @@ async function optionalText(path: string): Promise<string> {
 
 async function rows(path: string): Promise<Row[]> {
   const text=await optionalText(path);
-  // The final line may still be in flight.
-  return text.slice(0,text.lastIndexOf('\n')+1).split('\n').filter(Boolean).map(line=>JSON.parse(line));
+  const lines=text.split('\n');
+  const tail=lines.pop();
+  const parsed:Row[]=lines.filter(Boolean).map(line=>JSON.parse(line));
+  // A completed harness row need not have a trailing newline. Ignore only a
+  // genuinely partial final JSON object while the writer is appending it.
+  if(tail){try{parsed.push(JSON.parse(tail));}catch{}}
+  return parsed;
 }
 
 // The pinned harness leaves its interactive process open after a terminal model refusal.
