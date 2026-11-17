@@ -107,7 +107,7 @@ export async function testCandidate({project,tree,files,sha,base,name,approvedIs
     if(project.sumBrowserImage && approvedIssues.includes(project.clearTotalsCard))checks.push('clearTotals');
     const browserImage=project.sumBrowserImage??project.calculatorBrowserImage;
     const preview=['test-head','test-red'].includes(stage)?'Browser acceptance: pending integrator candidate.':browserImage ? await calculatorPreview({tree,sha,base,image:browserImage,name,checks,site:project.sumBrowserImage?'sum':'calculator'}) : '';
-    return {tests,log:log+'\n'+(diagnostic.length>5000 ? diagnostic.slice(0,400)+'\n…\n'+diagnostic.slice(-4600) : diagnostic)+'\n'+preview};
+    return {tests,log:log+'\n'+(diagnostic.length>5000 ? diagnostic.slice(0,400)+'\n…\n'+diagnostic.slice(-4600) : diagnostic)+'\n'+(browserImage&& !['test-head','test-red'].includes(stage)?'Browser recipe: calculator Chromium acceptance\nBrowser image: '+browserImage+'\nBrowser revision: '+sha+'\n':'')+preview};
   } catch (error) {
     const header='Recipe: '+project.recipe+'\nImage: '+project.image+'\nBuild: '+(build?'tsc -p tsconfig.json':'native Node type stripping')+'\nCommand: node --experimental-strip-types --test --test-concurrency=1 '+tests.join(' ')+'\nExit code: '+(error.code??'unknown')+'\nRevision: '+sha+'\nProduction baseline: '+base+'\n';
     throw Error('Validation failed for '+project.recipe+'\n'+header+[error.stdout,error.stderr,(!error.stdout && !error.stderr)?error.message:'',error.killed?'Timed out':''].filter(Boolean).join('\n').slice(-8000));

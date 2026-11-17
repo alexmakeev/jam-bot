@@ -144,6 +144,10 @@ try {
       }),'Obscured form control at '+width);
     }
     assert.deepEqual(errors,[]);
+    const artwork=page.locator('svg');
+    assert.equal(await artwork.count(),2,'Exactly two SVG dragons');
+    for(const svg of await artwork.all())assert.equal(await svg.getAttribute('aria-hidden'),'true','Decorative dragon is aria-hidden');
+    console.log('PASS browser integrity at '+width+': no console or page errors; both SVG dragons present and aria-hidden=true');
     console.log('PASS '+width+'x'+height+' scrollWidth='+metrics.scroll+' colored dragon pixel counts (left, right)='+metrics.sides.map(r=>r.pixels).join(', ')+'; controls reachable; keyboard factorial and invalid input passed');
     await context.close();
   }

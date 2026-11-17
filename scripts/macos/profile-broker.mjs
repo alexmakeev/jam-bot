@@ -139,7 +139,8 @@ async function execute(dir) {
       await verifyIntegrationPr(req.repo,pr.number,req.sha,prApi);
       if(!(await git(temp,['ls-remote','origin','refs/heads/dev'])).startsWith(req.sha+'\t'))throw Error('Publication requires reconciliation');
     }
-    return {sha:req.sha,tests,log:log.slice(-8000),awaitDeployment:req.action==='publish' && requiresLiveAcceptance(req)};
+    const report=log.length<=32000?log:log.slice(0,4000)+'\n[Middle omitted; full report retained by the host]\n'+log.slice(-28000);
+    return {sha:req.sha,tests,log:report,awaitDeployment:req.action==='publish' && requiresLiveAcceptance(req)};
   } finally {await rm(temp,{recursive:true,force:true});}
 }
 async function reply(dir) {
