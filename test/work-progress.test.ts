@@ -216,7 +216,7 @@ test('parallel adviser reviews have independent noninteractive status marks',asy
   assert.doesNotMatch(html,/^[-*] /m);
   assert.match(html,/^\*\*🍯 JAM Architect:.*\*\*\n\n```text\n  ✅ /);
   assert.match(html,/  ✅ Codex review\n  🟨 Antigravity review/);
-  assert.match(html,/\n```\n\nReviewing$/);
+  assert.match(html,/\n```$/);
 });
 
 test('human comments preserve the question and start one new editable progress comment',async t=>{
@@ -231,7 +231,7 @@ test('human comments preserve the question and start one new editable progress c
     startHumanTurn(dir,6,101);
     recordProgress(dir,6,'architect-resumed','Continued with the answer.');
     startHumanTurn(dir,6,101);startHumanTurn(dir,6,99);
-    recordProgress(dir,6,'architect-verified','Verified.');
+    recordProgress(dir,6,'material-decision:one:answer','Verified.');
     recordProgress(dir,6,'scope-plan:one','❓ @owner — which files do you approve?',{purpose:'plan',markdown:'Plan for this issue.'});
     const after=rows();assert.equal(after.length,2);assert.deepEqual(after[0],before[0]);assert.match(String(after[1]?.body),/Verified/);
   }
@@ -243,4 +243,21 @@ test('GitHub rate-limit pauses respect response headers and distinguish permissi
   assert.equal(rateLimitReset(403,new Headers({'x-ratelimit-remaining':'0','x-ratelimit-reset':'260'}),'',1000),260000);
   assert.equal(rateLimitReset(403,new Headers(),'secondary rate limit',1000),61000);
   assert.equal(rateLimitReset(403,new Headers(),'not permitted',1000),undefined);
+});
+
+test('internal teammate messages retain their local checkpoint without a GitHub edit or intermediate upload',async t=>{
+  const {beginDashboard}=await import('../src/work-progress.js');
+  const dir=await mkdtemp(join(tmpdir(),'milestone-only-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+  beginDashboard(dir,4,'development');
+  recordProgress(dir,4,'architect-a-assigned-1','Architect started.');
+  const db=new DatabaseSync(join(dir,'work-progress.sqlite'));t.after(()=>db.close());
+  const events=()=>db.prepare('SELECT body,version FROM events ORDER BY rowid').all();
+  const before=events();
+  recordProgress(dir,4,'architect-a-received','Internal message.');
+  recordProgress(dir,4,'architect-b-assigned-1','Waiting again.',{purpose:'consultation',markdown:'Local feedback'});
+  assert.deepEqual(events(),before);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM event_reports').get()!.n,0);
+  recordProgress(dir,4,'spec-ready:done','Use an accessible input.',undefined,[{name:'spec.md',url:'https://github.com/owner/repo/issues/4/artifacts/2'}]);
+  assert.match(String(events()[0]?.body),/✅ Publish the specification/);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM event_links').get()!.n,1);
 });

@@ -1,4 +1,5 @@
 import {readProjectSource} from './runtime/project-values-reader.js';
+import {prepareIntegrationPr,verifyIntegrationPr} from './integration-pr.mjs';
 // Local dev publisher for explicitly selected repositories. The service only exchanges Git bundles.
 import {consultAll,selectedConsultants} from './consultants.mjs';
 import {setTimeout as delay} from 'node:timers/promises';
@@ -20,6 +21,14 @@ const sha = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
 const git = async (cwd,args) => (await run('git',['-c','core.hooksPath=/dev/null','-c','credential.helper=','-c','credential.helper=!gh auth git-credential',...args],
   {cwd,timeout:60000,maxBuffer:2**20,env:{...process.env,GIT_TERMINAL_PROMPT:'0'}})).stdout.trimEnd();
 const gh = async path => JSON.parse((await run('gh',['api',path],{timeout:30000,maxBuffer:2**20})).stdout);
+const prApi=async(path,method='GET',body)=>{
+  const output=await new Promise((resolve,reject)=>{
+    const child=execFile('gh',['api',path,'--method',method,...(body?['--input','-']:[])],{timeout:30000,maxBuffer:2**20},(error,stdout)=>error?reject(error):resolve(stdout));
+    child.stdin.on('error',()=>{});
+    child.stdin.end(body?JSON.stringify(body):undefined);
+  });
+  return JSON.parse(output);
+};
 
 async function revoked(repo){
   try{await lstat(join(root,'revoked',repo.toLowerCase()));return true;}catch(error){if(error.code==='ENOENT')return false;throw error;}
@@ -92,7 +101,11 @@ async function execute(dir) {
     }
     if (!['test-head','test','publish'].includes(req.action) || !sha(req.sha) || !sha(req.base) || !(req.expected===''||sha(req.expected))) throw Error('Invalid candidate');
     const files=await authorizedFiles(req);
-    if(req.action==='publish' && dev===req.sha) return {sha:dev,alreadyPublished:true,awaitDeployment:requiresLiveAcceptance(req)};
+    if(req.action==='publish' && dev===req.sha) {
+      const pr=await prepareIntegrationPr({repo:req.repo,revision:req.sha,expected:req.expected,cards:req.cards,git:args=>git(temp,args),api:prApi});
+      await verifyIntegrationPr(req.repo,pr.number,req.sha,prApi);
+      return {sha:dev,alreadyPublished:true,awaitDeployment:requiresLiveAcceptance(req)};
+    }
     if(req.action!=='test-head' && dev!==req.expected) throw Error('Remote dev changed during validation');
     const baseRef=dev?'dev':(await gh('repos/'+req.repo)).default_branch;
     await git(temp,['fetch','--no-tags','origin','refs/heads/'+baseRef+':refs/heads/base']);
@@ -109,14 +122,16 @@ async function execute(dir) {
     }
     const tree=join(temp,'code');await git(temp,['worktree','add','--detach',tree,req.sha]);
     const filesForCandidate=(await git(tree,['ls-files','-z'])).split('\0').filter(Boolean);
-    const {tests,log}=await testCandidate({project:projects[req.repo],tree,files:filesForCandidate,
+    const {tests,log}=await testCandidate({project:projects[req.repo],tree,files:filesForCandidate,stage:req.action,
       sha:req.sha,base:req.base,name:'jam-check-'+basename(dir),approvedIssues:req.cards.map(card=>card.issue)});
     if(req.action==='publish') {
       await authorizedFiles(req);
       await queueCalculator(projects[req.repo],req);
       await queueSandbox(projects[req.repo],req);
       if(await revoked(req.repo))throw Error('GitHub App repository grant was revoked');
+      const pr=await prepareIntegrationPr({repo:req.repo,revision:req.sha,expected:req.expected,cards:req.cards,git:args=>git(temp,args),api:prApi});
       await git(temp,['push','--force-with-lease=refs/heads/dev:'+req.expected,'origin',req.sha+':refs/heads/dev']);
+      await verifyIntegrationPr(req.repo,pr.number,req.sha,prApi);
       if(!(await git(temp,['ls-remote','origin','refs/heads/dev'])).startsWith(req.sha+'\t'))throw Error('Publication requires reconciliation');
     }
     return {sha:req.sha,tests,log:log.slice(-8000),awaitDeployment:req.action==='publish' && requiresLiveAcceptance(req)};
@@ -147,6 +162,9 @@ async function recoverClaim(dir,id){
   if(req.action==='publish' && Object.hasOwn(projects,req.repo) && sha(req.sha)){
     const current=await gh('repos/'+req.repo+'/git/ref/heads/dev');
     if(current.object?.sha===req.sha){
+      const prs=await gh('repos/'+req.repo+'/pulls?state=closed&base=dev&head='+encodeURIComponent(req.repo.split('/')[0]+':jam/integration-'+req.sha));
+      if(prs.length!==1)return storeUncertain(dir);
+      await verifyIntegrationPr(req.repo,prs[0].number,req.sha,prApi);
       await writeFile(staged,JSON.stringify({ok:true,value:{sha:req.sha,alreadyPublished:true,awaitDeployment:requiresLiveAcceptance(req)}}),{mode:0o600,flag:'wx'});
       await rename(staged,join(dir,'answer.json'));return;
     }

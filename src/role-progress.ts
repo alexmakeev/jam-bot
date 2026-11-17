@@ -1,6 +1,7 @@
-export type Owner = 'Architect'|'Worker'|'Integrator';
+export type Owner = 'Designer'|'Architect'|'Worker'|'Integrator';
 export interface Update {identity:string; summary:string}
 export function progressOwner(identity:string):Owner {
+  if(identity.startsWith('designer-'))return 'Designer';
   if(/^(?:integrat|diagnosis[:-]|deployment:|await-site:|site-failed:|publication-|card-result-verified|fix-spec:|review-(?:retry|blocked):integrator)/.test(identity))return 'Integrator';
   if(/^(?:scope-plan:|material-decision:|card-accepted|waiting-profile|design|architect|spec-ready:|specification:)/.test(identity))return 'Architect';
   return 'Worker';
@@ -15,7 +16,9 @@ export function roleChecklist(owner:Owner,history:Update[]){
   const current=history.slice(Math.max(start,0));
   const has=(prefix:string)=>current.some(row=>row.identity.startsWith(prefix));
   const tasks:[string,boolean,boolean?,string?][]=[];
-  if(owner==='Architect' && has('scope-plan:') && !has('architecture:')){
+  if(owner==='Designer'){
+    tasks.push(['Prepare the design brief',current.some(r=>r.identity.endsWith('-received')),has('designer-')]);
+  }else if(owner==='Architect' && has('scope-plan:') && !has('architecture:')){
     tasks.push(['Prepare the scope plan',true],['Attach the scope plan',true]);
   }else if(owner==='Architect'){
     tasks.push(['Prepare the architecture draft',has('architecture:'),has('architect-')]);
@@ -24,7 +27,7 @@ export function roleChecklist(owner:Owner,history:Update[]){
   }else{
     tasks.push(['Assemble the candidate',has('integration:')]);
   }
-  const phase={Architect:'architecture',Worker:'implementation',Integrator:'diagnosis'}[owner];
+  const phase={Designer:'design',Architect:'architecture',Worker:'implementation',Integrator:'diagnosis'}[owner];
   const prefix=phase+'-adviser:';
   const advisers=new Map<string,{status:string;label:string;reason?:string}>();
   for(const row of current.filter(row=>row.identity.startsWith(prefix))){
@@ -46,10 +49,10 @@ export function roleChecklist(owner:Owner,history:Update[]){
   }
   const paused=current.at(-1)?.identity.startsWith('blocked:');
   const lines=tasks.map(([label,done,active,error])=>error?'❌ '+label+'\n    Error: '+error:(done?'✅':active && !paused?'🟨':'◻️')+' '+label);
-  const last=current.at(-1);
-  const final=(last?.identity==='card-result-verified'||last?.identity.startsWith('deployment:')&&last.summary.endsWith('Deployment complete.'))?current.filter(row=>row.identity.startsWith('integrated:')).at(-1):undefined;
-  const status=final?final.summary+(last?.identity.startsWith('deployment:')?' Deployment verified.':''):last?.summary??'';
-  return '**🍯 JAM '+owner+': '+({Architect:'architecture and reviews',Worker:'implementation and validation',Integrator:'integration and publication'}[owner])+'**\n\n'+statusBlock(lines)+'\n\n'+status;
+  const milestone=current.filter(row=>/^(?:spec-ready:|scope-plan:|validated:|integrated:|fix-spec:|await-site:|site-failed:|material-decision:|blocked:|worker-correction:|rework:)/.test(row.identity)).at(-1);
+  const status=milestone?.summary??'';
+  return '**🍯 JAM '+owner+': '+({Designer:'design brief',Architect:'architecture and reviews',Worker:'implementation and validation',Integrator:'integration and publication'}[owner])+'**\n\n'+statusBlock(lines)+(status?'\n\n'+status:'');
+
 }
 
 export function briefDecision(markdown:string, fallback:string){

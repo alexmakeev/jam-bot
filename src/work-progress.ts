@@ -69,6 +69,8 @@ export function recordProgress(state:string,issue:number,identity:string,summary
       return target;
     };
     if(routine && board.kind==='development/roles'){
+      // Internal reports remain in the producing stage's local checkpoint.
+      if(!/^(?:validated:|integrated:|scope-plan:|designer-.*-received$|fix-spec:)/.test(identity))report=undefined;
       const previous=(identity.startsWith('blocked:')||identity.startsWith('material-decision:'))?db.prepare('SELECT identity FROM role_updates WHERE issue=? ORDER BY rowid DESC LIMIT 1').get(issue):undefined;
       const owner=progressOwner(previous?String(previous.identity):identity);
       const boardKey=segment(owner,fingerprint('work-card-role:'+owner));
@@ -80,21 +82,22 @@ export function recordProgress(state:string,issue:number,identity:string,summary
       const boardKey=segment('JAM',dashboard);
       changed=Boolean(db.prepare('INSERT OR IGNORE INTO milestones VALUES(?,?,?)').run(issue,key,summary).changes);
       const history=db.prepare('SELECT key,summary FROM milestones WHERE issue=? ORDER BY rowid').all(issue);
-      const latest=history.slice(-5);
-      const done=Boolean(db.prepare('SELECT 1 FROM milestones WHERE issue=? AND key=?').get(issue,fingerprint('card-result-verified')));
-      const active=latest.some(r=>r.key!==fingerprint('card-accepted'));
-      const block=/paused|blocked|waiting for project profile/i.test(String(latest.at(-1)?.summary));
+      const last=history.at(-1);
+      const done=history.some(row=>row.key===fingerprint('card-result-verified'));
+      const active=history.length>1;
+      const block=/paused|blocked|waiting for project profile/i.test(String(last?.summary));
       const work=board.kind==='development'?'Implement and verify the change':board.kind==='consultation'?'Prepare the consultation':'Prepare the assignment';
+      const detail=history.filter(row=>String(row.summary).startsWith('❓') || row.key===fingerprint('waiting-profile') || db.prepare('SELECT 1 FROM event_reports WHERE issue=? AND key=?').get(issue,String(row.key))).at(-1);
       summary='**🍯 JAM · work card progress**\n\n'+statusBlock(['✅ Task accepted',
-        (done?'✅':block?'⏸️':active?'🟨':'◻️')+' '+work,(done?'✅':'◻️')+' Deliver the verified result'])+
-        '\n\n**Latest updates**\n'+latest.map(row=>'- '+row.summary).join('\n');
-      const earlier=history.slice(0,-5).map(row=>'- '+row.summary).join('\n');
-      if(earlier && earlier.length+summary.length<45000)summary+='\n\n<details><summary>Earlier updates</summary>\n\n'+earlier+'\n\n</details>';
+        (done?'✅':block?'⏸️':active?'🟨':'◻️')+' '+work,(done?'✅':'◻️')+' Deliver the verified result']);
+      if(identity.startsWith('direct-result:') || identity.startsWith('material-decision:') || block)summary+='\n\n'+String(last?.summary);
+      else if(done)summary+='\n\n'+String(last?.summary);
+      else if(detail && String(detail.summary).startsWith('❓'))summary+='\n\n'+detail.summary;
       key=boardKey;
     }
     const body=summary+'\n\n<!-- jam-bot:progress:'+key+' -->';
     db.prepare('INSERT OR IGNORE INTO events(issue,key,body) VALUES(?,?,?)').run(issue,key,body);
-    if(routine && changed)db.prepare('UPDATE events SET body=? WHERE issue=? AND key=?').run(body,issue,key);
+    if(routine && changed)changed=Boolean(db.prepare('UPDATE events SET body=? WHERE issue=? AND key=? AND body<>?').run(body,issue,key,body).changes);
     for(const r of !report?[]:Array.isArray(report)?report:[report]){
       if(db.prepare('INSERT OR IGNORE INTO event_reports VALUES(?,?,?,?,?)').run(issue,key,r.purpose,fingerprint(r.markdown),r.markdown).changes)changed=true;
     }
@@ -158,8 +161,8 @@ async function publishOne(state:string,topic:Topic,credentials:()=>Promise<[Api,
       }
       const marker='<!-- jam-bot:progress:'+key+' -->';
       if(files.some(f=>!f.url.startsWith('https://github.com/'+topic.repository+'/issues/'+issue+'/artifacts/')))throw Error('Result artifact belongs to another work card');
-      const roleBoard=/^\*\*(?:🍯 JAM )?(Architect|Worker|Integrator):/.exec(base);
-      const primaryOrder=roleBoard?.[1]==='Worker'?['tests-','review-']:['integration-','spec-','plan-','tests-','review-'];
+      const roleBoard=/^\*\*(?:🍯 JAM )?(Designer|Architect|Worker|Integrator):/.exec(base);
+      const primaryOrder=roleBoard?.[1]==='Worker'?['tests-','review-']:['integration-','spec-','plan-','design-','tests-','review-'];
       const primary=primaryOrder.map(prefix=>files.filter(file=>file.name.startsWith(prefix)).at(-1)).find(Boolean);
       const selected=roleBoard?(primary?[primary]:[]):files;
       const body=selected.length?base.slice(0,-marker.length).trimEnd()+(base.startsWith('**')?'\n\n**Files:** ':' ')+selected.map(f=>'['+f.name+']('+f.url+')').join(' · ')+'\n\n'+marker:base;
@@ -211,7 +214,7 @@ export async function publishTimeline(state:string,topic:Topic,signal:AbortSigna
     for(const row of db.prepare('SELECT DISTINCT issue,board FROM role_updates').all()){
       if(db.prepare('SELECT 1 FROM human_turns WHERE issue=?').get(row.issue!))continue;
       const history=db.prepare('SELECT identity,summary FROM role_updates WHERE issue=? AND board=? ORDER BY rowid').all(row.issue!,row.board!).map(r=>({identity:String(r.identity),summary:String(r.summary)}));
-      const owner=(['Architect','Worker','Integrator'] as const).find(role=>fingerprint('work-card-role:'+role)===row.board);
+      const owner=(['Designer','Architect','Worker','Integrator'] as const).find(role=>fingerprint('work-card-role:'+role)===row.board);
       if(!owner)continue;
       const body=roleChecklist(owner,history)+'\n\n<!-- jam-bot:progress:'+row.board+' -->';
       db.prepare("UPDATE events SET body=?,version=version+1,status=CASE WHEN receipt IS NULL THEN status ELSE 'dirty' END,retryAt=0 WHERE issue=? AND key=? AND body<>?").run(body,row.issue!,row.board!,body);

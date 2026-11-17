@@ -10,7 +10,7 @@ test('restarted publisher commits a staged answer and preserves an uncertain adv
   t.after(()=>rm(dir,{recursive:true,force:true}));
   const installed=join(dir,'host'),exchange=join(dir,'exchange');
   await mkdir(installed);await mkdir(exchange);
-  for(const file of ['profile-broker.mjs','profile-recipes.mjs','calculator-deployment.mjs','consultants.mjs','antigravity-consultant.mjs'])
+  for(const file of ['profile-broker.mjs','integration-pr.mjs','profile-recipes.mjs','calculator-deployment.mjs','consultants.mjs','antigravity-consultant.mjs'])
     await cp(new URL('../scripts/macos/'+file,import.meta.url),join(installed,file));
   // No new request is executed in this fixture. A second dispatch must fail the test.
   await mkdir(join(installed,'runtime'));
