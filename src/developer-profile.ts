@@ -112,6 +112,36 @@ export function implementationInput(context:string,scope:string,spec:string,assi
 }
 
 interface ReviewEvidence {input:string;tests:string;passing:boolean;elapsedMs:number;consultation:string;advice:string}
+const isUnitTest=(path:string)=>/^(?:test|tests)\/.*\.test\.[cm]?[jt]s$/.test(path);
+
+async function redTest(p:ProfileRun,project:Project,scope:string,spec:string,assignment:string){
+  const dir=directory(p.state,p.issue),path=join(dir,'tdd-red.json');
+  const saved=await readJson<{sha:string;log:string}>(path).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;});
+  if(saved)return saved;
+  const tests=p.card.files.filter(isUnitTest);
+  if(!tests.length)throw Error('TDD requires an approved unit-test file in the work card scope');
+  const baselinePath=join(dir,'tdd-baseline.json');
+  if(!await readJson(baselinePath).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;})){
+    const baseline=await exchange(project.store,{action:'test-head',scope:'tdd-baseline:'+p.issue,repo:p.topic.repository,sha:project.base,base:project.base,expected:project.expected,cards:[{issue:p.issue,approval:p.approval}]},p.signal);
+    if(baseline.sha!==project.base)throw Error('TDD baseline returned an unexpected revision');
+    await atomicJson(baselinePath,baseline);
+  }
+  const sha=await implementationCommit(project.tree,join(dir,'tdd-test-commit.json'),p.issue,tests,async()=>{
+    const context=await projectContext(project.tree,p.card.files,p.card.task+'\n'+spec);
+    return stage(p,'developer','TDD RED stage. Add a meaningful failing regression test for the approved behavior. Change only these unit-test files: '+JSON.stringify(tests)+'. Do not implement the feature, change production code, or introduce intentional syntax/import failures. The test must fail by an assertion of the missing behavior. Return the exact JSON files/replacements format.\n'+implementationInput(context,scope,spec,assignment,''));
+  },p.authorize);
+  let log='';
+  try{
+    await exchange(project.store,{action:'test-head',scope:'tdd-red:'+p.issue,repo:p.topic.repository,sha,base:project.base,expected:project.expected,cards:[{issue:p.issue,approval:p.approval}]},p.signal);
+  }catch(error){
+    if(!(error instanceof Error)||!error.message.startsWith('Profile broker: Validation failed for ')||!/AssertionError|ERR_ASSERTION/.test(error.message)||!/# fail [1-9]/.test(error.message))throw error;
+    log=error.message;
+  }
+  if(!log)throw Error('TDD RED stage passed unexpectedly; missing behavior has not been demonstrated');
+  const result={sha,log};await atomicJson(path,result);
+  recordProgress(p.state,p.issue,'tdd-red:'+sha,'Regression test failed on the unimplemented behavior. Next: implement the approved change.');
+  return result;
+}
 async function prepareReview(p:ProfileRun,project:Project,sha:string,scope:string,spec:string):Promise<ReviewEvidence>{
   const diff=await git(project.tree,'diff','--no-ext-diff',project.base,sha);
   const cards=[{issue:p.issue,approval:p.approval}];
@@ -125,6 +155,7 @@ async function prepareReview(p:ProfileRun,project:Project,sha:string,scope:strin
     tests=err.message;
   }
   const elapsedMs=Math.max(1,Date.now()-started);
+  if(!passing)return {input:'',tests,passing:false,elapsedMs,consultation:'',advice:''};
   const fields:Record<string,string>={stage:'Worker branch: implementation and unit tests. Only the integrator runs browser acceptance on the combined candidate. Request browser checks as handoff items.',requirements:scope,specification:spec,revision:sha,diff,testReport:tests,
     changedFiles:await git(project.tree,'diff','--name-only',project.base,sha)};
   const filename=specName(p.issue,digestOf(spec));
@@ -133,6 +164,11 @@ async function prepareReview(p:ProfileRun,project:Project,sha:string,scope:strin
   const architecture=await readJson<{inputDigest:string;advice:{provider:string;model?:string;status:string;finishedAt?:string}[]}>(join(directory(p.state,p.issue),'consultations','architecture.json'));
   fields.architectHandoff=JSON.stringify({artifact:specReceipt.url,comment:specReceipt.commentId,specDigest:specReceipt.sha256,consultedDraft:architecture.inputDigest,advisers:architecture.advice.map(a=>({provider:a.provider,model:a.model,status:a.status,finishedAt:a.finishedAt}))});
   fields.repositoryEvidence=await projectContext(project.tree,[],[...executed,scope,spec].join('\n'));
+  const red=await readJson<{sha:string;log:string}>(join(directory(p.state,p.issue),'tdd-red.json'));
+  const unitFiles=p.card.files.filter(isUnitTest);
+  if((await git(project.tree,'diff','--name-only',red.sha,sha,'--',...unitFiles)).trim())throw Error('Regression tests changed after the verified RED stage');
+  fields.tddEvidence=JSON.stringify(red);
+  fields.reviewFocus='All unit tests passed on this exact implementation. Assess correctness, simplicity, readability and whether the regression tests cover the approved behavior. Reject weakened tests or missing coverage.';
   if(p.card.designer){
     const designer=await readJson<{nativeMember:string;output:string}>(join(directory(p.state,p.issue),'designer.json'));
     fields.designer=reviewPacket({teammate:designer.nativeMember,brief:designer.output},3000);
@@ -147,17 +183,18 @@ async function reviewedImplementation(p:ProfileRun,project:Project,scope:string,
   const round=correction?.reviewHead??correction?.integrationHead;
   let parent=correction?.sha??project.base;
   let feedback=correction?.feedback??'';
+  if(!correction)parent=(await redTest(p,project,scope,spec,assignment)).sha;
   for(let attempt=correction?.attempt??0;attempt<2;attempt++){
     if(!correction?.reviewOnly || attempt!==correction.attempt) {
-      await implementationCommit(project.tree,join(directory(p.state,p.issue),'implementation-'+(round?round+'-':'')+attempt+'.json'),p.issue,p.card.files,async()=>{
+      await implementationCommit(project.tree,join(directory(p.state,p.issue),'implementation-'+(round?round+'-':'')+attempt+'.json'),p.issue,p.card.files.filter(path=>!isUnitTest(path)),async()=>{
         if(await git(project.tree,'rev-parse','HEAD')!==parent)throw Error('Unrecognized input revision before developer assignment');
         const context=await projectContext(project.tree,p.card.files,p.card.task+'\n'+spec+'\n'+assignment);
-        return stage(p,'developer',implementationInput(context,scope,spec,assignment,feedback));
+        return stage(p,'developer','TDD GREEN stage. Implement the approved behavior. Preserve the regression tests from the RED stage unchanged. Only edit approved production files.\n'+implementationInput(context,scope,spec,assignment,feedback));
       },p.authorize);
     }
     const sha=await git(project.tree,'rev-parse','HEAD');
     parent=sha;
-    recordProgress(p.state,p.issue,'worker-revision:'+sha,'Candidate `'+sha.slice(0,12)+'` is ready for review.');
+    recordProgress(p.state,p.issue,'worker-revision:'+sha,'Implementation `'+sha.slice(0,12)+'` is complete. Unit validation must pass before consultations.');
     const evidencePath=join(directory(p.state,p.issue),'review-evidence',sha+'.json');
     let evidence=await readJson<ReviewEvidence>(evidencePath).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;});
     if(!evidence){
@@ -165,6 +202,12 @@ async function reviewedImplementation(p:ProfileRun,project:Project,scope:string,
       await atomicJson(evidencePath,evidence);
     }
     const {tests,passing,elapsedMs,consultation,advice}=evidence;
+    if(!passing){
+      feedback='Fix the implementation until the full unit suite passes. Consultants are not called while tests fail.\n'+tests;
+      await atomicJson(join(directory(p.state,p.issue),'correction.json'),{project,sha,attempt:attempt+1,feedback});
+      recordProgress(p.state,p.issue,'unit-failed:'+sha,'Unit tests failed. The worker must correct the implementation before consultations.');
+      continue;
+    }
     const reviewJournal=new Journal(join(p.state,'intake.sqlite'));
     try{
       prepareReviewNotices(reviewJournal.db);
@@ -264,7 +307,7 @@ export async function runDeveloperProfile(p:ProfileRun) {
           const design=await stage(p,'designer','Provide a concise visual design brief with verifiable criteria for desktop and mobile. For a small change, focus on the new interaction and preserving existing visuals.\n'+scope+'\n'+brief);
           brief+='\n\nDesigner brief:\n'+design;
         }
-        const draft=await stage(p,'architect','Start with Decision: and one short English sentence describing the proposed approach. Follow with a compact English Markdown implementation specification and acceptance tests. Prefer observable user requirements and proportional tests. Assign code and unit tests to the worker. Assign all virtual-browser and end-to-end checks to the integrator on the combined candidate, then any deployed checks to deployment acceptance. Never require an intermediate browser run from the worker. Keep existing behavior and implementation choices flexible unless explicitly required.\n'+scope+'\n'+brief);
+        const draft=await stage(p,'architect','Start with Decision: and one short English sentence describing the proposed approach. Follow with a compact English Markdown implementation specification and acceptance tests. Prefer observable user requirements and proportional tests. Assign a test-first RED/GREEN cycle to the worker: establish a green baseline, add a meaningful failing unit regression test, implement the feature, and run the full unit suite to green before any implementation consultation. Tests must stay within approved file scope. Assign code and unit tests to the worker. Assign all virtual-browser and end-to-end checks to the integrator on the combined candidate, then any deployed checks to deployment acceptance. Never require an intermediate browser run from the worker. Keep existing behavior and implementation choices flexible unless explicitly required.\n'+scope+'\n'+brief);
         await atomicJson(join(dir,'architect-draft.json'),{output:draft});
         await atomicJson(join(dir,'architecture-input.json'),{requirements:scope,architectDraft:draft,projectEvidence:brief});
         progress.checkpointSpecification(issue,JSON.stringify({...project,awaitingAdvice:true}));
@@ -300,7 +343,9 @@ export async function validateReviewedHead(runtime:TopicRuntime,head:ReadyBranch
       base:project.base,expected:project.expected,cards:[{issue:head.issue,approval}]},signal);
     if(checked.sha!==sha)throw Error('Validation returned a different revision');
     const changed=(await git(project.tree,'diff','--name-only',project.base,sha)).split('\n');
-    recordProgress(runtime.state,head.issue,'validated:'+sha,'Updated '+(changed.length<=2?changed.map(name=>'`'+name+'`').join(' and '):changed.length+' files')+'. Branch checks passed at `'+sha.slice(0,12)+'`. Ready for integration.',{purpose:'tests',markdown:'# Worker handoff\n\nChanged files: '+changed.join(', ')+'\n\nUnit and branch checks passed. Next: integrator runs combined and browser acceptance.\n\nCandidate `'+sha+'`\n\n'+(checked.log??'The configured test recipe passed.')});
+    const red=await readJson<{sha:string;log:string}>(join(dir,'tdd-red.json'));
+    const tdd='\n\n## Test-first evidence\n\nRED revision: `'+red.sha+'`\n\n'+red.log+'\n\nGREEN revision: `'+sha+'`\n\n';
+    recordProgress(runtime.state,head.issue,'validated:'+sha,'Updated '+(changed.length<=2?changed.map(name=>'`'+name+'`').join(' and '):changed.length+' files')+'. RED/GREEN evidence recorded. Branch checks passed at `'+sha.slice(0,12)+'`. Ready for integration.',{purpose:'tests',markdown:'# Worker handoff\n\nChanged files: '+changed.join(', ')+'\n\nUnit and branch checks passed. Next: integrator runs combined and browser acceptance.\n\nCandidate `'+sha+'`'+tdd+(checked.log??'The configured test recipe passed.')});
     await confirmedProgress(runtime.state,runtime.topic,head.issue,'validated:'+sha);
     await atomicJson(join(dir,'reviewed-head-tests.json'),{sha,tests:checked.tests,log:checked.log});
   } catch(err) {

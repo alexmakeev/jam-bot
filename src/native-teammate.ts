@@ -137,7 +137,24 @@ export async function teammateReceipt(config: string, cwd: string, session: stri
   return mailboxReceipt({config,cwd,session,name,challenge,agentType:'jam-developer',expected:answer});
 }
 
-export async function runNativeJob({state,cwd,session,name,agentType,challenge,system,prompt,expected,signal}: TeammateJob) {
+const sessionRuns=new Map<string,Promise<void>>();
+export async function runNativeJob(job:TeammateJob){
+  const key=job.cwd+'\0'+job.session;
+  const previous=sessionRuns.get(key)??Promise.resolve();
+  let release!:()=>void;
+  const current=new Promise<void>(resolve=>{release=resolve;});
+  sessionRuns.set(key,current);
+  try{
+    await previous;
+    job.signal.throwIfAborted();
+    return await executeNativeJob(job);
+  }finally{
+    release();
+    if(sessionRuns.get(key)===current)sessionRuns.delete(key);
+  }
+}
+
+async function executeNativeJob({state,cwd,session,name,agentType,challenge,system,prompt,expected,signal}: TeammateJob) {
   const config=await realpath(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(),'.claude'));
   const home=join(state,'worker-runtime-home');
   await mkdir(home,{recursive:true,mode:0o700});
@@ -159,7 +176,10 @@ export async function runNativeJob({state,cwd,session,name,agentType,challenge,s
   const startedAt=Date.now();
   const transcript=join(config,'projects',cwd.replace(/[^a-zA-Z0-9-]/g,'-'),session+'.jsonl');
   let nextStatusCheck=startedAt;
-  const child=spawn('script',['-qefc',shellCommand,'/dev/null'],{cwd,stdio:['pipe','ignore','ignore'],
+  const diagnostics=join(state,'native-diagnostics');
+  await mkdir(diagnostics,{recursive:true,mode:0o700});
+  const terminal=join(diagnostics,name+'.log');
+  const child=spawn('script',['-qefc',shellCommand,terminal],{cwd,stdio:['pipe','ignore','ignore'],
     env:{...process.env,HOME:home,TERM:'xterm-256color',CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS:'1'}});
   let error=false;
   child.on('error',()=>{error=true;});
