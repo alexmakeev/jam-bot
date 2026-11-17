@@ -106,7 +106,7 @@ export async function testCandidate({project,tree,files,sha,base,name,approvedIs
     if(project.sumBrowserImage && approvedIssues.includes(project.runningTotalsCard))checks.push('runningTotals');
     if(project.sumBrowserImage && approvedIssues.includes(project.clearTotalsCard))checks.push('clearTotals');
     const browserImage=project.sumBrowserImage??project.calculatorBrowserImage;
-    const preview=stage==='test-head'?'Browser acceptance: pending integrator candidate.':browserImage ? await calculatorPreview({tree,sha,base,image:browserImage,name,checks,site:project.sumBrowserImage?'sum':'calculator'}) : '';
+    const preview=['test-head','test-red'].includes(stage)?'Browser acceptance: pending integrator candidate.':browserImage ? await calculatorPreview({tree,sha,base,image:browserImage,name,checks,site:project.sumBrowserImage?'sum':'calculator'}) : '';
     return {tests,log:log+'\n'+(diagnostic.length>5000 ? diagnostic.slice(0,400)+'\n…\n'+diagnostic.slice(-4600) : diagnostic)+'\n'+preview};
   } catch (error) {
     throw Error('Validation failed for '+project.recipe+'\n'+[error.stdout,error.stderr,(!error.stdout && !error.stderr)?error.message:'',error.killed?'Timed out':''].filter(Boolean).join('\n').slice(-8000));

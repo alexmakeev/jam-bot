@@ -145,6 +145,24 @@ async function redTest(p:ProfileRun,project:Project,scope:string,spec:string,ass
 async function prepareReview(p:ProfileRun,project:Project,sha:string,scope:string,spec:string):Promise<ReviewEvidence>{
   const diff=await git(project.tree,'diff','--no-ext-diff',project.base,sha);
   const cards=[{issue:p.issue,approval:p.approval}];
+  const redPath=join(directory(p.state,p.issue),'tdd-red.json');
+  let red=await readJson<{sha:string;log:string}>(redPath);
+  const unitFiles=p.card.files.filter(isUnitTest);
+  if((await git(project.tree,'diff','--name-only',red.sha,sha,'--',...unitFiles)).trim()){
+    const correctionPaths=(await git(project.tree,'diff','--name-only',sha+'^',sha)).split('\n').filter(Boolean);
+    if(correctionPaths.some(path=>!isUnitTest(path)))throw Error('Test refinement must precede production changes in a separate RED step');
+    let log='';
+    try{
+      await exchange(project.store,{action:'test-red',scope:'tdd-refined-red:'+p.issue,repo:p.topic.repository,sha,base:project.base,expected:project.expected,cards},p.signal);
+    }catch(error){
+      if(!(error instanceof Error)||!error.message.startsWith('Profile broker: Validation failed for ')||!/AssertionError|ERR_ASSERTION/.test(error.message)||!/# fail [1-9]/.test(error.message))throw error;
+      log=error.message;
+    }
+    if(!log)throw Error('Revised regression tests do not fail against baseline production code');
+    await atomicJson(join(directory(p.state,p.issue),'tdd-red-'+red.sha+'.json'),red);
+    red={sha,log:'Revised tests from `'+sha+'` executed against baseline production `'+project.base+'`.\n'+log};
+    await atomicJson(redPath,red);
+  }
   const started=Date.now();
   let tests='',passing=false;let executed:string[]=[];
   try {
@@ -164,10 +182,7 @@ async function prepareReview(p:ProfileRun,project:Project,sha:string,scope:strin
   const architecture=await readJson<{inputDigest:string;advice:{provider:string;model?:string;status:string;finishedAt?:string}[]}>(join(directory(p.state,p.issue),'consultations','architecture.json'));
   fields.architectHandoff=JSON.stringify({artifact:specReceipt.url,comment:specReceipt.commentId,specDigest:specReceipt.sha256,consultedDraft:architecture.inputDigest,advisers:architecture.advice.map(a=>({provider:a.provider,model:a.model,status:a.status,finishedAt:a.finishedAt}))});
   fields.repositoryEvidence=await projectContext(project.tree,[],[...executed,scope,spec].join('\n'));
-  const red=await readJson<{sha:string;log:string}>(join(directory(p.state,p.issue),'tdd-red.json'));
-  const unitFiles=p.card.files.filter(isUnitTest);
-  if((await git(project.tree,'diff','--name-only',red.sha,sha,'--',...unitFiles)).trim())throw Error('Regression tests changed after the verified RED stage');
-  fields.tddEvidence=JSON.stringify(red);
+  fields.tddEvidence=JSON.stringify({baseline:await readJson(join(directory(p.state,p.issue),'tdd-baseline.json')),red,green:{sha,log:tests},testsMatchVerifiedRed:true});
   fields.reviewFocus='All unit tests passed on this exact implementation. Assess correctness, simplicity, readability and whether the regression tests cover the approved behavior. Reject weakened tests or missing coverage.';
   if(p.card.designer){
     const designer=await readJson<{nativeMember:string;output:string}>(join(directory(p.state,p.issue),'designer.json'));
@@ -186,10 +201,10 @@ async function reviewedImplementation(p:ProfileRun,project:Project,scope:string,
   if(!correction)parent=(await redTest(p,project,scope,spec,assignment)).sha;
   for(let attempt=correction?.attempt??0;attempt<2;attempt++){
     if(!correction?.reviewOnly || attempt!==correction.attempt) {
-      await implementationCommit(project.tree,join(directory(p.state,p.issue),'implementation-'+(round?round+'-':'')+attempt+'.json'),p.issue,p.card.files.filter(path=>!isUnitTest(path)),async()=>{
+      await implementationCommit(project.tree,join(directory(p.state,p.issue),'implementation-'+(round?round+'-':'')+attempt+'.json'),p.issue,attempt===0&&!correction?p.card.files.filter(path=>!isUnitTest(path)):p.card.files,async()=>{
         if(await git(project.tree,'rev-parse','HEAD')!==parent)throw Error('Unrecognized input revision before developer assignment');
         const context=await projectContext(project.tree,p.card.files,p.card.task+'\n'+spec+'\n'+assignment);
-        return stage(p,'developer','TDD GREEN stage. Implement the approved behavior. Preserve the regression tests from the RED stage unchanged. Only edit approved production files.\n'+implementationInput(context,scope,spec,assignment,feedback));
+        return stage(p,'developer',(attempt===0&&!correction?'TDD GREEN stage. Implement the approved behavior. Preserve the regression tests from the RED stage unchanged. Only edit approved production files.':'Review correction. If improving regression tests, change only test files in this pass; the service will re-prove RED against baseline production before GREEN validation. Otherwise fix only production code while keeping the verified regression tests unchanged.')+'\n'+implementationInput(context,scope,spec,assignment,feedback));
       },p.authorize);
     }
     const sha=await git(project.tree,'rev-parse','HEAD');
@@ -344,7 +359,8 @@ export async function validateReviewedHead(runtime:TopicRuntime,head:ReadyBranch
     if(checked.sha!==sha)throw Error('Validation returned a different revision');
     const changed=(await git(project.tree,'diff','--name-only',project.base,sha)).split('\n');
     const red=await readJson<{sha:string;log:string}>(join(dir,'tdd-red.json'));
-    const tdd='\n\n## Test-first evidence\n\nRED revision: `'+red.sha+'`\n\n'+red.log+'\n\nGREEN revision: `'+sha+'`\n\n';
+    const baseline=await readJson<{sha:string;log?:string}>(join(dir,'tdd-baseline.json'));
+    const tdd='\n\n## Test-first evidence\n\nBaseline revision: `'+baseline.sha+'`\n\n'+baseline.log+'\n\nRED test revision: `'+red.sha+'`\n\n'+red.log+'\n\nGREEN revision: `'+sha+'`\n\n';
     recordProgress(runtime.state,head.issue,'validated:'+sha,'Updated '+(changed.length<=2?changed.map(name=>'`'+name+'`').join(' and '):changed.length+' files')+'. RED/GREEN evidence recorded. Branch checks passed at `'+sha.slice(0,12)+'`. Ready for integration.',{purpose:'tests',markdown:'# Worker handoff\n\nChanged files: '+changed.join(', ')+'\n\nUnit and branch checks passed. Next: integrator runs combined and browser acceptance.\n\nCandidate `'+sha+'`'+tdd+(checked.log??'The configured test recipe passed.')});
     await confirmedProgress(runtime.state,runtime.topic,head.issue,'validated:'+sha);
     await atomicJson(join(dir,'reviewed-head-tests.json'),{sha,tests:checked.tests,log:checked.log});

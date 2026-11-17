@@ -99,7 +99,7 @@ async function execute(dir) {
       await copyFile(bundle,join(dir,'seed.bundle'),constants.COPYFILE_EXCL);
       return {sha:await git(temp,['rev-parse','refs/heads/seed']),dev};
     }
-    if (!['test-head','test','publish'].includes(req.action) || !sha(req.sha) || !sha(req.base) || !(req.expected===''||sha(req.expected))) throw Error('Invalid candidate');
+    if (!['test-red','test-head','test','publish'].includes(req.action) || !sha(req.sha) || !sha(req.base) || !(req.expected===''||sha(req.expected))) throw Error('Invalid candidate');
     const files=await authorizedFiles(req);
     if(req.action==='publish' && dev===req.sha) {
       const pr=await prepareIntegrationPr({repo:req.repo,revision:req.sha,expected:req.expected,cards:req.cards,git:args=>git(temp,args),api:prApi});
@@ -120,7 +120,12 @@ async function execute(dir) {
       const paths=(await git(temp,['diff-tree','--root','-m','--no-commit-id','--name-only','--no-renames','-r','-z',revision])).split('\0').filter(Boolean);
       if(paths.some(path=>!files.has(path)))throw Error('Commit outside approved file scope');
     }
-    const tree=join(temp,'code');await git(temp,['worktree','add','--detach',tree,req.sha]);
+    const tree=join(temp,'code');await git(temp,['worktree','add','--detach',tree,req.action==='test-red'?req.base:req.sha]);
+    if(req.action==='test-red'){
+      const testFiles=(await git(temp,['ls-tree','-r','--name-only',req.sha])).split('\n').filter(path=>/^(?:test|tests)\/.*\.test\.[cm]?[jt]s$/.test(path));
+      if(!testFiles.length)throw Error('No unit tests for RED validation');
+      await git(tree,['checkout',req.sha,'--',...testFiles]);
+    }
     const filesForCandidate=(await git(tree,['ls-files','-z'])).split('\0').filter(Boolean);
     const {tests,log}=await testCandidate({project:projects[req.repo],tree,files:filesForCandidate,stage:req.action,
       sha:req.sha,base:req.base,name:'jam-check-'+basename(dir),approvedIssues:req.cards.map(card=>card.issue)});
