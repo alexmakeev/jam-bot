@@ -271,3 +271,31 @@ test('evidence-only corrections preserve HEAD and do not permit an empty initial
   assert.equal(await run(),head);assert.equal(await run(),head);
   assert.equal(await git(tree,'rev-list','--count','HEAD'),'1');
 });
+
+test('one shared integration start remains unchanged during assembly and resets for a reduced batch',async()=>{
+  const {roleChecklist}=await import('../src/role-progress.js');
+  const start={identity:'integration-start:batch-a',summary:'Integration checks started for the shared batch #1, #2.'};
+  const initial=roleChecklist('Integrator',[start]);
+  assert.match(initial,/🟨 Pass combined tests/);
+  assert.equal(roleChecklist('Integrator',[start,{identity:'integration:sha-a',summary:'Assembled'}]),initial);
+  const result=[start,{identity:'integration:sha-a',summary:'Assembled'},{identity:'integration-tests:sha-a',summary:'Passed'}];
+  assert.match(roleChecklist('Integrator',result),/✅ Pass combined tests/);
+  const retry=roleChecklist('Integrator',[...result,{identity:'integration-retest:batch-a',summary:'A new test round after excluding #2.'}]);
+  assert.match(retry,/🟨 Pass combined tests/);
+  assert.doesNotMatch(retry,/✅ Pass combined tests/);
+  assert.match(retry,/excluding #2/);
+});
+
+test('repeated incident updates stay with the producing role and retain the sanitized report',async t=>{
+  const {beginDashboard}=await import('../src/work-progress.js');
+  const state=await mkdtemp(join(tmpdir(),'role-incident-board-'));t.after(()=>rm(state,{recursive:true,force:true}));
+  beginDashboard(state,35,'development');
+  recordProgress(state,35,'architect-assigned','Architect started');
+  recordProgress(state,35,'blocked:old','Generic failure');
+  recordProgress(state,35,'blocked:incident','Responsible human requested',{purpose:'review',markdown:'# Sanitized incident'});
+  const db=new DatabaseSync(join(state,'work-progress.sqlite'));
+  try{
+    assert.deepEqual(db.prepare('SELECT DISTINCT owner FROM progress_boards WHERE issue=35').all().map(r=>r.owner),['Architect']);
+    assert.equal(db.prepare('SELECT markdown FROM event_reports').get()?.markdown,'# Sanitized incident');
+  }finally{db.close();}
+});

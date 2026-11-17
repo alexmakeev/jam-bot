@@ -1,3 +1,5 @@
+import {integrationEvidence,type IntegrationEvidenceCard} from './integration-evidence.js';
+import {publishRoleFailure} from './role-failure.js';
 import {specName,digestOf} from './specification-upload.js';
 import {reconcileIssueArtifacts} from './issue-artifact-recovery.js';
 import {refreshProjectValues} from './project-values.js';
@@ -342,7 +344,14 @@ export async function runDeveloperProfile(p:ProfileRun) {
     const journal=new Journal(join(state,'intake.sqlite'));
     try {new BranchValidation(journal.db).submit({issue,branch:project.branch,sha},elapsedMs);journal.checkpointSpecification(issue,'ready');}
     finally {journal.db.close();}
-  }catch(err){if(!signal.aborted){recordProgress(state,issue,'blocked:'+fingerprint(String(err)),err instanceof ConsultationEscalation?err.message:'JAM paused this work card after an incomplete stage. The checkpoint is retained for diagnosis.');await setCardProgress(topic,issue,'blocked').catch(()=>{});}throw err;}
+  }catch(err){
+    if(!signal.aborted){
+      if(err instanceof ConsultationEscalation)recordProgress(state,issue,'blocked:'+fingerprint(String(err)),err.message);
+      else await publishRoleFailure({state,topic,issue,error:err}).catch(()=>console.error('Role incident publication is pending',topic.repository,issue));
+      await setCardProgress(topic,issue,'blocked').catch(()=>{});
+    }
+    throw err;
+  }
 }
 
 export async function validateReviewedHead(runtime:TopicRuntime,head:ReadyBranch,signal:AbortSignal) {
@@ -397,6 +406,8 @@ async function diagnoseIntegration(runtime:TopicRuntime,entries:(Ready&ReadyBran
         !item.markdown.trim() || Buffer.byteLength(item.markdown)>16000)throw Error('Invalid diagnosis attribution');
     seen.add(item.issue);
   }
+  const retryIssues=data.findings.length?entries.filter(entry=>!seen.has(entry.issue)).map(entry=>entry.issue):[];
+  await atomicJson(join(dir,'retry-issues.json'),{retryIssues,excludedIssues:[...seen]});
   for(const item of data.findings){
     const card=cards.find(c=>c.issue===item.issue)!;
     const authorize=()=>validateTaskApproval(topic,card.issue,card.approval);
@@ -412,6 +423,7 @@ async function diagnoseIntegration(runtime:TopicRuntime,entries:(Ready&ReadyBran
     await atomicJson(join(folder,'correction.json'),{project:ready.project,sha:ready.sha,integrationHead:ready.sha,attempt:0,feedback:markdown});
     const restored=journal.db.prepare("UPDATE intake SET workerState='pending',workerReason=NULL,specCheckpoint=? WHERE issue=? AND action='task' AND workerState='complete' AND specCheckpoint='ready'").run(JSON.stringify({...ready.project,correcting:true}),card.issue);
     if(restored.changes)recordProgress(state,card.issue,'rework:'+sha,'Worker received the integration fix specification for revision `'+ready.sha+'`. A new implementation and review are pending.');
+    recordProgress(state,card.issue,'integration-rework:'+batchId,'Integration found a defect in this card and returned it to the worker. The attached correction specification describes the required changes.');
   }
 }
 
@@ -430,10 +442,15 @@ export async function integrateReady(runtime:TopicRuntime,signal:AbortSignal,que
       if(ready.sha!==head.sha || ready.project.branch!==head.branch)throw Error('Recorded branch mismatch');
       return {...head,...ready};
     }));
+    const artifacts=new Map<number,Awaited<ReturnType<typeof reconcileIssueArtifacts>>>();
     for(const e of entries){
       await reconcileProgress(state,topic,e.issue);
-      await reconcileIssueArtifacts(state,topic,e.issue);
+      artifacts.set(e.issue,await reconcileIssueArtifacts(state,topic,e.issue));
     }
+    const started='integration-start:'+batch.id;
+    const members=entries.map(entry=>'#'+entry.issue).join(', ');
+    for(const e of entries)recordProgress(state,e.issue,started,'Integration checks started for the shared batch '+members+'.');
+    for(const e of entries)await confirmedProgress(state,topic,e.issue,started);
     const seed=await exchange(store,{action:'seed',repo:topic.repository},signal);
     let candidate=await readJson<{sha:string;base:string;expected:string}>(marker).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;});
     const publishReceipt=join(dir,'published.json');
@@ -479,9 +496,13 @@ export async function integrateReady(runtime:TopicRuntime,signal:AbortSignal,que
       for(const e of entries)recordProgress(state,e.issue,'integration-tests:'+candidate.sha,'Validation passed for `'+candidate.sha+'`. The integrator now reviews this candidate.',{purpose:'tests',markdown:'# Integration validation\n\nCandidate `'+candidate.sha+'`\n\n'+tested.log});
       const review=await mandatoryReview({role:'integrator',state,cwd:topic.cwd,session:journal.lead().id,issue:entries[0]!.issue,issues:entries.map(e=>e.issue),revision:candidate.sha,signal,
         input:'You are deciding whether to publish this exact tested candidate to dev. Evaluate implementation, test outcomes, and proposed integration. Return PASS or FAIL on the first line, followed by reasons. After approval the publisher reruns the suite, creates a PR targeting dev for the exact candidate, performs the guarded fast-forward dev push, and verifies GitHub reports that PR merged. PR and merge receipts are publication results, not prerequisites for this approval. Closing the issue and cleanup also follow publication.\n'+
-          JSON.stringify({base:candidate.base, devBefore:candidate.expected || null, candidate:candidate.sha, featureHeads:entries.map(e=>({issue:e.issue,branch:e.branch,sha:e.sha})), candidateStatus:await git(candidateTree,'status','--porcelain'), commits:await git(candidateTree,'log','--oneline','--stat',candidate.base+'..'+candidate.sha)})+'\n'+
-          JSON.stringify(await Promise.all(entries.map(async e=>({issue:e.issue,task:e.card.task,spec:e.spec,workerValidation:await readJson(join(directory(state,e.issue),'reviewed-head-tests.json')),baseline:await readJson(join(directory(state,e.issue),'tdd-baseline.json')),red:await readJson(join(directory(state,e.issue),'tdd-red.json')),implementationConsultations:await readJson(join(directory(state,e.issue),'consultations','implementation.json')),workerReview:await readJson(join(directory(state,e.issue),'consultant.json'))}))))+'\n'+
-          diff+'\n'+tested.log},async reason=>{
+          integrationEvidence({candidate:JSON.stringify({base:candidate.base,devBefore:candidate.expected||null,candidate:candidate.sha,featureHeads:entries.map(e=>({issue:e.issue,branch:e.branch,sha:e.sha})),candidateStatus:await git(candidateTree,'status','--porcelain')}),commits:await git(candidateTree,'log','--oneline','--stat',candidate.base+'..'+candidate.sha),diff,combinedChecks:tested.log??''},
+            await Promise.all(entries.map(async e=>({issue:e.issue,sha:e.sha,task:e.card.task,spec:e.spec,artifacts:artifacts.get(e.issue),
+              workerValidation:await readJson<IntegrationEvidenceCard['workerValidation']>(join(directory(state,e.issue),'reviewed-head-tests.json')),
+              baseline:await readJson<IntegrationEvidenceCard['baseline']>(join(directory(state,e.issue),'tdd-baseline.json')),
+              red:await readJson<IntegrationEvidenceCard['red']>(join(directory(state,e.issue),'tdd-red.json')),
+              implementationConsultations:await readJson<IntegrationEvidenceCard['implementationConsultations']>(join(directory(state,e.issue),'consultations','implementation.json')),
+              workerReview:await readJson<IntegrationEvidenceCard['workerReview']>(join(directory(state,e.issue),'consultant.json'))}))))},async reason=>{
         prepareReviewNotices(journal.db);
         for(const entry of entries)queueReviewNotice(journal.db,entry.issue,candidate!.sha,'integrator',reason);
       });
@@ -550,8 +571,16 @@ export async function integrateReady(runtime:TopicRuntime,signal:AbortSignal,que
       await delay(10000,undefined,{signal}).catch(()=>{});
       return;
     }
-    queue.finish(batch.id,'failed');
-    for(const e of batch.entries)await setCardProgress(topic,e.issue,'blocked').catch(()=>{});
+    const retry:{retryIssues:number[];excludedIssues:number[]}=await readJson<{retryIssues:number[];excludedIssues:number[]}>(join(dir,'retry-issues.json')).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;return {retryIssues:[],excludedIssues:[]};});
+    queue.finish(batch.id,'failed',{retryIssues:retry.retryIssues});
+    for(const e of batch.entries){
+      if(retry.retryIssues.includes(e.issue)){
+        const key='integration-retest:'+batch.id;
+        recordProgress(state,e.issue,key,'A new integration test round is queued after excluding '+retry.excludedIssues.map(issue=>'#'+issue).join(', ')+'. The remaining candidate must pass all checks again.');
+        await confirmedProgress(state,topic,e.issue,key);
+        await setCardProgress(topic,e.issue,'in validation');
+      }else await setCardProgress(topic,e.issue,'blocked').catch(()=>{});
+    }
     console.error('Integration needs review',topic.repository,error);
   }
 }

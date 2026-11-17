@@ -5,10 +5,11 @@ import {observe} from './review-supervisor.js';
 import {atomicJson,readJson} from './storage.js';
 import {runRoleStage,type RoleStage} from './role-harness.js';
 import {fingerprint,recordProgress} from './work-progress.js';
+import {RoleStageFailure,roleStageFailure,type RoleFailureCategory} from './role-failure.js';
 
 type Receipt=Awaited<ReturnType<typeof runRoleStage>>;
 type Nonce=ReturnType<typeof randomUUID>;
-interface Checkpoint {session:string;input:string;challenge:Nonce;startedAt:number;attempt:number;receipt?:Receipt;failure?:string}
+interface Checkpoint {session:string;input:string;challenge:Nonce;startedAt:number;attempt:number;receipt?:Receipt;failure?:string;failureCategory?:RoleFailureCategory;failureDetail?:string}
 
 export async function checkpointRole(job:RoleStage,next:string,run=runRoleStage,recover=observe,emitResult=true){
   const digest=fingerprint(job.input);
@@ -17,7 +18,10 @@ export async function checkpointRole(job:RoleStage,next:string,run=runRoleStage,
   const saved=await readJson<Checkpoint>(path).catch((err:NodeJS.ErrnoException)=>{if(err.code!=='ENOENT')throw err;});
   if(saved && (saved.session!==job.session || saved.input!==job.input))throw Error('Role checkpoint differs from active assignment');
   const checkpoint:Checkpoint=saved??{session:job.session,input:job.input,challenge:randomUUID(),startedAt:Date.now(),attempt:1};
-  if(checkpoint.failure)throw Error(checkpoint.failure);
+  if(checkpoint.failure){
+    const failure=roleStageFailure(job.role,checkpoint.failureDetail??checkpoint.failure);
+    throw new RoleStageFailure(job.role,checkpoint.failureCategory??failure.category,failure.localDetail);
+  }
   if(!saved)await atomicJson(path,checkpoint);
   const version=digest.slice(0,12);
   let receipt=checkpoint.receipt;
@@ -28,16 +32,17 @@ export async function checkpointRole(job:RoleStage,next:string,run=runRoleStage,
     if(reconcile){
       const observed=await recover(job,checkpoint);
       if(observed.refused){
-        checkpoint.failure='Original '+job.role+' refused '+name+'; architect diagnosis is required';
-        await atomicJson(path,checkpoint);throw Error(checkpoint.failure);
+        const failure=roleStageFailure(job.role,'Original '+job.role+' refused '+name+'; architect diagnosis is required');
+        checkpoint.failure=failure.message;checkpoint.failureCategory=failure.category;checkpoint.failureDetail=failure.localDetail;
+        await atomicJson(path,checkpoint);throw failure;
       }
       if(observed.receipt){receipt=observed.receipt;break;}
       if(observed.live){
         const minutes=Number(process.env.JAM_NATIVE_STAGE_TIMEOUT_MINUTES??15);
-        if(Date.now()-checkpoint.startedAt>minutes*60000+30000)throw Error('Original '+job.role+' may still be active; reconcile '+name);
+        if(Date.now()-checkpoint.startedAt>minutes*60000+30000)throw roleStageFailure(job.role,'Original '+job.role+' may still be active; reconcile '+name);
         await delay(1000,undefined,{signal:job.signal});continue;
       }
-      if(checkpoint.attempt>=2)throw Error('No verified '+job.role+' result after bounded recovery');
+      if(checkpoint.attempt>=2)throw roleStageFailure(job.role,'No verified '+job.role+' result after bounded recovery');
       checkpoint.attempt++;checkpoint.startedAt=Date.now();checkpoint.challenge=randomUUID();
       await atomicJson(path,checkpoint);
       name=job.role+'-'+job.issue+'-'+checkpoint.challenge.slice(0,6);
@@ -49,8 +54,9 @@ export async function checkpointRole(job:RoleStage,next:string,run=runRoleStage,
     catch(error){
       if(job.signal.aborted)throw error;
       if(error instanceof Error && /receipt timed out|runtime exited before verified receipt/.test(error.message)){reconcile=true;continue;}
-      checkpoint.failure=error instanceof Error && /refused|declined/.test(error.message)?'Native '+job.role+' refused or declined '+name:'Native '+job.role+' could not verify the assigned output';
-      await atomicJson(path,checkpoint);throw Error(checkpoint.failure);
+      const failure=roleStageFailure(job.role,error);
+      checkpoint.failure=failure.message;checkpoint.failureCategory=failure.category;checkpoint.failureDetail=failure.localDetail;
+      await atomicJson(path,checkpoint);throw failure;
     }
   }
   if(!checkpoint.receipt)await atomicJson(path,{...checkpoint,receipt});

@@ -44,10 +44,13 @@ export async function stageRefused(log:string,session:string,startedAt:number) {
     const {bytesRead}=await file.read(buffer,0,buffer.length,start);
     const lines=buffer.subarray(0,bytesRead).toString('utf8').split('\n');
     if(start)lines.shift();
-    lines.pop();
-    return lines.some(line=>{
+    return lines.some((line,index)=>{
       if(!line.includes('"isApiErrorMessage":true'))return false;
-      const row=JSON.parse(line);
+      let row;
+      try{row=JSON.parse(line);}catch(error){
+        if(index===lines.length-1)return false;
+        throw error;
+      }
       return row.sessionId===session && row.type==='assistant' && row.isApiErrorMessage===true &&
         row.message?.stop_reason==='refusal' && Date.parse(row.timestamp)>=startedAt;
     });

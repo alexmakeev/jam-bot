@@ -25,7 +25,7 @@ export function roleChecklist(owner:Owner,history:Update[]){
   }else if(owner==='Worker'){
     tasks.push(['Implement the approved scope',has('implementation:') || has('worker-revision:'),has('developer-') || has('rework:') || has('worker-correction:')]);
   }else{
-    tasks.push(['Assemble the candidate',has('integration:')]);
+    if(!has('integration-start:'))tasks.push(['Assemble the candidate',has('integration:')]);
   }
   const phase={Designer:'design',Architect:'architecture',Worker:'implementation',Integrator:'diagnosis'}[owner];
   const prefix=phase+'-adviser:';
@@ -41,15 +41,15 @@ export function roleChecklist(owner:Owner,history:Update[]){
   if(owner==='Architect' && (!has('scope-plan:') || has('architecture:')))tasks.push(['Publish the specification',has('spec-ready:'),has('architecture:') && advisers.size>0 && [...advisers.values()].every(a=>a.status==='ok')]);
   if(owner==='Worker')tasks.push(['Pass review and branch validation',has('validated:'),has('consultant:') || has('validation:')]);
   if(owner==='Integrator'){
-    const lastCandidate=history.map(row=>row.identity.startsWith('integration:')).lastIndexOf(true);
+    const lastCandidate=history.map(row=>/^(?:integration:|integration-start:|integration-retest:)/.test(row.identity)).lastIndexOf(true);
     const round=history.slice(Math.max(lastCandidate,0));
-    tasks.push(['Pass combined tests',round.some(row=>row.identity.startsWith('integration-tests:')),round.some(row=>row.identity.startsWith('integration:'))],
+    tasks.push(['Pass combined tests',round.some(row=>row.identity.startsWith('integration-tests:')),round.some(row=>/^(?:integration:|integration-start:|integration-retest:)/.test(row.identity))],
       ['Approve the tested revision',round.some(row=>row.identity.startsWith('integration-review:')&&row.summary.includes('returned PASS')),round.some(row=>row.identity.startsWith('integration-tests:')) && !round.some(row=>row.identity.startsWith('integration-review:'))],
       ['Publish the verified revision to dev',has('integrated:'),round.some(row=>row.identity.startsWith('integration-review:') && row.summary.includes('returned PASS'))]);
   }
   const paused=current.at(-1)?.identity.startsWith('blocked:');
   const lines=tasks.map(([label,done,active,error])=>error?'❌ '+label+'\n    Error: '+error:(done?'✅':active && !paused?'🟨':'◻️')+' '+label);
-  const milestone=current.filter(row=>/^(?:spec-ready:|scope-plan:|validated:|integrated:|fix-spec:|await-site:|site-failed:|material-decision:|blocked:|worker-correction:|rework:)/.test(row.identity)).at(-1);
+  const milestone=current.filter(row=>/^(?:spec-ready:|scope-plan:|validated:|integrated:|integration-start:|integration-retest:|integration-rework:|fix-spec:|await-site:|site-failed:|material-decision:|blocked:|worker-correction:|rework:)/.test(row.identity)).at(-1);
   const status=milestone?.summary??'';
   return '**🍯 JAM '+owner+': '+({Designer:'design brief',Architect:'architecture and reviews',Worker:'implementation and validation',Integrator:'integration and publication'}[owner])+'**\n\n'+statusBlock(lines)+(status?'\n\n'+status:'');
 

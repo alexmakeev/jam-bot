@@ -70,8 +70,8 @@ export function recordProgress(state:string,issue:number,identity:string,summary
     };
     if(routine && board.kind==='development/roles'){
       // Internal reports remain in the producing stage's local checkpoint.
-      if(!/^(?:validated:|integrated:|scope-plan:|designer-.*-received$|fix-spec:)/.test(identity))report=undefined;
-      const previous=(identity.startsWith('blocked:')||identity.startsWith('material-decision:'))?db.prepare('SELECT identity FROM role_updates WHERE issue=? ORDER BY rowid DESC LIMIT 1').get(issue):undefined;
+      if(!/^(?:blocked:|validated:|integrated:|scope-plan:|designer-.*-received$|fix-spec:)/.test(identity))report=undefined;
+      const previous=(identity.startsWith('blocked:')||identity.startsWith('material-decision:'))?db.prepare("SELECT identity FROM role_updates WHERE issue=? AND identity NOT LIKE 'blocked:%' AND identity NOT LIKE 'material-decision:%' ORDER BY rowid DESC LIMIT 1").get(issue):undefined;
       const owner=progressOwner(previous?String(previous.identity):identity);
       const boardKey=segment(owner,fingerprint('work-card-role:'+owner));
       changed=Boolean(db.prepare('INSERT OR IGNORE INTO role_updates VALUES(?,?,?,?,?)').run(issue,key,boardKey,identity,summary).changes);
