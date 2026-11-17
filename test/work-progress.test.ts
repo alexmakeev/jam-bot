@@ -261,3 +261,13 @@ test('internal teammate messages retain their local checkpoint without a GitHub 
   assert.match(String(events()[0]?.body),/✅ Publish the specification/);
   assert.equal(db.prepare('SELECT COUNT(*) n FROM event_links').get()!.n,1);
 });
+
+test('evidence-only corrections preserve HEAD and do not permit an empty initial implementation',async t=>{
+  const state=await mkdtemp(join(tmpdir(),'evidence-only-'));t.after(()=>rm(state,{recursive:true,force:true}));
+  const tree=join(state,'repo');await git(state,'init','repo');await writeFile(join(tree,'file'),'original');
+  await git(tree,'add','file');await git(tree,'commit','-m','base');const head=await git(tree,'rev-parse','HEAD');
+  await assert.rejects(implementationCommit(tree,join(state,'initial.json'),1,['file'],async()=>'{"files":[]}',async()=>{}),/files array/);
+  const run=()=>implementationCommit(tree,join(state,'correction.json'),1,['file'],async()=>'{"files":[]}',async()=>{},true);
+  assert.equal(await run(),head);assert.equal(await run(),head);
+  assert.equal(await git(tree,'rev-list','--count','HEAD'),'1');
+});

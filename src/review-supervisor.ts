@@ -13,7 +13,7 @@ type Challenge=ReturnType<typeof randomUUID>;
 type Receipt=Awaited<ReturnType<typeof runRoleStage>>;
 interface Attempt {challenge:Challenge;startedAt:number;endedAt?:number}
 interface Checkpoint {session:string;issues:number[];revision:string;role:ReviewRole;input:string;attempts:Attempt[];receipt?:Receipt;failure?:string}
-export interface MandatoryReview extends RoleStage {role:ReviewRole;issues:number[];revision:string}
+export interface MandatoryReview extends RoleStage {role:ReviewRole;issues:number[];revision:string;evidenceRound?:number}
 const refusal='The native model refused the mandatory review';
 const unavailable='The mandatory reviewer returned no verifiable result after bounded recovery';
 const uncertain='The previous mandatory reviewer may still be active';
@@ -40,7 +40,8 @@ export async function observe(job:RoleStage,attempt:Attempt) {
 export async function mandatoryReview(job:MandatoryReview,escalate:(reason:string)=>Promise<void>,
   deps:{run:typeof runRoleStage;observe:typeof observe;pause:()=>Promise<void>;graceMs:number}={run:runRoleStage,observe,pause:()=>delay(1000,undefined,{signal:job.signal}),graceMs:30000}):Promise<Receipt> {
   if(!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(job.revision) || !job.issues.includes(job.issue) || job.issues.some(i=>!Number.isSafeInteger(i)||i<1))throw Error('Invalid mandatory review identity');
-  const path=join(job.state,'mandatory-reviews',job.role+'-'+job.issues.join('-')+'-'+job.revision+'.json');
+  if(job.evidenceRound!==undefined&&(!Number.isSafeInteger(job.evidenceRound)||job.evidenceRound<0))throw Error('Invalid review evidence round');
+  const path=join(job.state,'mandatory-reviews',job.role+'-'+job.issues.join('-')+'-'+job.revision+(job.evidenceRound?'-evidence-'+job.evidenceRound:'')+'.json');
   let saved=await readJson<Checkpoint>(path).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;});
   saved??={session:job.session,revision:job.revision,issues:job.issues,role:job.role,input:job.input,attempts:[]};
   if(saved.session!==job.session)throw Error('Mandatory review lead identity changed');

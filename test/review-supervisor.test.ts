@@ -57,3 +57,13 @@ test('authenticated issue notice survives ambiguous creation, pagination and spo
   assert.equal(await publishReviewNotice(api,42,notice,'owner'),200);
   assert.equal(posts,1);assert.match(history.at(-1)!.body,/@owner.*required PASS is missing/);
 });
+
+test('an explicit evidence correction gets a fresh review of the same code revision and replays once',async t=>{
+  const job=await project(t);let calls=0;
+  const deps={run:async()=>{calls++;return {...answer,output:calls===1?'FAIL\nMissing test metadata.':'PASS\nEvidence complete.'};},observe:async()=>({}),graceMs:0,pause:noop};
+  assert.match((await mandatoryReview(job,noop,deps)).output,/^FAIL/);
+  const corrected={...job,input:'same code with complete test metadata',evidenceRound:1};
+  assert.match((await mandatoryReview(corrected,noop,deps)).output,/^PASS/);
+  assert.match((await mandatoryReview(corrected,noop,deps)).output,/^PASS/);
+  assert.equal(calls,2);
+});

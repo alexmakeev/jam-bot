@@ -5,13 +5,21 @@ import {git} from './profile-checkout.js';
 import {finishRoleFiles,planRoleFiles} from './role-files.js';
 interface Intent {parent:string;files:Awaited<ReturnType<typeof planRoleFiles>>;tree?:string;sha?:string}
 
-export async function implementationCommit(tree:string,path:string,issue:number,scope:string[],propose:()=>Promise<string>,authorize:()=>Promise<void>){
+export async function implementationCommit(tree:string,path:string,issue:number,scope:string[],propose:()=>Promise<string>,authorize:()=>Promise<void>,allowNoChanges=false){
   let intent=await readJson<Intent>(path).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;});
   tree=await realpath(tree);
   const head=await git(tree,'rev-parse','HEAD');
   if(!intent){
     if(await git(tree,'status','--porcelain'))throw Error('Unexpected edits before developer handoff');
     const output=await propose();
+    if(allowNoChanges){
+      const result=JSON.parse(output);
+      if(Array.isArray(result.files)&&result.files.length===0){
+        await authorize();
+        await atomicJson(path,{parent:head,files:[],sha:head});
+        return head;
+      }
+    }
     for(const file of scope){
       let parent=tree;
       for(const part of file.split('/').slice(0,-1)){
@@ -23,6 +31,10 @@ export async function implementationCommit(tree:string,path:string,issue:number,
     await atomicJson(path,intent);
   }
   await authorize();
+  if(!intent.files.length){
+    if(!allowNoChanges||head!==intent.parent||await git(tree,'status','--porcelain'))throw Error('Invalid evidence-only correction checkpoint');
+    return head;
+  }
   if(intent.files.some(f=>!scope.includes(f.path)||f.target!==join(tree,f.path)))throw Error('Recorded work differs from approved scope');
   if(head!==intent.parent){
     if((intent.sha && head!==intent.sha) || !intent.tree || await git(tree,'rev-parse','HEAD^')!==intent.parent ||
