@@ -175,7 +175,7 @@ test('route before approval, verify actor and author, ignore locks, deduplicate 
 
 test('a text-producing subagent cannot satisfy native teammate evidence',async t=>{
   const {teammateReceipt,mailboxReceipt}=await import('../src/native-teammate.js');
-  const {mkdir,writeFile,appendFile}=await import('node:fs/promises');
+  const {mkdir,writeFile,appendFile,readFile}=await import('node:fs/promises');
   const root=await mkdtemp(join(tmpdir(),'jam-team-evidence-'));
   t.after(()=>rm(root,{recursive:true,force:true}));
   const session=randomUUID(), name='developer-test', cwd='/state/leo', handle='native-handle';
@@ -195,6 +195,12 @@ test('a text-producing subagent cannot satisfy native teammate evidence',async t
   assert.equal(await teammateReceipt(root,cwd,session,name,challenge,answer),undefined);
   await writeFile(worker,msg('assistant',[{type:'tool_use',name:'SendMessage',input:{to:'main',message:answer}}]));
   assert.equal((await teammateReceipt(root,cwd,session,name,challenge,answer))?.developer,handle);
+  const completeLog=await readFile(prefix+'.jsonl','utf8');
+  await writeFile(prefix+'.jsonl',completeLog.trimEnd());
+  assert.equal((await teammateReceipt(root,cwd,session,name,challenge,answer))?.developer,handle);
+  await appendFile(prefix+'.jsonl','\n{"type":');
+  assert.equal((await teammateReceipt(root,cwd,session,name,challenge,answer))?.developer,handle);
+  await writeFile(prefix+'.jsonl',completeLog);
   const markdown='# Verified spec\n\nKeep the final newline.\n';
   const roleAnswer=challenge+'\n'+markdown;
   await writeFile(worker,msg('assistant',[{type:'tool_use',name:'SendMessage',input:{to:'main',message:roleAnswer}}]));
