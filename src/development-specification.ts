@@ -41,7 +41,7 @@ const recipeSchema = z
 	.strictObject({
 		version: z.literal(1),
 		issue: z.int().positive(),
-		recipe: z.enum(["node-strip", "typescript-build"]),
+		recipe: z.enum(["node-strip", "typescript-build", "typescript-compiled"]),
 		identity: hash,
 		checks: z.array(check).min(4).max(12),
 	})

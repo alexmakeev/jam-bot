@@ -5,15 +5,23 @@ import {mkdir,writeFile,readFile,mkdtemp,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {homedir,tmpdir} from 'node:os';
 import {codeFile} from './static-quality.mjs';
+import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
 
 const run=promisify(execFile);
-const recipes=new Set(['node-strip','typescript-build']);
+const recipes=new Set(['node-strip','typescript-build','typescript-compiled']);
+const compiledRecipe='typescript-compiled';
+const ownRepository='alexmakeev/jam-bot';
+const ownRecipeImage='sha256:af6518a66aeaab0353568447cc00ecff09838cf969b22d1947ed5a9a2478f3c9';
 const safeRepo=/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
 
 export function projectRecipes(config) {
   const projects=config.projects ?? Object.fromEntries(config.repositories.map(repo=>[repo,{image:config.image,recipe:'node-strip'}]));
   for (const [repo,project] of Object.entries(projects)) {
+    if (project?.recipe===compiledRecipe && (repo!==ownRepository || project.image!==ownRecipeImage ||
+        project.qualityGate!=='development-static-v1' || project.releaseProfile?.repoId!==1456661011 ||
+        project.calculatorBrowserImage || project.sumBrowserImage || project.autoDeployCalculator || project.autoDeploySum))
+      throw Error('Invalid disconnected own-repository recipe scope');
     if(project?.clearTotalsCard!==undefined && (!project.sumBrowserImage || !Number.isSafeInteger(project.clearTotalsCard) || project.clearTotalsCard<1))throw Error('Invalid clear totals work card');
     if(project?.sumBrowserImage && (project.recipe!=='node-strip'||!/^sha256:[a-f0-9]{64}$/.test(project.sumBrowserImage)||!Number.isSafeInteger(project.runningTotalsCard)||project.runningTotalsCard<1))throw Error('Invalid sum page recipe');
     if (project?.calculatorSpecCards && (!project.calculatorBrowserImage || Object.entries(project.calculatorSpecCards).some(([check,issue])=>!['dragons','reset','staticSvg'].includes(check) || !Number.isSafeInteger(issue) || issue<1))) throw Error('Invalid calculator acceptance mapping');
@@ -53,6 +61,21 @@ if [ "$JAM_STATIC_GATE" = 1 ]; then node /gate/static-quality.mjs; fi
 rm -rf -- dist
 /opt/jam-bot/node_modules/.bin/tsc -p tsconfig.json
 exec node --experimental-strip-types --test --test-reporter=/gate/unit-reporter.mjs --test-concurrency=1 "$@"
+`;
+
+const compileAndTest = `
+set -eu
+cp -R /code/. /workspace/
+cd /workspace
+node --version
+cmp -s package-lock.json /opt/jam-own/package-lock.json
+test ! -e dist && test ! -L dist
+test ! -e node_modules && test ! -L node_modules
+ln -s /opt/jam-own/node_modules node_modules
+node /gate/static-quality.mjs
+/opt/jam-bot/node_modules/.bin/tsc -p tsconfig.json
+node --test --test-reporter=/gate/unit-reporter.mjs --test-concurrency=1 "$@"
+if [ "$JAM_VALIDATION_STAGE" != test-red ]; then node /gate/own-management-smoke.mjs; fi
 `;
 
 async function calculatorPreview({tree,sha,image,name,checks,site,base}) {
@@ -105,13 +128,21 @@ async function runBrowser({html,source,server,baseline,sha,image,name,checks,sit
 }
 
 export async function testCandidate({project,tree,files,sha,base,name,approvedIssues=[],stage}) {
-  const build=project.recipe==='typescript-build';
+  const compiled=project.recipe===compiledRecipe;
+  const build=compiled||project.recipe==='typescript-build';
+  if(compiled&&(project.image!==ownRecipeImage||project.qualityGate!=='development-static-v1'||
+      !['test-head','test-red','test','publish'].includes(stage)))throw Error('Invalid compiled validation inputs');
   if (!recipes.has(project.recipe)) throw Error('Unknown validation recipe');
   if (build && !files.includes('tsconfig.json')) throw Error('Missing tsconfig.json for typescript-build recipe');
-  const matcher=build ? /^test\/.*\.test\.[cm]?[jt]s$/ : /^tests\/.*\.test\.[cm]?[jt]s$/;
-  const tests=files.filter(file=>matcher.test(file));
+  const matcher=compiled ? /^test\/[a-zA-Z0-9_.-]+\.test\.ts$/ : build ? /^test\/.*\.test\.[cm]?[jt]s$/ : /^tests\/.*\.test\.[cm]?[jt]s$/;
+  const selection=compiled&&stage==='test-red'
+    ? (await run('git',['diff','--name-only','--no-renames','-z',base,'--'],{cwd:tree})).stdout.split('\0')
+    : files;
+  const tests=selection.filter(file=>files.includes(file)&&matcher.test(file)).sort();
   if (!tests.length) throw Error('No tracked tests found for '+project.recipe);
-  const command=build ? ['sh','-c',buildAndTest,'jam-build',...tests] :
+  const executed=compiled ? tests.map(path=>'dist/'+path.replace(/\.ts$/,'.js')) : tests;
+  const unitCommand=(compiled?'node':'node --experimental-strip-types')+' --test --test-reporter=/gate/unit-reporter.mjs --test-concurrency=1 '+executed.join(' ');
+  const command=compiled ? ['sh','-c',compileAndTest,'jam-compiled',...executed] : build ? ['sh','-c',buildAndTest,'jam-build',...tests] :
     ['sh','-c','set -eu; node --version; if [ "$JAM_STATIC_GATE" = 1 ]; then node /gate/static-quality.mjs; fi; exec node --experimental-strip-types --test --test-reporter=/gate/unit-reporter.mjs --test-concurrency=1 "$@"','jam-test',...tests];
   const [entry,...argv]=command;
   const quality=await mkdtemp(join(tmpdir(),'jam-quality-'));
@@ -133,25 +164,27 @@ export async function testCandidate({project,tree,files,sha,base,name,approvedIs
   const args=['run','--rm','--name',name,'--network','none','--read-only','--cap-drop','ALL','--user','1000:1000',
     '--label','jam-bot.validation='+name,
     '--env','JAM_STATIC_GATE='+(project.qualityGate==='development-static-v1'?'1':'0'),
-    '--security-opt','no-new-privileges','--pids-limit','128','--memory','512m','--cpus','1','--tmpfs','/tmp:rw,noexec,nosuid,size=32m',
+    '--security-opt','no-new-privileges','--pids-limit','128','--memory',compiled?'1536m':'512m','--cpus','1','--tmpfs',compiled?'/tmp:rw,nosuid,nodev,size=96m':'/tmp:rw,noexec,nosuid,size=32m',
     '--mount','type=bind,src='+join(quality,'unit-reporter.mjs')+',dst=/gate/unit-reporter.mjs,readonly',
     '--mount','type=bind,src='+join(quality,'static-quality.mjs')+',dst=/gate/static-quality.mjs,readonly',
     '--mount','type=bind,src='+join(quality,'input.json')+',dst=/gate/input.json,readonly',
     '--mount','type=bind,src='+tree+',dst=/code,readonly','-w','/code'];
-  if (build) args.push('--tmpfs','/workspace:rw,nosuid,nodev,size=96m,uid=1000,gid=1000,mode=700');
+  if(compiled)args.push('--pull','never','--env','HOME=/tmp','--env','JAM_VALIDATION_STAGE='+stage,
+    '--mount','type=bind,src='+fileURLToPath(new URL('./own-management-smoke.mjs',import.meta.url))+',dst=/gate/own-management-smoke.mjs,readonly');
+  if (build) args.push('--tmpfs','/workspace:rw,nosuid,nodev,size='+(compiled?'160m':'96m')+',uid=1000,gid=1000,mode=700');
   try {
     const {stdout,stderr}=await run('docker',[...args,'--entrypoint',entry,project.image,...argv],{timeout:90000,maxBuffer:1024*1024});
     const log='Recipe: '+project.recipe+'\nImage: '+project.image+'\nBuild: '+(build?'tsc -p tsconfig.json':'native Node type stripping')+
-      '\nCommand: node --experimental-strip-types --test --test-reporter=/gate/unit-reporter.mjs --test-concurrency=1 '+tests.join(' ')+'\nExit code: 0\nRevision: '+sha;
-    const qualityEvidence=stdout.split('\n').filter(line=>/^(?:Quality (?:gate|results)|Unit results): /.test(line)).join('\n');
-    const diagnostic=stdout.split('\n').filter(line=>!/^(?:Quality (?:gate|results)|Unit results): /.test(line)).join('\n')+(stderr?'\n'+stderr:'');
+      '\nCommand: '+unitCommand+'\nExit code: 0\nRevision: '+sha;
+    const qualityEvidence=stdout.split('\n').filter(line=>/^(?:Quality (?:gate|results)|Unit results|Management smoke): /.test(line)).join('\n');
+    const diagnostic=stdout.split('\n').filter(line=>!/^(?:Quality (?:gate|results)|Unit results|Management smoke): /.test(line)).join('\n')+(stderr?'\n'+stderr:'');
     const {image:browserImage,site,checks}=selectedBrowserChecks(project,approvedIssues);
     const preview=['test-head','test-red'].includes(stage)?'Browser acceptance: pending integrator candidate.':browserImage ? await calculatorPreview({tree,sha,base,image:browserImage,name,checks,site}) : '';
     return {tests,log:log+'\n'+qualityEvidence+'\n'+(diagnostic.length>5000 ? diagnostic.slice(0,400)+'\n…\n'+diagnostic.slice(-4600) : diagnostic)+'\n'+(browserImage&& !['test-head','test-red'].includes(stage)?'Browser recipe: calculator Chromium acceptance\nBrowser image: '+browserImage+'\nBrowser revision: '+sha+'\n':'')+preview};
   } catch (error) {
-    const header='Recipe: '+project.recipe+'\nImage: '+project.image+'\nBuild: '+(build?'tsc -p tsconfig.json':'native Node type stripping')+'\nCommand: node --experimental-strip-types --test --test-reporter=/gate/unit-reporter.mjs --test-concurrency=1 '+tests.join(' ')+'\nExit code: '+(error.code??'unknown')+'\nRevision: '+sha+'\nProduction baseline: '+base+'\n';
-    const qualityEvidence=(error.stdout??'').split('\n').filter(line=>/^(?:Quality (?:gate|results)|Unit results): /.test(line)).join('\n');
-    throw Error('Validation failed for '+project.recipe+'\n'+header+[(error.stdout??'').split('\n').filter(line=>!/^(?:Quality (?:gate|results)|Unit results): /.test(line)).join('\n'),error.stderr,(!error.stdout && !error.stderr)?error.message:'',error.killed?'Timed out':''].filter(Boolean).join('\n').slice(-8000)+'\n'+qualityEvidence);
+    const header='Recipe: '+project.recipe+'\nImage: '+project.image+'\nBuild: '+(build?'tsc -p tsconfig.json':'native Node type stripping')+'\nCommand: '+unitCommand+'\nExit code: '+(error.code??'unknown')+'\nRevision: '+sha+'\nProduction baseline: '+base+'\n';
+    const qualityEvidence=(error.stdout??'').split('\n').filter(line=>/^(?:Quality (?:gate|results)|Unit results|Management smoke): /.test(line)).join('\n');
+    throw Error('Validation failed for '+project.recipe+'\n'+header+[(error.stdout??'').split('\n').filter(line=>!/^(?:Quality (?:gate|results)|Unit results|Management smoke): /.test(line)).join('\n'),error.stderr,(!error.stdout && !error.stderr)?error.message:'',error.killed?'Timed out':''].filter(Boolean).join('\n').slice(-8000)+'\n'+qualityEvidence);
   } finally { await run('docker',['rm','-f',name]).catch(()=>{});await rm(quality,{recursive:true,force:true}); }
 }
 

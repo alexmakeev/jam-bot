@@ -137,3 +137,21 @@ test("a projected Development recipe exposes only the actual phase and issue-sel
 		undefined,
 	);
 });
+
+test("own compiled validation is scoped to its repository identity and offline image", () => {
+	const profile = {
+		recipe: "typescript-compiled",
+		image: "sha256:af6518a66aeaab0353568447cc00ecff09838cf969b22d1947ed5a9a2478f3c9",
+		qualityGate: "development-static-v1",
+		releaseProfile: { repoId: 1456661011 },
+	};
+	const load = (repo, settings) => projectRecipes({ projects: { [repo]: settings } });
+	assert.equal(load("alexmakeev/jam-bot", profile)["alexmakeev/jam-bot"], profile);
+	for (const other of [
+		{ image: "jam-own:latest" },
+		{ qualityGate: undefined },
+		{ releaseProfile: { repoId: 1 } },
+		{ autoDeploySum: true },
+	]) assert.throws(() => load("alexmakeev/jam-bot", { ...profile, ...other }), /recipe scope/);
+	assert.throws(() => load("fixture/other", profile), /recipe scope/);
+});

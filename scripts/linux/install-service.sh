@@ -50,7 +50,7 @@ runtime=$("${compose[@]}" config --format json | "$node_path" -p "JSON.parse(req
   fi' sh "$runtime"
 exchange=$("${compose[@]}" config --format json | "$node_path" -p "JSON.parse(require('fs').readFileSync(0)).services.receiver.volumes.find(v=>v.target==='/var/lib/jam-profile-exchange').source")
 case "$exchange" in *[\"\%\\\$]*|*$'\n'*) echo 'Unsupported publisher exchange path' >&2; exit 1;; esac
-install -m 600 "$root/scripts/macos/validation-recovery.mjs" "$root/scripts/macos/profile-broker.mjs" "$root/scripts/macos/integration-pr.mjs" "$root/scripts/macos/git-scope.mjs" "$root/scripts/macos/profile-recipes.mjs" "$root/scripts/macos/static-quality.mjs" "$root/scripts/macos/unit-reporter.mjs" "$root/scripts/macos/calculator-deployment.mjs" "$root/scripts/macos/consultant-workspace.mjs" "$root/scripts/macos/consultants.mjs" "$root/scripts/macos/antigravity-consultant.mjs" "$base/publisher/"
+install -m 600 "$root/scripts/macos/validation-recovery.mjs" "$root/scripts/macos/profile-broker.mjs" "$root/scripts/macos/integration-pr.mjs" "$root/scripts/macos/git-scope.mjs" "$root/scripts/macos/profile-recipes.mjs" "$root/scripts/macos/own-management-smoke.mjs" "$root/scripts/macos/static-quality.mjs" "$root/scripts/macos/unit-reporter.mjs" "$root/scripts/macos/calculator-deployment.mjs" "$root/scripts/macos/consultant-workspace.mjs" "$root/scripts/macos/consultants.mjs" "$root/scripts/macos/antigravity-consultant.mjs" "$base/publisher/"
 install -m 600 "$root/dist/src/project-values-reader.js" "$root/dist/src/profile-card.js" "$root/dist/src/broker-approval.js" "$base/publisher/runtime/"
 printf '%s\n' '{"type":"module"}' > "$base/publisher/runtime/package.json"
 if [[ -n "$publisher" ]]; then
