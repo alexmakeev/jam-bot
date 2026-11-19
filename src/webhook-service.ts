@@ -4,25 +4,28 @@ import {DecisionPending,pauseDecision} from './material-decision.js';
 import { readdir, readFile, readlink,mkdir,rm,writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { PublisherSeedUnavailable } from './profile-checkout.js';
+import { consultationReady,ProfileLookupUnavailable,PublisherSeedUnavailable } from './profile-checkout.js';
 import {prepareReviewNotices,migrateReviewNotices,deliverReviewNotice} from './review-escalation.js';
-import {beginDashboard,recordProgress,publishTimeline,pendingProgress} from './work-progress.js';
+import {beginDashboard,fingerprint,recordProgress,publishTimeline,pendingProgress} from './work-progress.js';
 import { Journal } from './intake-journal.js';
 import { withoutEnvironmentAuthority } from './environment-runner.js';
 import { TaskAdmission } from './task-admission.js';
-import { approvalFromEvent, validateTaskApproval } from './task-approval.js';
+import { approvalFromEvent,TaskWithdrawn,validateTaskApproval } from './task-approval.js';
 import { notifyLeo,recoveredIntake } from './leo-intake.js';
 import { dispatchApprovedWorker,WORKER_ACCEPTANCE_BODY } from './approved-worker.js';
 import {deliverConnectionNotice} from './connection-notice.js';
 import { configuredTopics, openTopics, type TopicRuntime } from './topics.js';
-import { IntegrationQueue } from './integration-queue.js';
+import { IntegrationQueue,type ReadyBranch } from './integration-queue.js';
 import { BranchValidation } from './branch-validation.js';
-import { integrateReady, validateReviewedHead } from './developer-profile.js';
+import { integrateReady, validateReviewedHead, prefillDevelopmentTasks,IntegrationLaneYield,NativeLaneYield,type AdviceLane } from './developer-profile.js';
+import { ConsultationDeferred } from './external-advice.js';
 import { configuredManagement } from './management-transport.js';
 import {InstallationGrants} from './installation-grants.js';
 import { pausedRepositories,projectConnector,restoreManagedTopics } from './management-projects.js';
 import { createManagement } from './management.js';
 import { webhook } from './webhook.js';
+import {DependencyHold,DependencyTaskWithdrawn,usesDependencies,verifyDependencies} from './github-dependencies.js';
+import {nativeLeadOccupied} from './native-lead.js';
 
 function required(name: string): string {
   const value = process.env[name];
@@ -41,6 +44,74 @@ async function consume({journal,topic,state}: TopicRuntime, signal: AbortSignal)
   const validations=new BranchValidation(journal.db);
   validations.recover();
   const runtime={journal,topic,state};
+  const dependencyAware=usesDependencies(topic);
+  const overlap=dependencyAware&&(process.env.JAM_DEVELOPMENT_ADVICE_OVERLAP_REPOSITORIES??'').split(',').map(name=>name.trim()).includes(topic.repository);
+  const eligibleIntegration=(epoch:number)=>(head:ReadyBranch)=>!integrations.dependencyHeld(head,epoch);
+  const beforeSpecification=dependencyAware?()=>{
+    const {active,ready}=integrations.snapshot();
+    if(active||ready.some(eligibleIntegration(journal.dependencyEpoch())))throw new IntegrationLaneYield();
+  }:undefined;
+  const filesOf=(task:ReturnType<typeof journal.workerCandidates>[number])=>{
+    const card=parseTaskCard(task.title,task.body,task.kind,topic.defaultClass);
+    return card?.kind==='development'?card.files:[];
+  };
+  const compatible=(files:string[],occupied:string[])=>files.length>0&&!files.some(path=>occupied.includes(path));
+  const readyAdvice=async()=>{
+    for(const row of journal.activeAdviceWaits())if(!overlap||await consultationReady(state,row.wait))return row;
+  };
+  const adviceLane=(task:ReturnType<typeof journal.workerCandidates>[number]):AdviceLane|undefined=>{
+    const files=filesOf(task);
+    if(!overlap||!files.length)return;
+    const approval=fingerprint(JSON.stringify(approvalFromEvent(task)));
+    return {
+      async beforeNative(){if(!journal.adviceWait(task.delivery)?.resumed&&await readyAdvice())throw new NativeLaneYield();},
+      submitted(head,submission,ready){
+        const prior=journal.adviceWait(task.delivery);
+        const wait={...submission,head,approval,files};
+        if(prior){
+          if(!prior.resumed||prior.wait.approval!==approval||prior.wait.head===head&&JSON.stringify(prior.wait)!==JSON.stringify(wait))throw Error('Suspended consultation differs from its approved input');
+          return;
+        }
+        if(ready)return;
+        const active=journal.activeAdviceWaits();
+        if(!active.length&&!journal.workerCandidates().some(candidate=>compatible(filesOf(candidate),files)))return;
+        journal.suspendForAdvice(task.delivery,wait);
+        throw new ConsultationDeferred();
+      },
+    };
+  };
+  const waits=new Map<string,{epoch:number;retryAt:number}>();
+  const hold=(event:ReturnType<typeof journal.pendingWorkers>[number],error:unknown,epoch:number)=>{
+    const reason=error instanceof DependencyHold?error.message:'GitHub dependency verification is unavailable.';
+    waits.set(event.delivery,{epoch,retryAt:error instanceof DependencyHold?Infinity:Date.now()+60000});
+    journal.waitForDependencies(event.delivery,'Dependency: '+reason);
+    recordProgress(state,event.issue,'dependency-wait:'+reason,'JAM held this work card. '+reason);
+  };
+  const eligibleWorker=async()=>{
+    if(!dependencyAware)return journal.nextWorker(task=>validations.canStart(task,topic.defaultClass),task=>task.body!==WORKER_ACCEPTANCE_BODY);
+    const due=await readyAdvice();
+    if(due)return journal.resumeAdvice(due.delivery);
+    const occupied=journal.activeAdviceWaits().flatMap(row=>row.wait.files);
+    const epoch=journal.dependencyEpoch();
+    for(const task of journal.pendingWorkers()){
+      if(occupied.length&&!compatible(filesOf(task),occupied))continue;
+      const previous=waits.get(task.delivery);
+      if(previous?.epoch===epoch&&previous.retryAt>Date.now()||!validations.canStart(task,topic.defaultClass))continue;
+      const card=parseTaskCard(task.title,task.body,task.kind,topic.defaultClass);
+      if(card?.kind==='development'&&task.body!==WORKER_ACCEPTANCE_BODY){
+        try{await verifyDependencies(state,topic,journal.db,task.issue,signal,()=>validateTaskApproval(topic,task.issue,approvalFromEvent(task)),card.dependencies);}
+        catch(error){
+          if(signal.aborted)throw error;
+          if(error instanceof DependencyTaskWithdrawn){journal.withdrawPendingWorker(task.delivery);waits.delete(task.delivery);}
+          else hold(task,error,epoch);
+          continue;
+        }
+        if(epoch!==journal.dependencyEpoch())return;
+      }
+      const claimed=journal.nextWorker(candidate=>candidate.delivery===task.delivery&&validations.canStart(candidate,topic.defaultClass),candidate=>candidate.body!==WORKER_ACCEPTANCE_BODY);
+      if(claimed){waits.delete(task.delivery);return claimed;}
+    }
+  };
   prepareReviewNotices(journal.db);
   try {
     journal.db.prepare("UPDATE intake SET workerState='pending' WHERE workerState='waiting-decision'").run();
@@ -51,17 +122,30 @@ async function consume({journal,topic,state}: TopicRuntime, signal: AbortSignal)
     }
     while (!signal.aborted) {
       await deliverReviewNotice(runtime,signal);
-      const decision=validations.tick(integrations,head=>validateReviewedHead(runtime,head,signal),signal);
-      if(decision.batch) {await integrateReady(runtime,signal,integrations,decision.batch);continue;}
+      const epoch=journal.dependencyEpoch();
+      const decision=validations.tick(integrations,head=>validateReviewedHead(runtime,head,signal),signal,Date.now(),eligibleIntegration(epoch));
+      if(decision.batch) {
+        await integrateReady(runtime,signal,integrations,decision.batch);
+        continue;
+      }
       if(decision.waiting) {await delay(250);continue;}
-      const execution = journal.nextWorker(task=>validations.canStart(task,topic.defaultClass),task=>task.body!==WORKER_ACCEPTANCE_BODY);
+      const execution = prefillDevelopmentTasks(topic,journal)?undefined:await eligibleWorker();
       if (execution) {
         try {
-          await dispatchApprovedWorker(execution,topic,state,signal,journal.lead().id);
+          await dispatchApprovedWorker(execution,topic,state,signal,journal.lead().id,{adviceLane:adviceLane(execution),beforeSpecification});
           journal.finishWorker(execution.delivery);
         } catch (err) {
+          if(err instanceof ConsultationDeferred){
+            const wait=journal.adviceWait(execution.delivery)?.wait;
+            if(!wait)throw Error('Consultation yielded without a recorded checkpoint');
+            recordProgress(state,execution.issue,'implementation-advice-awaiting:'+wait.id,'Implementation advice is running. JAM released the native lane for a compatible work card.');
+            continue;
+          }
+          if(err instanceof IntegrationLaneYield){journal.parkWorkerForIntegration(execution.delivery);continue;}
+          if(err instanceof NativeLaneYield){journal.yieldWorker(execution.delivery);continue;}
+          if(err instanceof DependencyHold){hold(execution,err,journal.dependencyEpoch());continue;}
           if(err instanceof DecisionPending){pauseDecision(journal.db,execution.delivery,execution.issue,err.message);continue;}
-          if(err instanceof PublisherSeedUnavailable) {
+          if(err instanceof PublisherSeedUnavailable||err instanceof ProfileLookupUnavailable) {
             journal.deferPublisherSeed(execution.delivery);
             continue;
           }
@@ -71,6 +155,7 @@ async function consume({journal,topic,state}: TopicRuntime, signal: AbortSignal)
         }
         continue;
       }
+      if(journal.hasIntegrationContinuation()||!journal.hasQueuedIntake()||await nativeLeadOccupied(state)){await delay(500);continue;}
       const event = journal.next();
       if (!event) { await delay(500); continue; }
       try {
@@ -83,17 +168,19 @@ async function consume({journal,topic,state}: TopicRuntime, signal: AbortSignal)
         if(event.action==='task'){
           try{profile=await refreshProjectValues(topic,state,event.issue,signal);}
           catch(err){
-            if(!(err instanceof Error) || !/^Profile broker: Repository outside (?:publisher|profile reader) scope$/.test(err.message))throw err;
+            if(!(err instanceof ProfileLookupUnavailable)&&
+                (!(err instanceof Error)||!/^Profile broker: Repository outside (?:publisher|profile reader) scope$/.test(err.message)))throw err;
             journal.deferProfile(event.delivery);
             recordProgress(state,event.issue,'waiting-profile','Waiting for project profile read access. JAM will retry automatically.');
             continue;
           }
         }
-        const ack = await notifyLeo(event,journal.lead(),topic.cwd,topic.repository,signal,profile?.markdown);
+        const ack = await notifyLeo(event,journal.lead(),topic.cwd,topic.repository,signal,profile?.markdown,usesDependencies(topic));
         journal.complete(ack);
         console.log('JAM acknowledged issue',topic.repository,event.issue);
       } catch (err) {
         if(signal.aborted)return;
+        if(err instanceof TaskWithdrawn){journal.withdrawIntake(event.delivery);continue;}
         journal.fail(event.delivery,err instanceof Error ? err.message : 'Dispatch failed');
         console.error('JAM intake requires review',topic.repository,event.issue);
       }

@@ -18,10 +18,18 @@ test('optional operator profiles are called concurrently and all receipts are re
 });
 test('runtime and profiles are constrained by the operator catalog',async()=>{
   assert.throws(()=>consultantProfiles([profile,{...profile}]));
-  for(const field of [{image:'latest'},{volume:'/host'},{provider:'shell'},{timeoutMinutes:40},{model:'--danger'}]){
+  for(const field of [{image:'latest'},{volume:'/host'},{provider:'shell'},{timeoutMinutes:40},{model:'--danger'},{effort:'turbo'}]){
     assert.throws(()=>consultantProfiles([{...profile,...field}]));
   }
   await assert.rejects(consultAll([profile],'diagnosis','not json'));
+});
+
+test('explicit effort is retained and contradictory Antigravity variants fail before dispatch',async()=>{
+  assert.throws(()=>consultantProfiles([{...profile,provider:'antigravity',model:'gemini-4-carbon-high',effort:'low'}]));
+  const {advice}=await consultAll([{...profile,effort:'low'}],'implementation',packet,{codex:async({profile})=>{
+    assert.equal(profile.effort,'low');return 'No findings';
+  }});
+  assert.equal(advice[0].effort,'low');
 });
 
 test('confirmed failures preserve timings and may retry only existing named subscriptions',async()=>{

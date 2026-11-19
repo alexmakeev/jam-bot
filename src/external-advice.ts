@@ -4,20 +4,22 @@ import {createHash} from 'node:crypto';
 import {join} from 'node:path';
 import {z} from 'zod';
 import type {Topic} from './intake-journal.js';
-import {exchange,type ReviewPhase,type ConsultationProgress} from './profile-checkout.js';
+import {exchange,requireWorkspaceInspection,type ReviewPhase,type ConsultationProgress,type WorkspaceInspection} from './profile-checkout.js';
 import {atomicJson,readJson} from './storage.js';
+import {localSpecificationIndex} from './workspace-snapshot.js';
 import type {TaskApproval} from './task-approval.js';
 
 const sha=(text:string)=>createHash('sha256').update(text).digest('hex');
 const adviceSchema=z.array(z.object({name:z.string().regex(/^[a-zA-Z0-9_. -]{1,80}$/),provider:z.string().regex(/^[a-zA-Z0-9_. -]{1,80}$/),
-  model:z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9 ._()/-]{0,99}$/).optional(),startedAt:z.iso.datetime().optional(),finishedAt:z.iso.datetime().optional(),status:z.enum(['ok','unavailable','error']),text:z.string().max(6000)})).max(12);
+  model:z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9 ._()/-]{0,99}$/).optional(),effort:z.enum(['low','medium','high','xhigh','max','ultra']).optional(),startedAt:z.iso.datetime().optional(),finishedAt:z.iso.datetime().optional(),status:z.enum(['ok','unavailable','error']),text:z.string().max(6000)})).max(12);
 type Advice=z.infer<typeof adviceSchema>;
 type Fields=Record<string,string>;
 type Card={issue:number;approval:TaskApproval};
 export type DecisionInput={kind:'in_flight';evidence:ConsultationProgress}|{kind:'confirmed_failure'|'retry_exhausted';evidence:Advice};
 export type Decide=(input:DecisionInput)=>Promise<string>;
-interface Evidence {phase:ReviewPhase;repository:string;cards:number[];inputDigest:string;advice:Advice;attempts?:Advice[]}
+interface Evidence {phase:ReviewPhase;repository:string;cards:number[];inputDigest:string;advice:Advice;attempts?:Advice[];inspection?:WorkspaceInspection[]}
 export class ConsultationEscalation extends Error {}
+export class ConsultationDeferred extends Error {}
 export interface ExternalReview {advice:Advice;inputDigest:string}
 
 function bounded(key:string,value:string,limit:number){
@@ -46,11 +48,23 @@ export function adviserNotes(run:ExternalReview) {
 }
 
 export async function externalReview(state:string,topic:Topic,cards:Card[],phase:ReviewPhase,fields:Fields,signal:AbortSignal,
-  decide:Decide,call=exchange,report?:(topic:Topic,issue:number,record:Evidence)=>Promise<void>):Promise<ExternalReview>{
+  decide:Decide,call=exchange,report?:(topic:Topic,issue:number,record:Evidence)=>Promise<void>,revision?:string,
+  onSubmitted?:Parameters<typeof exchange>[5]):Promise<ExternalReview>{
   const values=cards.length?await profileContext(state,cards[0]!.issue):'';
   const packet=reviewPacket(values?{projectValues:values,...fields}:fields);
+  let workspace:{index:string;documents:Record<string,string>}|undefined;
+  if(revision){
+    const manifest=join(state,'consultations','workspace-'+sha(JSON.stringify([topic.repoId,phase,cards,packet,revision]))+'.json');
+    workspace=await readJson<typeof workspace>(manifest).catch((error:NodeJS.ErrnoException)=>{if(error.code!=='ENOENT')throw error;return undefined;});
+    if(!workspace){
+      const local=await localSpecificationIndex(state,topic.repository);
+      workspace={index:JSON.stringify({repository:topic.repository,entries:local.entries},null,2)+'\n',documents:Object.fromEntries([...local.documents].map(([name,bytes])=>[name,bytes.toString('base64')]))};
+      if(Buffer.byteLength(JSON.stringify(workspace))>2*1024*1024)throw Error('Consultation specification index exceeds the exchange budget');
+      await atomicJson(manifest,workspace);
+    }
+  }
   const ids=cards.map(c=>c.issue);
-  const inputDigest=sha(JSON.stringify([topic.repoId,phase,cards,packet]));
+  const inputDigest=sha(JSON.stringify([topic.repoId,phase,cards,packet,...(workspace?[revision,workspace]:[])]));
   const path=join(state,'consultations',inputDigest+'.json');
   const notify=(key:string,body:string)=>{for(const issue of ids)recordProgress(state,issue,phase+':'+inputDigest+':'+key,body);};
   const owner={architecture:'architect',implementation:'developer',diagnosis:'integrator'}[phase];
@@ -92,10 +106,10 @@ export async function externalReview(state:string,topic:Topic,cards:Card[],phase
   let record=await readJson<Evidence>(path).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;});
   if(!record){
     notify('requested',owner+' requested '+phase+' consultation on input '+version+'. Awaiting the configured advisers.');
-    const result=await call(join(state,'project.git'),{action:'consult',repo:topic.repository,cards,phase,packet},signal,onSlow,progress(false));
+    const result=await call(join(state,'project.git'),{action:'consult',repo:topic.repository,cards,phase,packet,...(workspace?{sha:revision,workspace}:{})},signal,onSlow,progress(false),onSubmitted);
     // Older brokers must be upgraded before enabling this work profile.
     const advice=adviceSchema.parse(result.advice);
-    record={phase,repository:topic.repository,cards:ids,inputDigest,advice};
+    record={phase,repository:topic.repository,cards:ids,inputDigest,advice,...(result.inspection?{inspection:[result.inspection]}:{})};
     await atomicJson(path,record);
   }
   if(record.repository!==topic.repository || record.inputDigest!==inputDigest || record.phase!==phase ||
@@ -106,19 +120,23 @@ export async function externalReview(state:string,topic:Topic,cards:Card[],phase
   let decision:string|undefined;
   if(retry.length && !record.attempts?.length)decision=await choose({kind:'confirmed_failure',evidence:advice});
   if(retry.length && decision==='RETRY' && (record.attempts?.length??1)<2){
-    const result=await call(join(state,'project.git'),{action:'consult',repo:topic.repository,cards,phase,packet,only:retry},signal,onSlow,progress(true));
+    const result=await call(join(state,'project.git'),{action:'consult',repo:topic.repository,cards,phase,packet,only:retry,...(workspace?{sha:revision,workspace}:{})},signal,onSlow,progress(true));
     const received=adviceSchema.parse(result.advice);
     if(received.length!==retry.length || !retry.every(name=>received.filter(a=>a.name===name && a.provider===advice.find(original=>original.name===name)?.provider).length===1))
       throw Error('Consultant retry returned different profiles');
     for(const result of received)notify('retry-'+result.name+result.status,result.name+' returned '+result.status+' on the selective retry for '+version+'. Next: '+owner+' evaluates the response.');
     const previous=advice;
     advice=advice.map(original=>received.find(a=>a.name===original.name && a.provider===original.provider)??original);
-    record={...record,advice,attempts:[previous,received]};
+    record={...record,advice,attempts:[previous,received],...(result.inspection?{inspection:[...(record.inspection??[]),result.inspection]}:{})};
     await atomicJson(path,record);
   }
   if(record.attempts?.length && advice.some(a=>a.status==='error'))
     decision=await choose({kind:'retry_exhausted',evidence:advice});
   for(const adviser of advice)adviserUpdate({...adviser,reason:adviser.text},'final');
+  if(workspace){
+    const readers=(record.inspection??[]).flatMap(inspection=>inspection.readers).filter(reader=>advice.some(a=>a.name===reader.adviser.name&&a.provider===reader.adviser.provider&&a.model===reader.adviser.model));
+    requireWorkspaceInspection({revision:revision!,specifications:sha(workspace.index),readers},revision!,sha(workspace.index),advice);
+  }
   for(const issue of ids){
     await atomicJson(join(state,'assignments',String(issue),'consultations',phase+'.json'),record);
     if(advice.length){

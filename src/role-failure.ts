@@ -24,6 +24,11 @@ export class RoleStageFailure extends Error {
   }
 }
 
+export function reportedRuntimeBlocker(role:StageRole,output:string) {
+  const [line='']=output.trimStart().split(/\r?\n/,1);
+  if(/^Blocked:/i.test(line))return new RoleStageFailure(role,'runtime_failure',line);
+}
+
 export function roleStageFailure(role:StageRole,error:unknown):RoleStageFailure {
   if(error instanceof RoleStageFailure)return error;
   const detail=error instanceof Error?error.message:String(error);

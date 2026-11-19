@@ -1,11 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,rm} from 'node:fs/promises';
+import {mkdtemp,rm,mkdir,writeFile,readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {mandatoryReview,type MandatoryReview} from '../src/review-supervisor.js';
 import {prepareReviewNotices,queueReviewNotice,publishReviewNotice} from '../src/review-escalation.js';
+
+import {atomicJson} from '../src/storage.js';
 
 const answer={developer:'member',nativeMember:'reviewer@team',backend:'in-process',team:'team',output:'PASS\nChecked.'};
 const noop=async()=>{};
@@ -33,7 +35,8 @@ test('explicit safety refusal persists across restart and never resubmits the pa
   const job=await project(t);let calls=0,alerts=0;
   const deps={run:async()=>{calls++;throw Error('Native model refused this stage; preserve the candidate and reconcile before further work');},observe:async()=>({}),graceMs:0,pause:noop};
   for(let i=0;i<2;i++)await assert.rejects(mandatoryReview(job,async()=>{alerts++;},deps),/refused/);
-  assert.equal(calls,1);assert.equal(alerts,2);
+  await assert.rejects(mandatoryReview({...job,evidenceRound:1,input:'updated evidence'},async()=>{alerts++;},deps),/refused/);
+  assert.equal(calls,1);assert.equal(alerts,3);
 });
 test('restart reconciles an interrupted attempt and escalates unresolved ownership without starting another',async t=>{
   const job=await project(t),stop=new AbortController();let calls=0;
@@ -66,4 +69,29 @@ test('an explicit evidence correction gets a fresh review of the same code revis
   assert.match((await mandatoryReview(corrected,noop,deps)).output,/^PASS/);
   assert.match((await mandatoryReview(corrected,noop,deps)).output,/^PASS/);
   assert.equal(calls,2);
+});
+
+test('a cached mandatory verdict cannot hide an automatic refusal fallback',async t=>{
+  const job=await project(t),config=join(job.state,'config'),previous=process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR=config;t.after(()=>{if(previous===undefined)delete process.env.CLAUDE_CONFIG_DIR;else process.env.CLAUDE_CONFIG_DIR=previous;});
+  const startedAt=Date.now()-1000,challenge='00000000-0000-4000-8000-000000000001';
+  const path=join(job.state,'mandatory-reviews','consultant-21-'+job.revision+'.json');
+  await atomicJson(path,{session:job.session,issues:job.issues,revision:job.revision,role:job.role,input:job.input,attempts:[{challenge,startedAt}],receipt:answer});
+  const log=join(config,'projects',job.cwd.replace(/[^a-zA-Z0-9-]/g,'-'));await mkdir(log,{recursive:true});
+  await writeFile(join(log,'lead.jsonl'),JSON.stringify({type:'system',subtype:'model_refusal_fallback',sessionId:job.session,timestamp:new Date().toISOString()})+'\n');
+  let alerts=0;
+  await assert.rejects(mandatoryReview(job,async()=>{alerts++;},{run:async()=>assert.fail('No replacement review'),observe:async()=>assert.fail('No model recovery dispatch'),graceMs:0,pause:noop}),/native model refused/);
+  assert.equal(alerts,1);assert.match(JSON.parse(await readFile(path,'utf8')).failure,/native model refused/);
+});
+
+test('a cached mandatory review retains its producing attempt and rejects an incomplete blocker',async t=>{
+  const job=await project(t);
+  const path=join(job.state,'mandatory-reviews','consultant-21-'+job.revision+'.json');
+  const record={session:job.session,issues:job.issues,revision:job.revision,role:job.role,input:job.input};
+  const deps={run:async()=>assert.fail('No replacement review'),observe:async()=>assert.fail('No recovery dispatch'),graceMs:0,pause:noop};
+  await atomicJson(path,{...record,attempts:[],receipt:answer});
+  await assert.rejects(mandatoryReview(job,noop,deps),/no producing attempt/);
+  const attempts=[{challenge:'00000000-0000-4000-8000-000000000001',startedAt:Date.now()}];
+  await atomicJson(path,{...record,attempts,receipt:{...answer,output:'Blocked:\nWorkspace unavailable'}});
+  await assert.rejects(mandatoryReview(job,noop,deps),/could not complete/);
 });

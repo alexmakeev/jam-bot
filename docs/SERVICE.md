@@ -35,6 +35,22 @@ The install operation prepares the image and validates configuration before swit
 
 ## Install and operate
 
+### GitHub App ownership and visibility
+
+Each self-hosted JAM-Bot operator registers and configures their own GitHub App. Downloading this MIT-licensed repository does not grant access to the maintainers' App, private keys, installations or running service.
+
+For a personal installation, keep the App **private**. It can then be installed only on its owning account. Choose **public** only when intentionally allowing installation on other accounts; repository access still requires the installing person's appropriate GitHub permissions. Public visibility does not by itself authorize an installation in the JAM-Bot service. Keep the service's allowed installations/accounts aligned with the intended operator scope.
+
+Before connecting the first project:
+
+1. Register the operator-owned GitHub App in GitHub Developer settings. Check its visibility under **Advanced**: a **Make public** button means it is currently private. GitHub may request another sign-in confirmation before showing this page. Do not change visibility merely to complete setup.
+2. Configure the reachable HTTPS webhook URL ending in `/github`, enable webhook delivery, and use the same signing secret in GitHub and the receiver's protected secret file. Subscribe to **Issues**, **Issue comment**, **Installation**, and **Installation repositories** events as exposed by GitHub; installation lifecycle events are supplied by GitHub rather than necessarily appearing as selectable subscriptions.
+3. Configure the App permissions required by the enabled workflow, generate its private key, and provision the App ID and protected key path in the receiver configuration below. Project discovery requires Metadata read and Issues write; development publication needs the additional permissions documented by its selected host recipe.
+4. Install the App on the owning account and grant only the intended repositories. Check **Advanced → Recent Deliveries** to verify that GitHub delivered a signed event and the receiver accepted it. A delivery receipt alone does not prove that a task completed.
+5. Verify the project through authenticated management discovery. Confirm that its directory and coordinator were registered before starting work. On access removal and restoration, verify that the same project state is reused.
+
+Keep App keys, signing secrets and management owner tokens outside Git. Public HTTPS ingress, signature verification and authenticated management are required independently of App visibility. See the [owner management guide](MANAGEMENT.md) for client connection and project discovery, and the [Linux installation guide](LINUX-SERVICE.md) for an unattended host.
+
 The management runner installer creates the private server identity, owner credential and deployment catalog. Set the allowed public authority in `JAM_MANAGEMENT_HOSTS`. For a fresh installation, omit the three repository/installation binding variables to start management with an empty list. Keep the GitHub App credentials and webhook signing secret configured. See [host deployment recipes](ENVIRONMENT-RUNNER.md).
 
 On the Mac, start Docker Desktop, prepare the writable Claude subscription and container home as described in the README, and provide a private Compose environment file. Use absolute paths outside Documents for files read by the running service. The signing secret file must contain the same secret already configured in the GitHub App. Keep the secret and environment file outside Git.

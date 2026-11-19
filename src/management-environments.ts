@@ -8,9 +8,10 @@ import {runEnvironment} from './environment-runner.js';
 import {ManagementError,requireServer,requireTopic,targetFields,type ManagementOperation} from './management-contract.js';
 import type {TopicRuntime} from './topics.js';
 
-const environment = z.string().regex(/^[a-z][a-z0-9-]{0,39}$/);
+export const managementAlias = z.string().regex(/^[a-z][a-z0-9-]{0,39}$/);
+const environment = managementAlias;
 const revision = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/);
-const alias = z.string().regex(/^[a-z][a-z0-9-]{0,39}$/);
+const alias = managementAlias;
 const address=z.literal('127.0.0.1');
 const endpoint=z.strictObject({address,port:z.int().min(1024).max(65535)});
 const appName=z.string().regex(/^APP_[A-Z][A-Z0-9_]{0,47}$/)

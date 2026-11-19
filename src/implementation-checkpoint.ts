@@ -3,7 +3,19 @@ import {join} from 'node:path';
 import {atomicJson,readJson} from './storage.js';
 import {git} from './profile-checkout.js';
 import {finishRoleFiles,planRoleFiles} from './role-files.js';
+import {Journal} from './intake-journal.js';
+import type {checkout} from './profile-checkout.js';
 interface Intent {parent:string;files:Awaited<ReturnType<typeof planRoleFiles>>;tree?:string;sha?:string}
+export interface ImplementationCorrection {sha:string;attempt:number;feedback:string;reviewOnly?:boolean;integrationHead?:string;reviewHead?:string}
+
+export async function checkpointImplementationCorrection(state:string,issue:number,project:Awaited<ReturnType<typeof checkout>>,correction:ImplementationCorrection){
+  const journal=new Journal(join(state,'intake.sqlite'));
+  try{
+    if(!journal.specificationCheckpoint(issue))throw Error('Missing active implementation checkpoint');
+    await atomicJson(join(state,'assignments',String(issue),'correction.json'),{project,...correction});
+    journal.checkpointSpecification(issue,JSON.stringify({...project,correcting:true}));
+  }finally{journal.db.close();}
+}
 
 export async function implementationCommit(tree:string,path:string,issue:number,scope:string[],propose:()=>Promise<string>,authorize:()=>Promise<void>,allowNoChanges=false){
   let intent=await readJson<Intent>(path).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;});
@@ -12,14 +24,6 @@ export async function implementationCommit(tree:string,path:string,issue:number,
   if(!intent){
     if(await git(tree,'status','--porcelain'))throw Error('Unexpected edits before developer handoff');
     const output=await propose();
-    if(allowNoChanges){
-      const result=JSON.parse(output);
-      if(Array.isArray(result.files)&&result.files.length===0){
-        await authorize();
-        await atomicJson(path,{parent:head,files:[],sha:head});
-        return head;
-      }
-    }
     for(const file of scope){
       let parent=tree;
       for(const part of file.split('/').slice(0,-1)){
@@ -27,7 +31,13 @@ export async function implementationCommit(tree:string,path:string,issue:number,
         if(await realpath(parent)!==parent)throw Error('Unsafe checkout directory');
       }
     }
-    intent={parent:head,files:await planRoleFiles(tree,scope,output)};
+    const files=await planRoleFiles(tree,scope,output,allowNoChanges);
+    if(!files.length){
+      await authorize();
+      await atomicJson(path,{parent:head,files,sha:head});
+      return head;
+    }
+    intent={parent:head,files};
     await atomicJson(path,intent);
   }
   await authorize();

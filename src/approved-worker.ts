@@ -10,17 +10,25 @@ import {Journal,type Intake,type Topic} from './intake-journal.js';
 import { approvalFromEvent, validateTaskApproval } from './task-approval.js';
 import { parseTaskCard } from './profile-card.js';
 import { markApproved, setCardProgress, completeCard,hasClosedResult } from './profile-publication.js';
-import { runDeveloperProfile } from './developer-profile.js';
+import { NativeLaneYield,runDeveloperProfile,type WorkerScheduling } from './developer-profile.js';
+import { ConsultationDeferred } from './external-advice.js';
 import { atomicJson,readJson } from './storage.js';
 
 export const WORKER_ACCEPTANCE_BODY = 'I approve the local JAM-Bot routing acceptance test for this issue. After the discussion is locked, have the repository coordinator delegate one checksum task to a local developer. Record the developer identity and verified result in the repository journal.';
 
 // The developer can only send messages. The service independently verifies its answer.
-export async function dispatchApprovedWorker(event: Intake, topic: Topic, state: string, signal: AbortSignal, lead: string) {
+export async function dispatchApprovedWorker(event: Intake, topic: Topic, state: string, signal: AbortSignal, lead: string,scheduling?:WorkerScheduling) {
   const approval=approvalFromEvent(event);
   const authorize=()=>validateTaskApproval(topic,event.issue,approval);
-  const result=await readJson<{kind?:string;output?:string}>(join(state,'assignments',String(event.issue),'result.json')).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;});
-  if((result?.kind==='assignment'||result?.kind==='consultation')&&result.output&&await hasClosedResult(topic,event.issue,result.output))return;
+  const resultDirectory=join(state,'assignments',String(event.issue));
+  const result=await readJson<{kind?:string;output?:string;dispatchIdentity?:string}>(join(resultDirectory,'result.json')).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;});
+  if((result?.kind==='assignment'||result?.kind==='consultation')&&result.output){
+    const path=join(resultDirectory,(result.kind==='consultation'?'consultant':'assignment')+'.json');
+    const handoff=await readJson<{output:string;dispatchIdentity?:string}>(path).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;});
+    if(handoff?.dispatchIdentity&&(handoff.output!==result.output||
+        (result.dispatchIdentity!==undefined&&result.dispatchIdentity!==handoff.dispatchIdentity)))throw Error('Direct result differs from its native dispatch');
+    if(await hasClosedResult(topic,event.issue,result.output,result.dispatchIdentity??handoff?.dispatchIdentity))return;
+  }
   await authorize();
   const profile=await refreshProjectValues(topic,state,event.issue,signal);
   const decision=requestedDecision(event.body);
@@ -38,7 +46,7 @@ export async function dispatchApprovedWorker(event: Intake, topic: Topic, state:
   if(!resumed)await markApproved(topic,event.issue);
   try {
     if (card) {
-      return await runDeveloperProfile({topic,state,lead,issue:event.issue,card,signal,authorize,approval});
+      return await runDeveloperProfile({topic,state,lead,issue:event.issue,card,signal,authorize,approval,...scheduling});
     }
     await setCardProgress(topic,event.issue,'in progress');
     const directory = join(state,'assignments',String(event.issue));
@@ -53,7 +61,7 @@ export async function dispatchApprovedWorker(event: Intake, topic: Topic, state:
     await completeCard(topic,event.issue,'The local developer returned the verified checksum '+expected.split(':')[1]+'.');
   } catch (error) {
     // Status reporting can fail independently. Preserve the original cause for local review.
-    if(!signal.aborted)await setCardProgress(topic,event.issue,'blocked').catch(()=>undefined);
+    if(!signal.aborted&&!(error instanceof ConsultationDeferred)&&!(error instanceof NativeLaneYield))await setCardProgress(topic,event.issue,'blocked').catch(()=>undefined);
     throw error;
   }
 }

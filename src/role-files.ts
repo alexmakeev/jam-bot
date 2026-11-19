@@ -20,15 +20,23 @@ function replaceExact(source:string, changes:unknown):string {
   return result+source.slice(cursor);
 }
 
-export async function planRoleFiles(checkout: string, allowedPaths: readonly string[], output: string) {
-  const root = await realpath(checkout);
+export function parseRoleFiles(output:string,allowEmpty=false):unknown[] {
   if (Buffer.byteLength(output)>65536) throw new Error('Developer output exceeds the role limit');
-  const artifact: unknown = JSON.parse(output);
+  const handoff=output.search(/\r?\n\r?\nHandoff notes:\r?\n/);
+  const artifact: unknown = JSON.parse(handoff<0?output:output.slice(0,handoff));
   if (!artifact || typeof artifact!=='object' || !('files' in artifact) || !Array.isArray(artifact.files) ||
-      artifact.files.length===0 || artifact.files.length>32) throw new Error('Expected a files array in developer output');
+      (!allowEmpty&&artifact.files.length===0) || artifact.files.length>32) throw new Error('Expected a files array in developer output');
+  return artifact.files;
+}
+
+export async function planRoleFiles(checkout: string, allowedPaths: readonly string[], output: string,allowEmpty=false) {
+  const root = await realpath(checkout);
+  const edits=parseRoleFiles(output,allowEmpty);
   const files: {path:string; content:string; target:string; mode:number;before:string|null}[] = [];
-  for (const file of artifact.files) {
-    if (!file || typeof file.path!=='string' || !allowedPaths.includes(file.path) || files.some(existing=>existing.path===file.path) ||
+  for (const edit of edits) {
+    if (!edit || typeof edit!=='object') throw new Error('Unapproved or malformed file edit');
+    const file=edit as {path?:unknown;content?:unknown;replacements?:unknown};
+    if (typeof file.path!=='string' || !allowedPaths.includes(file.path) || files.some(existing=>existing.path===file.path) ||
         (typeof file.content==='string')===Array.isArray(file.replacements)) throw new Error('Unapproved or malformed file edit');
     const parts=file.path.split('/');
     if (parts.some((part:string)=>!part || part.startsWith('.') || !/^[a-zA-Z0-9_+.-]+$/.test(part)))

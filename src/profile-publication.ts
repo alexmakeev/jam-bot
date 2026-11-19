@@ -86,6 +86,8 @@ export async function completeCard(topic: Topic, issue: number, summary: string,
   }else if(!existingResult)await authenticatedComment(topic,issue,issueComment('completion',summary));
   if((await api(path)).state!=='closed')
   await api(path,'PATCH',{state:'closed',state_reason:'completed'});
+  const closed=await api(path);
+  if(closed.state!=='closed'||closed.state_reason!=='completed')throw Error('Issue closure requires reconciliation');
   const labels: {name:string}[] = await api(path+'/labels?per_page=100');
   for (const label of labels.filter(label=>progressLabels.has(label.name))) {
     try { await api(path+'/labels/'+encodeURIComponent(label.name),'DELETE'); }
@@ -94,9 +96,10 @@ export async function completeCard(topic: Topic, issue: number, summary: string,
 }
 
 // Stage the exact architect bytes locally and confirm the copy attached to the original work card.
-export async function publishSpecification({topic,issue,markdown,signal,authorize,resultKey}: {
-  topic:Topic;issue:number;markdown:string;signal:AbortSignal;authorize:()=>Promise<void>;resultKey?:string
+export async function publishSpecification({topic,issue,markdown,signal,authorize,resultKey,revision}: {
+  topic:Topic;issue:number;markdown:string;signal:AbortSignal;authorize:()=>Promise<void>;resultKey?:string;revision?:string
 }) {
+  if(revision!==undefined&&!/^[a-f0-9]{40}$/.test(revision))throw Error('Invalid specification source revision');
   const state=dirname(topic.cwd);
   const name=specName(issue,digestOf(markdown));
   const directory=join(state,'assignments',String(issue),'attachments');
@@ -104,6 +107,7 @@ export async function publishSpecification({topic,issue,markdown,signal,authoriz
   await writeFile(join(directory,name),markdown,{mode:0o600});
   const [api,bot]=await Promise.all([issueClient(topic.repository,topic.installation),publisherIdentity(topic.repository,topic.installation)]);
   const artifact=await publishIssueSpec(state,topic.repository,topic.repoId,issue,markdown,bot,api,authorize,signal,undefined,true);
+  if(revision)await atomicJson(join(directory,name+'.verified.json'),{...artifact,repository:topic.repository,repoId:topic.repoId,publisher:bot,revision,verifiedAt:new Date().toISOString()});
   const handoff=await readJson<{identity:string;role:string}>(join(state,'assignments',String(issue),'handoffs',fingerprint(markdown)+'.json')).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;});
   const key=resultKey??(handoff?.role==='architect'?handoff.identity:'specification:'+artifact.sha256);
   recordProgress(state,issue,key,'The '+(markdown.startsWith('# Correction for issue ')?'integrator delivered correction guidance':'architect delivered the specification')+' for this work card.',undefined,[artifact]);
@@ -122,20 +126,23 @@ export async function publishSpecification({topic,issue,markdown,signal,authoriz
   await atomicJson(join(directory,name+'.artifact-receipt.json'),receipt);
 }
 
-export async function publishDirectResult(topic:Topic,issue:number,kind:'assignment'|'consultation',output:string){
+const directResultKey=(output:string,dispatchIdentity?:string)=>'direct-result:'+(dispatchIdentity??fingerprint(output));
+
+export async function publishDirectResult(topic:Topic,issue:number,kind:'assignment'|'consultation',output:string,dispatchIdentity?:string){
   issueComment('completion',output);
-  const state=dirname(topic.cwd),key='direct-result:'+fingerprint(output);
+  const state=dirname(topic.cwd),key=directResultKey(output,dispatchIdentity);
   const short=output.length<=350 && !output.includes('\n') && /^[\x20-\x7e]+$/.test(output);
   recordProgress(state,issue,key,short?output:'The '+kind+' is complete. The attached result contains the full response.',
     {purpose:kind,markdown:output});
   return key;
 }
 
-export async function hasClosedResult(topic:Topic,issue:number,summary:string){
+export async function hasClosedResult(topic:Topic,issue:number,summary:string,dispatchIdentity?:string){
   const api=await issueClient(topic.repository,topic.installation);
   const card=await api('/issues/'+issue);
   if(card.number!==issue || card.state!=='closed' || card.state_reason!=='completed')return false;
-  const state=dirname(topic.cwd),key='direct-result:'+fingerprint(summary);
+  const state=dirname(topic.cwd),key=directResultKey(summary,dispatchIdentity);
   if(storedResultComment(state,issue,key)){await reconcileProgress(state,topic,issue);return true;}
+  if(dispatchIdentity)return false;
   return authenticatedComment(topic,issue,issueComment('completion',summary),true);
 }

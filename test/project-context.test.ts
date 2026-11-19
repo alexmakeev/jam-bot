@@ -35,3 +35,13 @@ test('a developer can read its whole previous output when correcting a larger ap
     assert.ok(Buffer.byteLength(input)<=80000);
   } finally {await rm(tree,{recursive:true,force:true});}
 });
+
+test('independent context keeps oversized sources discoverable without copying them or credentials into the prompt',async()=>{
+  const tree=await realpath(await mkdtemp(join(tmpdir(),'jam-context-bounded-')));
+  try{
+    await writeFile(join(tree,'large.ts'),'large-source-marker'.repeat(6000));await writeFile(join(tree,'.env'),'SECRET-CANARY');
+    execFileSync('git',['init','--quiet',tree]);execFileSync('git',['-C',tree,'add','--force','.']);
+    const context=await projectContext(tree,['large.ts','.env'],'',true);
+    assert.match(context,/large\.ts/);assert.match(context,/Content omitted/);assert.doesNotMatch(context,/SECRET-CANARY|large-source-marker/);assert.ok(Buffer.byteLength(context)<6000);
+  }finally{await rm(tree,{recursive:true,force:true});}
+});

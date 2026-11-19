@@ -13,7 +13,7 @@ export async function staticDragons(browser,{html,module,server,baseline,deploye
   let child,temp;
   try{
     if(!deployed){
-      assert.equal(digest(server),'2f744b25781a9787fbe91fc5640352ba98779e1818226a6b606880105b8c3824','Unreviewed static server');
+      assert.ok(['2f744b25781a9787fbe91fc5640352ba98779e1818226a6b606880105b8c3824','6e04b6c3345cd4dd5a850fc69aee9f2e5548b4d520ab1d37f86b7dc8099079cb'].includes(digest(server)),'Unreviewed static server');
       assert.equal(html.match(/<script\b[^>]*>[\s\S]*?<\/script>/gi)?.join(),baseline.match(/<script\b[^>]*>[\s\S]*?<\/script>/gi)?.join(),'Original module script changed');
       const oldStyle=baseline.match(/<style>([\s\S]*?)<\/style>/i)?.[1].trim();
       assert.ok(oldStyle && html.includes(oldStyle),'Original calculator rules changed');

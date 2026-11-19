@@ -77,6 +77,66 @@ test('restart holds ambiguous dispatch, preserves the session and records explic
   journal.db.close();
 });
 
+test('only signed repository-bound dependency events wake eligibility and duplicates do not wake it again',async t=>{
+  const previous=process.env.JAM_DEVELOPMENT_V2_REPOSITORIES;
+  process.env.JAM_DEVELOPMENT_V2_REPOSITORIES=topic.repository;
+  t.after(()=>{if(previous===undefined)delete process.env.JAM_DEVELOPMENT_V2_REPOSITORIES;else process.env.JAM_DEVELOPMENT_V2_REPOSITORIES=previous;});
+  const journal=new Journal(':memory:');
+  journal.start(topic);
+  const secret=randomUUID();
+  const server=webhook(new Map([[topicKey(topic.installation,topic.repoId),{topic,state:'/state',journal}]]),secret);
+  await new Promise<void>(ok=>server.listen(0,'127.0.0.1',ok));
+  t.after(async()=>{await new Promise<void>(ok=>server.close(()=>ok()));journal.db.close();});
+  const url='http://127.0.0.1:'+(server.address() as AddressInfo).port+'/github';
+  const body={action:'blocked_by_added',repository:{id:topic.repoId,full_name:topic.repository},installation:{id:topic.installation}};
+  const eventId=randomUUID();
+  const send=(payload:object,delivery:string=eventId,valid=true,eventType='issue_dependencies')=>{
+    const raw=JSON.stringify(payload);
+    const signature=createHmac('sha256',valid?secret:'wrong secret').update(raw).digest('hex');
+    return fetch(url,{method:'POST',body:raw,headers:{
+      'x-github-event':eventType,'x-github-delivery':delivery,'x-hub-signature-256':'sha256='+signature,
+    }});
+  };
+  assert.equal((await send(body,eventId,false)).status,403);
+  assert.equal((await send({...body,installation:{id:99}})).status,403);
+  assert.equal((await send(body,'invalid')).status,400);
+  assert.equal(journal.dependencyEpoch(),0);
+  assert.equal((await send(body)).status,204);
+  assert.equal((await send(body,eventId.toUpperCase())).status,204);
+  assert.equal(journal.dependencyEpoch(),1);
+  const closure={...body,action:'closed',issue:{number:11,state_reason:'not_planned'}};
+  assert.equal((await send({...closure,issue:{...closure.issue,state_reason:'completed'}},randomUUID(),true,'issues')).status,204);
+  assert.equal(journal.dependencyEpoch(),1);
+  const closureId=randomUUID();
+  assert.equal((await send(closure,closureId,true,'issues')).status,204);
+  assert.equal((await send(closure,closureId,true,'issues')).status,204);
+  assert.equal(journal.dependencyEpoch(),2);
+  process.env.JAM_DEVELOPMENT_V2_REPOSITORIES='owner/other';
+  assert.equal((await send(body,randomUUID())).status,204);
+  assert.equal((await send(closure,randomUUID(),true,'issues')).status,204);
+  assert.equal(journal.dependencyEpoch(),2);
+  assert.deepEqual(journal.list(),[]);
+});
+
+test('reconciliation withdraws only pending work and preserves the original receipt',t=>{
+  const journal=new Journal(':memory:');journal.start(topic);t.after(()=>journal.db.close());
+  const item={...event,action:'task' as const};
+  journal.enqueue(item);assert.ok(journal.next());
+  const receipt={issue:item.issue,delivery:item.delivery,disposition:'intake_received' as const};
+  journal.complete(receipt);
+  journal.waitForDependencies(item.delivery,'Dependency: awaiting integration');
+  journal.withdrawPendingWorker(item.delivery);
+  assert.equal(journal.nextWorker(),undefined);
+  assert.equal(journal.list()[0]?.workerState,'abandon');
+  assert.deepEqual(JSON.parse(String(journal.list()[0]?.receipt)),receipt);
+  assert.throws(()=>journal.withdrawPendingWorker(item.delivery),/No pending work/);
+  const other={...item,delivery:randomUUID(),issue:item.issue+1};
+  journal.enqueue(other);assert.ok(journal.next());
+  journal.complete({...receipt,issue:other.issue,delivery:other.delivery});assert.ok(journal.nextWorker());
+  assert.throws(()=>journal.withdrawPendingWorker(other.delivery),/No pending work/);
+  assert.equal(journal.list()[1]?.workerState,'running');
+});
+
 test('primary paths remain fixed and ambiguous routes fail before starting Claude',()=>{
   const env = { JAM_REPOSITORY:'owner/test', JAM_REPOSITORY_ID:'123', JAM_INSTALLATION_ID:'45',
     JAM_ADDITIONAL_TOPICS:JSON.stringify([{repository:'owner/second',repoId:456,installation:45}]) };

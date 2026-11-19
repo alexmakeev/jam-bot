@@ -2,6 +2,7 @@ import {observeExistingPreview} from './existing-preview.mjs';
 import {releaseStaticSite} from './s3-release.mjs';
 // This host-only process owns Docker access and reads the operator's private recipe catalog.
 import {hostTask} from './management-task-host.mjs';
+import {hostSecretOperation,managedSecretBindings} from './secret-store.mjs';
 import {execFile} from 'node:child_process';
 import {createHash,createHmac,randomUUID} from 'node:crypto';
 import {constants} from 'node:fs';
@@ -88,6 +89,8 @@ export async function serve(root,exchange,tokenPath) {
     if(x.action==='task_create'||x.action==='task_authority')return hostTask(x,host.serverId,db,()=>privateConfig(join(root,'task-owner.json')));
     const key=x.serverId+'/'+x.repoId+'/'+x.environment;
     let recipe=selectEnvironmentRecipe(host.recipes,x.repoId,x.environment);
+    if(x.action==='secret-set'||x.action==='secret-get')return hostSecretOperation(x,{root,exchange,token,serverId:host.serverId,recipe,db});
+    if(x.action==='deploy'&&recipe)recipe={...recipe,secrets:await managedSecretBindings(root,x.repoId,x.environment,x.secretRefs??[],recipe.secrets??{})};
     if(recipe?.existingLocal || x.binding){
       if(x.action!=='status' || x.binding!=='existing-local' || !recipe?.existingLocal || recipe.environment!==x.environment ||
         recipe.repoId!==x.repoId || x.tier!==recipe.tier || x.serverId!==host.serverId ||
@@ -180,8 +183,9 @@ export async function serve(root,exchange,tokenPath) {
       const im=JSON.parse(await docker(['image','inspect',want.image]))[0];
       if(im.Id!==want.image||!im.Config.Healthcheck?.Test||im.Config.Healthcheck.Test[0]==='NONE'||Object.keys(im.Config.Volumes??{}).length)throw Error('Image must be preinstalled with healthcheck and without declared volumes');
       const secrets={};
+      const availableSecrets=await managedSecretBindings(root,x.repoId,x.environment,want.secretRefs,recipe.secrets??{});
       for(const ref of want.secretRefs){
-        if(!Object.hasOwn(recipe.secrets??{},ref))throw Error('Secret binding was revoked');
+        if(!Object.hasOwn(availableSecrets,ref))throw Error('Secret binding was revoked');
         const version=want.secretVersions?.[ref];
         if(version!==undefined && !/^[0-9a-f]{64}$/.test(version))throw Error('Invalid recorded secret version');
         // Older persisted deployments used an operator-owned snapshot named after the alias.

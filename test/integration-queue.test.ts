@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { IntegrationQueue } from '../src/integration-queue.js';
+import { BranchValidation } from '../src/branch-validation.js';
 
 const head = (issue: number, revision = issue) => ({ issue, branch: 'feature/'+issue, sha:revision.toString(16).padStart(40,'0') });
 
@@ -19,6 +20,64 @@ test('integrate alone immediately; only a bounded concrete ETA can hold compatib
   queue.finish(queue.active()!.id,'integrated');
   queue.ready(head(2),100_000);
   assert.deepEqual(queue.claim({},100_000)?.entries,[head(2)]);
+});
+
+test('a repeated exact validation cannot delay its queued head or another eligible issue',async t=>{
+  const db=new DatabaseSync(':memory:');t.after(()=>db.close());
+  const queue=new IntegrationQueue(db), validations=new BranchValidation(db);
+  const now=Date.now(), repeated=head(2), next=head(1);
+  const signal=AbortSignal.timeout(1000);
+  let finish!:()=>void;
+  const check=new Promise<void>(resolve=>{finish=resolve;});
+  const validate=()=>check;
+  // Represents recovery after the ready commit and before updating the validator row.
+  queue.ready(repeated,now);
+  validations.submit(repeated,10000);
+  const first=validations.tick(queue,validate,signal,now).batch!;
+  assert.deepEqual(first.entries,[repeated]);
+  queue.finish(first.id,'failed',{retryIssues:[2],dependencyHold:{issue:2,epoch:7}});
+  queue.ready(next,now);
+  const eligible=(candidate:ReturnType<typeof head>)=>!queue.dependencyHeld(candidate,7);
+  const second=validations.tick(queue,validate,signal,now,eligible).batch!;
+  assert.deepEqual(second.entries,[next]);
+  finish();
+  await validations.settle();
+  assert.equal(queue.dependencyHeld(repeated,7),true);
+});
+
+test('an eligible checking replacement supplies the ETA after filtering earlier and overdue checks',async t=>{
+  const db=new DatabaseSync(':memory:');t.after(()=>db.close());
+  const queue=new IntegrationQueue(db), validations=new BranchValidation(db);
+  const now=Date.now(), first=head(1), old=head(2), replacement=head(2,22), ineligible=head(3);
+  const signal=AbortSignal.timeout(1000);
+  let finish!:()=>void;
+  const check=new Promise<void>(resolve=>{finish=resolve;});
+  const validate=()=>check;
+  queue.ready(old,now);
+  const previous=queue.claim({},now)!;
+  queue.finish(previous.id,'failed',{retryIssues:[2],dependencyHold:{issue:2,epoch:7}});
+  queue.ready(first,now);
+  validations.submit(ineligible,100);
+  validations.submit(replacement,5000);
+  const eligible=(candidate:ReturnType<typeof head>)=>candidate.issue!==3&&!queue.dependencyHeld(candidate,7);
+  assert.deepEqual(validations.tick(queue,validate,signal,now,eligible),{batch:undefined,waiting:true});
+  assert.deepEqual(validations.tick(queue,validate,signal,now+101,eligible),{batch:undefined,waiting:true});
+  assert.deepEqual(validations.tick(queue,validate,signal,now+5001,eligible).batch?.entries,[first]);
+  finish();
+  await validations.settle();
+  assert.equal(queue.dependencyHeld(replacement,7),false);
+});
+
+test('an ineligible imminent check cannot supply a reason to wait for a later head',async t=>{
+  const db=new DatabaseSync(':memory:');t.after(()=>db.close());
+  const queue=new IntegrationQueue(db), validations=new BranchValidation(db);
+  const now=Date.now(), first=head(1);
+  queue.ready(first,now);
+  validations.submit(head(2),100);
+  validations.submit(head(3),70000);
+  const outcome=validations.tick(queue,async()=>{},AbortSignal.timeout(1000),now,candidate=>candidate.issue!==2);
+  assert.deepEqual(outcome.batch?.entries,[first]);
+  await validations.settle();
 });
 
 test('durable claims exclude competing coordinators, preserve FIFO and suppress revision replays',t=>{
@@ -74,8 +133,11 @@ test('operator retry rechecks the same failed batch and keeps an audit record', 
     const head={issue:91,branch:'feature/91',sha:'a'.repeat(40)};
     queue.ready(head);
     const batch=queue.claim()!;
+    assert.equal(queue.reviewRound(batch.id),0);
     queue.finish(batch.id,'failed');
     queue.retryFailed(batch.id,'operator','Updated test evidence');
+    assert.equal(queue.reviewRound(batch.id),1);
+    assert.equal(new IntegrationQueue(db).reviewRound(batch.id),1);
     assert.deepEqual(queue.active(),batch);
     assert.throws(()=>queue.retryFailed(batch.id,'operator','Again'));
     assert.equal(db.prepare('SELECT count(*) AS n FROM integration_retries').get()!.n,1);

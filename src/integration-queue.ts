@@ -3,7 +3,7 @@ import type { DatabaseSync, SQLOutputValue } from 'node:sqlite';
 
 export interface ReadyBranch { issue: number; branch: string; sha: string }
 export interface IntegrationBatch { id: string; entries: ReadyBranch[] }
-export interface BatchOptions { nearFinishAt?: number; targetSize?: number }
+export interface BatchOptions { nearFinishAt?: number; targetSize?: number; eligible?:(head:ReadyBranch)=>boolean }
 
 const maximumWait = 60_000;
 const hardLimit = 15;
@@ -29,6 +29,9 @@ export class IntegrationQueue {
       );
       CREATE UNIQUE INDEX IF NOT EXISTS one_ready_issue ON integration_heads(issue)
         WHERE batch IS NULL AND superseded=0;
+      CREATE TABLE IF NOT EXISTS integration_dependency_holds(
+        issue INTEGER NOT NULL,sha TEXT NOT NULL,epoch INTEGER NOT NULL,PRIMARY KEY(issue,sha)
+      );
     `);
   }
 
@@ -76,7 +79,8 @@ export class IntegrationQueue {
     if (!Number.isInteger(target) || target < 1 || target > hardLimit) throw new Error('Batch target must be 1 to 15');
     return this.write(() => {
       if (this.active()) return;
-      const rows = this.db.prepare('SELECT * FROM integration_heads WHERE batch IS NULL AND superseded=0 ORDER BY readyAt,rowid LIMIT ?').all(target);
+      const ready=this.db.prepare('SELECT * FROM integration_heads WHERE batch IS NULL AND superseded=0 ORDER BY readyAt,rowid');
+      const rows=(options.eligible?ready.all().filter(row=>options.eligible!(branch(row))):ready.all()).slice(0,target);
       if (!rows.length) return;
       const deadline = Number(rows[0]!.readyAt) + maximumWait;
       const eta = options.nearFinishAt;
@@ -91,6 +95,11 @@ export class IntegrationQueue {
       }
       return {id, entries:rows.map(branch)};
     });
+  }
+
+  reviewRound(id:string):number {
+    if(!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='integration_retries'").get())return 0;
+    return Number(this.db.prepare('SELECT count(*) AS n FROM integration_retries WHERE batch=?').get(id)!.n);
   }
 
   retryFailed(id:string, operator:string, reason:string):void {
@@ -110,16 +119,24 @@ export class IntegrationQueue {
     });
   }
 
-  finish(id: string, result: 'integrated'|'failed', options: {retryIssues?: readonly number[]} = {}): void {
+  dependencyHeld(head:ReadyBranch,epoch:number){
+    return Boolean(this.db.prepare('SELECT 1 FROM integration_dependency_holds WHERE issue=? AND sha=? AND epoch=?').get(head.issue,head.sha,epoch));
+  }
+
+  finish(id: string, result: 'integrated'|'failed', options: {retryIssues?: readonly number[];dependencyHold?:{issue:number;epoch:number}} = {}): void {
     this.write(() => {
       const batch = this.db.prepare('SELECT state FROM integration_batches WHERE id=?').get(id);
       if (batch?.state === result) return;
       if (batch?.state !== 'active') throw new Error('Unknown or already resolved integration batch');
       const unaffected = options.retryIssues ?? [];
       if (unaffected.length && result !== 'failed') throw new Error('Only a failed batch can release unaffected heads');
+      const hold=options.dependencyHold;
+      if(hold&&(!unaffected.includes(hold.issue)||!Number.isSafeInteger(hold.epoch)||hold.epoch<0))throw Error('Invalid integration dependency hold');
       for (const issue of new Set(unaffected)) {
         const member = this.db.prepare('SELECT sha FROM integration_members WHERE batch=? AND issue=?').get(id,issue);
         if (!member) throw new Error('Issue is outside the batch');
+        if(hold?.issue===issue)this.db.prepare(`INSERT INTO integration_dependency_holds VALUES(?,?,?)
+          ON CONFLICT(issue,sha) DO UPDATE SET epoch=excluded.epoch`).run(issue,member.sha!,hold.epoch);
         const newer = this.db.prepare('SELECT 1 FROM integration_heads WHERE issue=? AND batch IS NULL AND superseded=0').get(issue);
         if (!newer) this.db.prepare('UPDATE integration_heads SET batch=NULL WHERE batch=? AND issue=?').run(id,issue);
       }

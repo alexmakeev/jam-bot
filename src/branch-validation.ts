@@ -44,7 +44,7 @@ export class BranchValidation {
 
   async settle() {await Promise.all(this.active.values());}
 
-  tick(queue:IntegrationQueue, validate:Validation, signal:AbortSignal, now = Date.now()): Tick {
+  tick(queue:IntegrationQueue, validate:Validation, signal:AbortSignal, now = Date.now(),eligible?:(head:ReadyBranch)=>boolean): Tick {
     // Keep tests off JAM's call stack and bound the local test load. Queueing alone is not a near-finish signal.
     while (!signal.aborted && this.active.size<3) {
       const row=this.db.prepare("SELECT rowid AS id,* FROM branch_validation WHERE state='pending' ORDER BY submittedAt,rowid LIMIT 1").get();
@@ -66,10 +66,11 @@ export class BranchValidation {
     }
     const current=queue.active();
     if(current)return {batch:current,waiting:false};
-    const row=this.db.prepare(`SELECT MIN(startedAt+elapsedEstimate) AS eta FROM branch_validation
-      WHERE state='checking' AND startedAt+elapsedEstimate>?`).get(now);
-    const eta=row?.eta==null ? undefined : Number(row.eta);
-    const batch=queue.claim({targetSize:10,nearFinishAt:eta},now);
-    return {batch,waiting:!batch && queue.snapshot().ready.length>0};
+    const imminent=this.db.prepare(`SELECT v.issue,v.branch,v.sha,v.startedAt+v.elapsedEstimate AS eta FROM branch_validation v
+      WHERE v.state='checking' AND v.startedAt+v.elapsedEstimate>?
+        AND NOT EXISTS(SELECT 1 FROM integration_heads h WHERE h.issue=v.issue AND h.sha=v.sha)
+      ORDER BY eta,v.rowid`).all(now).find(row=>!eligible||eligible({issue:Number(row.issue),branch:String(row.branch),sha:String(row.sha)}));
+    const batch=queue.claim({targetSize:10,nearFinishAt:imminent&&Number(imminent.eta),eligible},now);
+    return {batch,waiting:!batch && queue.snapshot().ready.some(eligible??(()=>true))};
   }
 }

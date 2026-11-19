@@ -13,7 +13,7 @@ export interface IntegrationEvidenceCard {
 const digest=(text:string)=>createHash('sha256').update(text).digest('hex');
 function testReceipt(run:RunEvidence){
   const log=run.log??'';
-  const metadata=log.split('\n').filter(line=>/^(?:Recipe:|Image:|Build:|Command:|Exit code:|Revision:|Production baseline:|# (?:tests|pass|fail) |.*AssertionError|.*ERR_ASSERTION)/.test(line));
+  const metadata=log.split('\n').filter(line=>/^(?:Quality (?:gate|results): |Unit results: |Recipe:|Image:|Build:|Command:|Exit code:|Revision:|Production baseline:|# (?:tests|pass|fail) |.*AssertionError|.*ERR_ASSERTION)/.test(line));
   return {revision:run.sha,logDigest:digest(log),executionSummary:metadata,fullLog:'Retained in the original issue worker artifact and local checkpoint'};
 }
 

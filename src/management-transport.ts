@@ -20,8 +20,11 @@ const resources=[
   ['GET','/status','server_status'],['GET','/topics','list_topics'],['POST','/topics','connect_project'],
   ['GET','/installations','list_installations'],['GET','/installations/{installationId}/projects','available_projects'],
   ['GET','/topics/{repoId}','topic_status'],['POST','/topics/{repoId}/tasks','task_create'],['GET','/topics/{repoId}/task-authority','task_authority'],['PATCH','/topics/{repoId}','configure_topic'],
+  ['GET','/topics/{repoId}/diagnostics','diagnostics'],
   ['GET','/topics/{repoId}/environments','environment_list'],['GET','/topics/{repoId}/environments/{environment}','environment_get'],
-  ['PUT','/topics/{repoId}/environments/{environment}','environment_upsert'],['GET','/topics/{repoId}/environments/{environment}/status','environment_status'],
+  ['PUT','/topics/{repoId}/environments/{environment}','environment_upsert'],
+  ['PUT','/topics/{repoId}/environments/{environment}/secrets/{alias}','secret_set'],
+  ['GET','/topics/{repoId}/environments/{environment}/secrets','secret_get'],['GET','/topics/{repoId}/environments/{environment}/status','environment_status'],
   ['POST','/topics/{repoId}/environments/{environment}/deployments','start_environment_deployment'],
   ['GET','/topics/{repoId}/operations/{requestId}','operation_status']
 ].map(([method,path,operation])=>({method:method!,path:'/api/v1'+path,operation:operation!}));

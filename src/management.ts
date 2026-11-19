@@ -4,6 +4,8 @@ import {taskOperations} from './management-tasks.js';
 import {IntegrationQueue} from './integration-queue.js';
 import {deploymentJobs} from './management-jobs.js';
 import {environmentOperations} from './management-environments.js';
+import {secretOperations} from './management-secrets.js';
+import {diagnosticOperations} from './management-diagnostics.js';
 import {ManagementError,requireServer,requireTopic,targetFields,type ManagementOperation} from './management-contract.js';
 import {configureTopic,projectConnector,serverIdentity,sourceUri,workClass} from './management-projects.js';
 import type {TopicRuntime} from './topics.js';
@@ -90,7 +92,7 @@ export async function createManagement(state:string,routes:Map<string,TopicRunti
         catch {throw new ManagementError(409,'review_conflict','This worker is not awaiting reconciliation.');}
         return {updated:true};
       }},
-    ...taskOperations(routes), ...environments, ...deploymentJobs(routes,environments.find(op=>op.name==='environment_deploy')!,active)
+    ...taskOperations(routes), ...secretOperations(routes,serverId), ...diagnosticOperations(routes), ...environments, ...deploymentJobs(routes,environments.find(op=>op.name==='environment_deploy')!,active)
   ];
   return {operations,settle:()=>Promise.allSettled(active),invoke:async(name:string,raw:unknown)=>{
     const op=operations.find(item=>item.name===name);

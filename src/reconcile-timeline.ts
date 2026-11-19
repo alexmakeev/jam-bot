@@ -18,9 +18,10 @@ export async function backfillTimeline(runtime:Pick<TopicRuntime,'state'|'topic'
     const saved=JSON.parse(await readFile(join(dir,role+'.json'),'utf8'));
     if(saved.backend!=='in-process'||!String(saved.nativeMember).startsWith(role+'-'+issue+'-')|| typeof saved.output!=='string')continue;
     const digest=fingerprint(saved.output);
+    if(typeof saved.dispatchIdentity==='string'&&recorded(saved.dispatchIdentity))continue;
     const current=await readJson<{identity:string}>(join(dir,'handoffs',digest+'.json')).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;});
     if(current && recorded(current.identity))continue;
-    recordProgress(state,issue,'historical:'+saved.nativeMember+':'+digest,
+    recordProgress(state,issue,saved.dispatchIdentity??('historical:'+saved.nativeMember+':'+digest),
       'Historical checkpoint reconstructed from a saved native receipt. '+role+' ('+saved.nativeMember+') delivered output `'+digest.slice(0,12)+'` for this card. The handoff was to '+next+'.');
   }
   const revisions=await readdir(join(dir,'reviews')).catch((e:NodeJS.ErrnoException)=>{if(e.code!=='ENOENT')throw e;return [];});

@@ -1,9 +1,10 @@
 // Operator-supplied profiles. No issue, patch, package script or webhook selects shell commands.
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
-import {mkdir,writeFile,readFile} from 'node:fs/promises';
+import {mkdir,writeFile,readFile,mkdtemp,rm} from 'node:fs/promises';
 import {join} from 'node:path';
-import {homedir} from 'node:os';
+import {homedir,tmpdir} from 'node:os';
+import {codeFile} from './static-quality.mjs';
 import {createHash} from 'node:crypto';
 
 const run=promisify(execFile);
@@ -20,8 +21,26 @@ export function projectRecipes(config) {
     if (!safeRepo.test(repo) || !project || !recipes.has(project.recipe) || typeof project.image!=='string' || !project.image || project.image.startsWith('-')) {
       throw Error('Invalid trusted project recipe');
     }
+    if(project.qualityGate!==undefined&&project.qualityGate!=='development-static-v1')throw Error('Unknown Development quality gate');
   }
   return projects;
+}
+
+function selectedBrowserChecks(project,issues){
+  const checks=Object.entries(project.calculatorSpecCards??{}).filter(([,issue])=>issues.includes(issue)).map(([check])=>check);
+  if(project.sumBrowserImage&&issues.includes(project.runningTotalsCard))checks.push('runningTotals');
+  if(project.sumBrowserImage&&issues.includes(project.clearTotalsCard))checks.push('clearTotals');
+  return {image:project.sumBrowserImage??project.calculatorBrowserImage,site:project.sumBrowserImage?'sum':'calculator',checks};
+}
+
+export function developmentRecipe(project,issue,deployed){
+  if(!project||project.qualityGate!=='development-static-v1'||!Number.isSafeInteger(issue)||issue<1)return;
+  const browser=selectedBrowserChecks(project,[issue]);
+  const checks=['baseline','assertion-red','worker-green','combined-green'];
+  if(browser.image)checks.push('browser-'+browser.site,...browser.checks.map(name=>'browser-'+name));
+  if(deployed)checks.push('deployed-svg');
+  const identity=createHash('sha256').update(JSON.stringify([project.recipe,project.qualityGate,project.image,browser.image??null,checks])).digest('hex');
+  return {version:1,issue,recipe:project.recipe,identity,checks};
 }
 
 const buildAndTest = `
@@ -29,10 +48,11 @@ set -eu
 cp -R /code/. /workspace/
 cd /workspace
 node --version
+if [ "$JAM_STATIC_GATE" = 1 ]; then node /gate/static-quality.mjs; fi
 /opt/jam-bot/node_modules/.bin/tsc --version
 rm -rf -- dist
 /opt/jam-bot/node_modules/.bin/tsc -p tsconfig.json
-exec node --experimental-strip-types --test --test-concurrency=1 "$@"
+exec node --experimental-strip-types --test --test-reporter=/gate/unit-reporter.mjs --test-concurrency=1 "$@"
 `;
 
 async function calculatorPreview({tree,sha,image,name,checks,site,base}) {
@@ -57,6 +77,7 @@ async function runBrowser({html,source,server,baseline,sha,image,name,checks,sit
   const proofs=evidenceDir(sha,deployed?'deployed-'+livePort:'candidate');
   const container=name+'-browser';
   const args=['run','--rm','-i','--name',container,'--network',liveContainer?'container:'+liveContainer:'none','--read-only','--cap-drop','ALL',
+    '--label','jam-bot.validation='+container,
     '--security-opt','no-new-privileges','--pids-limit','128','--memory','768m','--cpus','1','--user','1000:1000',
     '--tmpfs','/tmp:rw,nosuid,nodev,size=128m','-e','HOME=/tmp','-e','XDG_CACHE_HOME=/tmp/cache',image];
   try {
@@ -91,27 +112,47 @@ export async function testCandidate({project,tree,files,sha,base,name,approvedIs
   const tests=files.filter(file=>matcher.test(file));
   if (!tests.length) throw Error('No tracked tests found for '+project.recipe);
   const command=build ? ['sh','-c',buildAndTest,'jam-build',...tests] :
-    ['sh','-c','set -eu; node --version; exec node --experimental-strip-types --test --test-concurrency=1 "$@"','jam-test',...tests];
+    ['sh','-c','set -eu; node --version; if [ "$JAM_STATIC_GATE" = 1 ]; then node /gate/static-quality.mjs; fi; exec node --experimental-strip-types --test --test-reporter=/gate/unit-reporter.mjs --test-concurrency=1 "$@"','jam-test',...tests];
   const [entry,...argv]=command;
+  const quality=await mkdtemp(join(tmpdir(),'jam-quality-'));
+  try {
+    const {stdout}=await run('git',['diff','--name-only','--no-renames','-z',base,'--'],{cwd:tree});
+    const changed=stdout.split('\0').filter(file=>file && files.includes(file) && codeFile(file));
+    const baseline={};
+    for(const file of changed){
+      try {baseline[file]=(await run('git',['show',base+':'+file],{cwd:tree,maxBuffer:1024*1024})).stdout;}
+      catch(error){if(!(await run('git',['ls-tree','-z',base,'--',file],{cwd:tree})).stdout)baseline[file]='';else throw error;}
+    }
+    await writeFile(join(quality,'unit-reporter.mjs'),await readFile(new URL('./unit-reporter.mjs',import.meta.url)),{mode:0o644});
+    await writeFile(join(quality,'static-quality.mjs'),await readFile(new URL('./static-quality.mjs',import.meta.url)),{mode:0o644});
+    await run('git',['-c','core.fsmonitor=false','diff-files','--quiet','--'],{cwd:tree});
+    const executionTree=(await run('git',['-c','core.fsmonitor=false','write-tree'],{cwd:tree})).stdout.trim();
+    const execution={stage:stage??'test',tree:executionTree,productionRevision:stage==='test-red'?base:sha,testRevision:sha};
+    await writeFile(join(quality,'input.json'),JSON.stringify({recipe:project.recipe,sha,files,changed,baseline,execution}),{mode:0o644});
+  } catch(error){await rm(quality,{recursive:true,force:true});throw error;}
   const args=['run','--rm','--name',name,'--network','none','--read-only','--cap-drop','ALL','--user','1000:1000',
+    '--label','jam-bot.validation='+name,
+    '--env','JAM_STATIC_GATE='+(project.qualityGate==='development-static-v1'?'1':'0'),
     '--security-opt','no-new-privileges','--pids-limit','128','--memory','512m','--cpus','1','--tmpfs','/tmp:rw,noexec,nosuid,size=32m',
+    '--mount','type=bind,src='+join(quality,'unit-reporter.mjs')+',dst=/gate/unit-reporter.mjs,readonly',
+    '--mount','type=bind,src='+join(quality,'static-quality.mjs')+',dst=/gate/static-quality.mjs,readonly',
+    '--mount','type=bind,src='+join(quality,'input.json')+',dst=/gate/input.json,readonly',
     '--mount','type=bind,src='+tree+',dst=/code,readonly','-w','/code'];
   if (build) args.push('--tmpfs','/workspace:rw,nosuid,nodev,size=96m,uid=1000,gid=1000,mode=700');
   try {
     const {stdout,stderr}=await run('docker',[...args,'--entrypoint',entry,project.image,...argv],{timeout:90000,maxBuffer:1024*1024});
     const log='Recipe: '+project.recipe+'\nImage: '+project.image+'\nBuild: '+(build?'tsc -p tsconfig.json':'native Node type stripping')+
-      '\nCommand: node --experimental-strip-types --test --test-concurrency=1 '+tests.join(' ')+'\nExit code: 0\nRevision: '+sha;
-    const diagnostic=stdout+(stderr?'\n'+stderr:'');
-    const checks=Object.entries(project.calculatorSpecCards??{}).filter(([,issue])=>approvedIssues.includes(issue)).map(([check])=>check);
-    if(project.sumBrowserImage && approvedIssues.includes(project.runningTotalsCard))checks.push('runningTotals');
-    if(project.sumBrowserImage && approvedIssues.includes(project.clearTotalsCard))checks.push('clearTotals');
-    const browserImage=project.sumBrowserImage??project.calculatorBrowserImage;
-    const preview=['test-head','test-red'].includes(stage)?'Browser acceptance: pending integrator candidate.':browserImage ? await calculatorPreview({tree,sha,base,image:browserImage,name,checks,site:project.sumBrowserImage?'sum':'calculator'}) : '';
-    return {tests,log:log+'\n'+(diagnostic.length>5000 ? diagnostic.slice(0,400)+'\n…\n'+diagnostic.slice(-4600) : diagnostic)+'\n'+(browserImage&& !['test-head','test-red'].includes(stage)?'Browser recipe: calculator Chromium acceptance\nBrowser image: '+browserImage+'\nBrowser revision: '+sha+'\n':'')+preview};
+      '\nCommand: node --experimental-strip-types --test --test-reporter=/gate/unit-reporter.mjs --test-concurrency=1 '+tests.join(' ')+'\nExit code: 0\nRevision: '+sha;
+    const qualityEvidence=stdout.split('\n').filter(line=>/^(?:Quality (?:gate|results)|Unit results): /.test(line)).join('\n');
+    const diagnostic=stdout.split('\n').filter(line=>!/^(?:Quality (?:gate|results)|Unit results): /.test(line)).join('\n')+(stderr?'\n'+stderr:'');
+    const {image:browserImage,site,checks}=selectedBrowserChecks(project,approvedIssues);
+    const preview=['test-head','test-red'].includes(stage)?'Browser acceptance: pending integrator candidate.':browserImage ? await calculatorPreview({tree,sha,base,image:browserImage,name,checks,site}) : '';
+    return {tests,log:log+'\n'+qualityEvidence+'\n'+(diagnostic.length>5000 ? diagnostic.slice(0,400)+'\n…\n'+diagnostic.slice(-4600) : diagnostic)+'\n'+(browserImage&& !['test-head','test-red'].includes(stage)?'Browser recipe: calculator Chromium acceptance\nBrowser image: '+browserImage+'\nBrowser revision: '+sha+'\n':'')+preview};
   } catch (error) {
-    const header='Recipe: '+project.recipe+'\nImage: '+project.image+'\nBuild: '+(build?'tsc -p tsconfig.json':'native Node type stripping')+'\nCommand: node --experimental-strip-types --test --test-concurrency=1 '+tests.join(' ')+'\nExit code: '+(error.code??'unknown')+'\nRevision: '+sha+'\nProduction baseline: '+base+'\n';
-    throw Error('Validation failed for '+project.recipe+'\n'+header+[error.stdout,error.stderr,(!error.stdout && !error.stderr)?error.message:'',error.killed?'Timed out':''].filter(Boolean).join('\n').slice(-8000));
-  } finally { await run('docker',['rm','-f',name]).catch(()=>{}); }
+    const header='Recipe: '+project.recipe+'\nImage: '+project.image+'\nBuild: '+(build?'tsc -p tsconfig.json':'native Node type stripping')+'\nCommand: node --experimental-strip-types --test --test-reporter=/gate/unit-reporter.mjs --test-concurrency=1 '+tests.join(' ')+'\nExit code: '+(error.code??'unknown')+'\nRevision: '+sha+'\nProduction baseline: '+base+'\n';
+    const qualityEvidence=(error.stdout??'').split('\n').filter(line=>/^(?:Quality (?:gate|results)|Unit results): /.test(line)).join('\n');
+    throw Error('Validation failed for '+project.recipe+'\n'+header+[(error.stdout??'').split('\n').filter(line=>!/^(?:Quality (?:gate|results)|Unit results): /.test(line)).join('\n'),error.stderr,(!error.stdout && !error.stderr)?error.message:'',error.killed?'Timed out':''].filter(Boolean).join('\n').slice(-8000)+'\n'+qualityEvidence);
+  } finally { await run('docker',['rm','-f',name]).catch(()=>{});await rm(quality,{recursive:true,force:true}); }
 }
 
 export async function verifyDeployedSvg(project,job,port){

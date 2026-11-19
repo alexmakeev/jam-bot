@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,readFile,readdir,rm,writeFile} from 'node:fs/promises';
+import {mkdir,mkdtemp,readFile,readdir,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {publishRoleFailure,RoleStageFailure} from '../src/role-failure.js';
@@ -33,9 +33,19 @@ test('a refused role persists its safe category and original local diagnostic an
     assert.equal(error.localDetail,detail);assert.doesNotMatch(error.message,/sample-secret/);assert.doesNotMatch(JSON.stringify(error),/sample-secret/);return true;
   });
   assert.equal(calls,1);
+  await assert.rejects(checkpointRole({...job,input:'Same task with new workspace metadata',workspaceManifest:join(state,'new-manifest.json')},'publish specification',run),RoleStageFailure);
+  assert.equal(calls,1);
   const directory=join(state,'assignments','35','roles');
   const files=await readdir(directory);const saved=JSON.parse(await readFile(join(directory,files[0]!),'utf8'));
   assert.equal(saved.failureCategory,'harness_refusal');assert.equal(saved.failureDetail,detail);
+});
+
+test('changed role inputs reconcile a harness-only refusal before dispatching a replacement',async t=>{
+  const state=await mkdtemp(join(tmpdir(),'role-refusal-window-'));t.after(()=>rm(state,{recursive:true,force:true}));
+  const directory=join(state,'assignments','1','roles');await mkdir(directory,{recursive:true});
+  await writeFile(join(directory,'architect-'+'a'.repeat(64)+'.json'),JSON.stringify({session:'lead',input:'Original input',challenge:'original',startedAt:Date.now(),attempt:1}));
+  const job={state,cwd:state,session:'lead',issue:1,role:'architect' as const,input:'Changed excerpts',signal:new AbortController().signal};
+  await assert.rejects(checkpointRole(job,'publish',async()=>{assert.fail('A refused stage must not be dispatched again');},async original=>{assert.equal(original.input,'Original input');return {refused:true};}),error=>error instanceof RoleStageFailure&&error.category==='harness_refusal');
 });
 
 test('a historical role incident publishes one sanitized role report with responsible mention and survives ambiguous publication',async t=>{
@@ -74,4 +84,36 @@ test('a generic historical stop resolves its producing role from the saved faile
   });
   assert.equal(result.role,'architect');assert.equal(result.category,'harness_refusal');
   assert.match(summary,/❓ @owner/);assert.match(report,/Role: Architect/);
+});
+
+test('normal refusal and automatic fallback metadata block acceptance even beyond a large transcript tail',async t=>{
+  const dir=await mkdtemp(join(tmpdir(),'refusal-metadata-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+  const path=join(dir,'session.jsonl'),at=Date.now();
+  const refusal={type:'assistant',sessionId:'lead',message:{stop_reason:'refusal'},timestamp:new Date(at).toISOString()};
+  const padding=JSON.stringify({type:'user',sessionId:'lead',message:{content:'x'.repeat(262144)}})+'\n';
+  await writeFile(path,JSON.stringify(refusal)+'\n'+padding);
+  assert.equal(await stageRefused(path,'lead',at),true);
+  assert.equal(await stageRefused(path,'lead',at+1),false);
+  assert.equal(await stageRefused(path,'lead',at-10,undefined,at-1),false);
+  await writeFile(path,JSON.stringify({...refusal,agentId:'native-a',cwd:dir})+'\n');
+  assert.equal(await stageRefused(path,'lead',at,{handle:'native-a',cwd:dir}),true);
+  assert.equal(await stageRefused(path,'lead',at,{handle:'native-b',cwd:dir}),false);
+  const fallback={type:'system',subtype:'model_refusal_fallback',sessionId:'lead',timestamp:new Date(at).toISOString()};
+  await writeFile(path,JSON.stringify(fallback)+'\n'+padding);assert.equal(await stageRefused(path,'lead',at),true);
+  await writeFile(path,JSON.stringify({type:'user',sessionId:'lead',timestamp:new Date(at).toISOString(),message:{content:JSON.stringify(refusal)}})+'\n');
+  assert.equal(await stageRefused(path,'lead',at),false);
+});
+
+test('a fallback work product cannot hide a refusal or dispatch a replacement role',async t=>{
+  const state=await mkdtemp(join(tmpdir(),'role-fallback-'));t.after(()=>rm(state,{recursive:true,force:true}));
+  const previous=process.env.CLAUDE_CONFIG_DIR;process.env.CLAUDE_CONFIG_DIR=join(state,'config');t.after(()=>{if(previous===undefined)delete process.env.CLAUDE_CONFIG_DIR;else process.env.CLAUDE_CONFIG_DIR=previous;});
+  const job={state,cwd:state,session:'lead',issue:1,role:'architect' as const,input:'Authorized work',signal:new AbortController().signal};
+  const log=join(process.env.CLAUDE_CONFIG_DIR,'projects',state.replace(/[^a-zA-Z0-9-]/g,'-'),'lead.jsonl');let runs=0;
+  const run=async()=>{
+    runs++;await mkdir(join(process.env.CLAUDE_CONFIG_DIR!,'projects',state.replace(/[^a-zA-Z0-9-]/g,'-')),{recursive:true});
+    await writeFile(log,JSON.stringify({type:'assistant',sessionId:'lead',timestamp:new Date().toISOString(),message:{stop_reason:'refusal'}})+'\n');
+    return {developer:'native',nativeMember:'architect@team',backend:'in-process',team:'team',output:'Unapproved fallback work product'};
+  };
+  for(let i=0;i<2;i++)await assert.rejects(checkpointRole(job,'publish',run,async()=>({}),false),error=>error instanceof RoleStageFailure&&error.category==='harness_refusal');
+  assert.equal(runs,1);
 });

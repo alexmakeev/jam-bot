@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rename, link, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import type { Card, Owner, ProjectSource } from './model.js';
@@ -16,6 +16,18 @@ export async function createJson(path: string, value: unknown): Promise<boolean>
   await mkdir(dirname(path), { recursive: true });
   try { await writeFile(path, JSON.stringify(value, null, 2), { flag: 'wx', mode: 0o600 }); return true; }
   catch (e) { if ((e as NodeJS.ErrnoException).code === 'EEXIST') return false; throw e; }
+}
+export async function claimJson(path:string,value:unknown):Promise<boolean>{
+  await mkdir(dirname(path),{recursive:true,mode:0o700});
+  const temporary=path+'.'+randomUUID();
+  try{
+    await writeFile(temporary,JSON.stringify(value)+'\n',{flag:'wx',mode:0o600});
+    await link(temporary,path);
+    return true;
+  }catch(error){
+    if((error as NodeJS.ErrnoException).code==='EEXIST')return false;
+    throw error;
+  }finally{await rm(temporary,{force:true});}
 }
 /** Trusted local fixture, NOT a GitHub approval verifier or cross-host authority. */
 export class FixtureSource implements ProjectSource {

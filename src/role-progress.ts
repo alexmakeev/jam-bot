@@ -1,6 +1,7 @@
-export type Owner = 'Designer'|'Architect'|'Worker'|'Integrator';
+export type Owner = 'Designer'|'Architect'|'Worker'|'Integrator'|'Cleaner';
 export interface Update {identity:string; summary:string}
 export function progressOwner(identity:string):Owner {
+  if(identity.startsWith('cleaner-'))return 'Cleaner';
   if(identity.startsWith('designer-'))return 'Designer';
   if(/^(?:integrat|diagnosis[:-]|deployment:|await-site:|site-failed:|publication-|card-result-verified|fix-spec:|review-(?:retry|blocked):integrator)/.test(identity))return 'Integrator';
   if(/^(?:scope-plan:|material-decision:|card-accepted|waiting-profile|design|architect|spec-ready:|specification:)/.test(identity))return 'Architect';
@@ -12,6 +13,7 @@ export function statusBlock(lines:string[]){
 }
 
 export function roleChecklist(owner:Owner,history:Update[]){
+  if(owner==='Cleaner')return '**🍯 JAM Cleaner: post-integration cleanup**\n\n'+(history.at(-1)?.summary??'Cleanup report pending.');
   const start=owner==='Worker'?history.map(row=>/^(rework:|worker-revision:|worker-correction:)/.test(row.identity)).lastIndexOf(true):-1;
   const current=history.slice(Math.max(start,0));
   const has=(prefix:string)=>current.some(row=>row.identity.startsWith(prefix));

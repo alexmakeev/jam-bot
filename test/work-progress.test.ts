@@ -6,9 +6,11 @@ import {join} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {spawnSync} from 'node:child_process';
 import {git} from '../src/profile-checkout.js';
-import {implementationCommit} from '../src/implementation-checkpoint.js';
+import {checkpointImplementationCorrection,implementationCommit} from '../src/implementation-checkpoint.js';
+import {Journal} from '../src/intake-journal.js';
 import {recordProgress,publishProgress} from '../src/work-progress.js';
 import {checkpointRole} from '../src/role-checkpoint.js';
+import {publishDirectResult} from '../src/profile-publication.js';
 
 const topic={repository:'owner/repo',repoId:10,installation:11,cwd:'/unused'};
 
@@ -50,7 +52,12 @@ test('SIGKILL after native output resumes from the original receipt without a se
   let replay=0;
   const resume=()=>checkpointRole({...job,signal:new AbortController().signal},'validation',async()=>{replay++;throw Error('duplicate assignment');},
     async (_,attempt)=>{const actual=JSON.parse(await readFile(evidence,'utf8'));assert.equal(actual.challenge,attempt.challenge);return {receipt:actual.receipt};});
-  assert.deepEqual(await resume(),result);assert.deepEqual(await resume(),result);assert.equal(replay,0);
+  const saved=await resume();
+  const {dispatchIdentity,...receipt}=saved;
+  assert.match(dispatchIdentity??'',/^developer-.*-received$/);
+  assert.deepEqual(receipt,result);assert.deepEqual(await resume(),saved);assert.equal(replay,0);
+  const next=await checkpointRole({...job,input:'different approved input',signal:new AbortController().signal},'validation',async()=>result);
+  assert.notEqual(next.dispatchIdentity,dispatchIdentity);
 });
 
 test('developer recovers a previously committed tree and never commits it twice',async t=>{
@@ -58,13 +65,61 @@ test('developer recovers a previously committed tree and never commits it twice'
   const tree=join(state,'repo');await git(state,'init','repo');await writeFile(join(tree,'file'),'old');
   await git(tree,'add','file');await git(tree,'commit','-m','base');
   const path=join(state,'intent.json');let calls=0;
-  const run=()=>implementationCommit(tree,path,1,['file'],async()=>{calls++;return JSON.stringify({files:[{path:'file',content:'new'}]});},async()=>{});
+  const payload=JSON.stringify({files:[{path:'file',content:'new'}]});
+  const unexpected=()=>implementationCommit(tree,path,1,['file'],async()=>payload+'\n\nUnknown wrapper',async()=>{});
+  await assert.rejects(unexpected,SyntaxError);
+  assert.equal(await git(tree,'status','--porcelain'),'');
+  const run=()=>implementationCommit(tree,path,1,['file'],async()=>{
+    calls++;
+    return payload+'\n\nHandoff notes:\n{"files":[{"path":"outside","content":"example"}]}';
+  },async()=>{});
   const head=await run();
   const intent=JSON.parse(await readFile(path,'utf8'));delete intent.sha;
   await writeFile(path,JSON.stringify(intent)); // process stopped immediately after Git committed
   assert.equal(await run(),head);assert.equal(calls,1);
   assert.equal(await git(tree,'rev-list','--count','HEAD'),'2');
+  assert.equal(await git(tree,'show','HEAD:file'),'new');
   await writeFile(join(tree,'file'),'unexpected');await assert.rejects(run,/Unexpected worktree revision/);
+});
+
+test('adviser suspension after a corrected implementation carries the exact review attempt across restart',async t=>{
+  const state=await mkdtemp(join(tmpdir(),'jam-corrected-review-'));t.after(()=>rm(state,{recursive:true,force:true}));
+  const tree=join(state,'repo'),path=join(state,'intake.sqlite');
+  await git(state,'init','repo');await writeFile(join(tree,'file'),'base');await git(tree,'add','file');await git(tree,'commit','-m','base');
+  const base=await git(tree,'rev-parse','HEAD');
+  const project={tree,store:tree,branch:await git(tree,'branch','--show-current'),base,expected:base};
+  const issue=38,delivery='fixture-correction';
+  let journal=new Journal(path);journal.start(topic);
+  journal.enqueue({delivery,issue,title:'Scoped change',body:'Approved fixture',action:'task'});
+  assert.ok(journal.next());journal.complete({delivery,issue,disposition:'intake_received'});
+  assert.ok(journal.nextWorker(()=>true,()=>true));
+  const produce=(attempt:number,text:string)=>implementationCommit(tree,join(state,'implementation-'+attempt+'.json'),issue,['file'],
+    async()=>JSON.stringify({files:[{path:'file',content:text}]}),async()=>{});
+  const first=await produce(0,'first attempt');
+  await checkpointImplementationCorrection(state,issue,project,{sha:first,attempt:1,feedback:'Correct the failed tests'});
+  const head=await produce(1,'corrected attempt');
+  await checkpointImplementationCorrection(state,issue,project,{sha:head,attempt:1,feedback:'Resume exact GREEN candidate',reviewOnly:true});
+  journal.suspendForAdvice(delivery,{id:'a'.repeat(36),digest:'b'.repeat(64),head,approval:'c'.repeat(64),submittedAt:Date.now(),files:['file']});
+  journal.db.close();journal=new Journal(path);journal.start(topic);t.after(()=>journal.db.close());
+  assert.equal(journal.resumeAdvice(delivery)?.issue,issue);
+  assert.deepEqual(JSON.parse(journal.specificationCheckpoint(issue)!),{...project,correcting:true});
+  const correction=JSON.parse(await readFile(join(state,'assignments','38','correction.json'),'utf8'));
+  assert.deepEqual(correction,{project,sha:head,attempt:1,feedback:'Resume exact GREEN candidate',reviewOnly:true});
+  assert.equal(await git(tree,'rev-parse','HEAD'),journal.adviceWait(delivery)?.wait.head);
+  await assert.rejects(produce(0,'must not apply again'),/Unexpected worktree revision/);
+  assert.equal(await git(tree,'rev-list','--count','HEAD'),'3');
+});
+
+test('identical direct text is journaled under its producing dispatch on replay',async t=>{
+  const state=await mkdtemp(join(tmpdir(),'jam-direct-result-'));
+  t.after(()=>rm(state,{recursive:true,force:true}));
+  const subject={...topic,cwd:join(state,'leo')};
+  const first=await publishDirectResult(subject,7,'assignment','Same result','dispatch-a');
+  assert.equal(await publishDirectResult(subject,7,'assignment','Same result','dispatch-a'),first);
+  assert.notEqual(await publishDirectResult(subject,7,'assignment','Same result','dispatch-b'),first);
+  const db=new DatabaseSync(join(state,'work-progress.sqlite'),{readOnly:true});
+  try{assert.equal(db.prepare('SELECT count(*) AS n FROM events WHERE issue=7').get()?.n,2);}
+  finally{db.close();}
 });
 
 test('integration resumes after a fast-forward already happened before the next assembly checkpoint',async t=>{

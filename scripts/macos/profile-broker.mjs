@@ -1,10 +1,13 @@
 import {readProjectSource} from './runtime/project-values-reader.js';
-import {prepareIntegrationPr,verifyIntegrationPr} from './integration-pr.mjs';
+import {prepareIntegrationPr,verifyIntegrationPr,confirmIntegrationPublication} from './integration-pr.mjs';
+import {fetchValidationBase,overlayRedTests,verifyCandidateScope} from './git-scope.mjs';
 // Local dev publisher for explicitly selected repositories. The service only exchanges Git bundles.
 import {consultAll,selectedConsultants} from './consultants.mjs';
+import {consultantWorkspace} from './consultant-workspace.mjs';
+import {recoverValidation} from './validation-recovery.mjs';
 import {setTimeout as delay} from 'node:timers/promises';
 import {calculatorRepo,queueCalculator,reconcileCalculator,sandboxRepo,queueSandbox,reconcileSandbox} from './calculator-deployment.mjs';
-import {projectRecipes,testCandidate} from './profile-recipes.mjs';
+import {developmentRecipe,projectRecipes,testCandidate} from './profile-recipes.mjs';
 import { brokerFiles } from './runtime/broker-approval.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -42,6 +45,8 @@ async function authorizedFiles(req){
   const allowed=new Set();
   for(const card of req.cards){
     if(!Number.isSafeInteger(card.issue)||card.issue<1)throw Error('Invalid issue');
+    if(card.recipeIdentity!==undefined&&developmentRecipe(projects[req.repo],card.issue,requiresLiveAcceptance({...req,cards:[card]}))?.identity!==card.recipeIdentity)
+      throw Error('Trusted Development recipe differs from the approved specification contract');
     const base='repos/'+req.repo;
     const issue=await gh(base+'/issues/'+card.issue);
     const paths=await brokerFiles(card.issue,issue,card.approval,login=>gh(base+'/collaborators/'+encodeURIComponent(login)+'/permission'));
@@ -57,7 +62,7 @@ function requiresLiveAcceptance(req){
 }
 
 async function execute(dir) {
-  await regular(join(dir,'request.json'),1024*1024);
+  await regular(join(dir,'request.json'),3*1024*1024);
   const req=JSON.parse(await readFile(join(dir,'request.json'),'utf8'));
   if (!/^[\w.-]+\/[\w.-]+$/.test(req.repo)) throw Error('Repository outside publisher scope');
   if(await revoked(req.repo))throw Error('GitHub App repository grant was revoked');
@@ -66,9 +71,19 @@ async function execute(dir) {
     if(!Number.isSafeInteger(req.repoId)||req.repoId<=0)throw Error('Missing repository identity');
     const policy=projects[req.repo]?.releaseProfile;
     if(policy && policy.repoId!==req.repoId)throw Error('Installed project identity mismatch');
-    return readProjectSource(req.repo,req.repoId,policy?.profileRef,gh);
+    const source=await readProjectSource(req.repo,req.repoId,policy?.profileRef,gh);
+    if(req.issue===undefined)return source;
+    if(!Number.isSafeInteger(req.issue)||req.issue<1)throw Error('Invalid recipe subject');
+    const gate=developmentRecipe(projects[req.repo],req.issue,requiresLiveAcceptance({...req,cards:[{issue:req.issue}]}));
+    return gate?{...source,developmentRecipe:gate}:source;
   }
   if (!Object.hasOwn(projects,req.repo)) throw Error('Repository outside publisher scope');
+  if(req.action==='publication-status'){
+    if(!sha(req.sha))throw Error('Invalid publication revision');
+    await authorizedFiles(req);
+    await confirmIntegrationPublication(req.repo,req.sha,prApi);
+    return {sha:req.sha,alreadyPublished:true,awaitDeployment:requiresLiveAcceptance(req)};
+  }
   if(req.action==='consult'){
     await authorizedFiles(req);
     const providers=new Map();
@@ -82,7 +97,23 @@ async function execute(dir) {
       });
       return written;
     };
-    return consultAll(selectedConsultants(projects[req.repo].consultants,req.only),req.phase,req.packet,undefined,progress);
+    let workspace;
+    try{
+      if(req.workspace){await regular(join(dir,'candidate.bundle'),32*1024*1024);workspace=await consultantWorkspace(req,join(dir,'candidate.bundle'),git);}
+      return await consultAll(selectedConsultants(projects[req.repo].consultants,req.only),req.phase,req.packet,undefined,progress,workspace);
+    }finally{
+      if(workspace){
+        const logs=[];
+        for(const entry of await readdir(workspace.audit)){
+          const file=join(workspace.audit,entry,'reads.jsonl');
+          const text=await readFile(file,'utf8').catch(error=>{if(error.code==='ENOENT')return '';throw error;});
+          const identity=workspace.identities.get(entry);if(!identity)throw Error('Unregistered workspace reader');
+          logs.push(JSON.stringify({reader:entry,...identity,events:text.split('\n').filter(Boolean).slice(0,2000).map(line=>JSON.parse(line))}));
+        }
+        await writeFile(join(dir,'workspace-reads.jsonl'),logs.join('\n')+'\n',{mode:0o600});
+        await workspace.dispose();
+      }
+    }
   }
   const url='https://github.com/'+req.repo+'.git';
   const temp=await mkdtemp(join(tmpdir(),'jam-broker-'));
@@ -106,26 +137,14 @@ async function execute(dir) {
       await verifyIntegrationPr(req.repo,pr.number,req.sha,prApi);
       return {sha:dev,alreadyPublished:true,awaitDeployment:requiresLiveAcceptance(req)};
     }
-    if(req.action!=='test-head' && dev!==req.expected) throw Error('Remote dev changed during validation');
-    const baseRef=dev?'dev':(await gh('repos/'+req.repo)).default_branch;
-    await git(temp,['fetch','--no-tags','origin','refs/heads/'+baseRef+':refs/heads/base']);
-    if(req.action==='test-head')await git(temp,['merge-base','--is-ancestor',req.base,'refs/heads/base']);
-    else if(await git(temp,['rev-parse','refs/heads/base'])!==req.base) throw Error('Candidate base is stale');
+    await fetchValidationBase(args=>git(temp,args),req,dev,async()=>(await gh('repos/'+req.repo)).default_branch);
     const bundle=join(dir,'candidate.bundle'); await regular(bundle,32*1024*1024);
     await git(temp,['fetch','--no-tags',bundle,'refs/heads/export:refs/heads/candidate']);
     if(await git(temp,['rev-parse','refs/heads/candidate'])!==req.sha)throw Error('Candidate object mismatch');
     await git(temp,['merge-base','--is-ancestor',req.base,req.sha]);
-    // Inspect every new commit to prevent smuggling unapproved historical contents in the push.
-    for(const revision of (await git(temp,['rev-list',req.base+'..'+req.sha])).split('\n').filter(Boolean)){
-      const paths=(await git(temp,['diff-tree','--root','-m','--no-commit-id','--name-only','--no-renames','-r','-z',revision])).split('\0').filter(Boolean);
-      if(paths.some(path=>!files.has(path)))throw Error('Commit outside approved file scope');
-    }
+    await verifyCandidateScope(args=>git(temp,args),req,files);
     const tree=join(temp,'code');await git(temp,['worktree','add','--detach',tree,req.action==='test-red'?req.base:req.sha]);
-    if(req.action==='test-red'){
-      const testFiles=(await git(temp,['ls-tree','-r','--name-only',req.sha])).split('\n').filter(path=>/^(?:test|tests)\/.*\.test\.[cm]?[jt]s$/.test(path));
-      if(!testFiles.length)throw Error('No unit tests for RED validation');
-      await git(tree,['checkout',req.sha,'--',...testFiles]);
-    }
+    if(req.action==='test-red')await overlayRedTests(args=>git(temp,args),args=>git(tree,args),req.sha);
     const filesForCandidate=(await git(tree,['ls-files','-z'])).split('\0').filter(Boolean);
     const {tests,log}=await testCandidate({project:projects[req.repo],tree,files:filesForCandidate,stage:req.action,
       sha:req.sha,base:req.base,name:'jam-check-'+basename(dir),approvedIssues:req.cards.map(card=>card.issue)});
@@ -155,7 +174,7 @@ async function reply(dir) {
 async function recoverClaim(dir,id){
   if(await lstat(join(dir,'answer.json')).catch(()=>null))return;
   const claimed=join(dir,'request.json');
-  try{await regular(claimed,1024*1024);}catch(e){if(e.code==='ENOENT')return;throw e;}
+  try{await regular(claimed,3*1024*1024);}catch(e){if(e.code==='ENOENT')return;throw e;}
   const req=JSON.parse(await readFile(claimed,'utf8'));
   if(req.brokerRequestId!==id)return;
   const staged=join(dir,'answer.tmp');
@@ -164,6 +183,17 @@ async function recoverClaim(dir,id){
     try{const result=JSON.parse(pending);if(typeof result.ok!=='boolean')throw Error('Incomplete answer');}
     catch{return storeUncertain(dir);}
     await rename(staged,join(dir,'answer.json'));return;
+  }
+  if(['test-red','test-head','test'].includes(req.action)&&Object.hasOwn(projects,req.repo)){
+    try{
+      await recoverValidation(dir,id,{
+        inspect:async name=>{
+          try{const {stdout}=await run('docker',['inspect',name],{timeout:10000,maxBuffer:65536});const [value]=JSON.parse(stdout);return {running:value.State.Running,owner:value.Config.Labels?.['jam-bot.validation']};}
+          catch(error){if(/No such (?:object|container)/i.test(String(error.stderr??'')))return null;throw error;}
+        },
+        stop:name=>run('docker',['rm','-f',name],{timeout:10000}),replay:()=>reply(dir)
+      });return;
+    }catch(error){if(/ownership|budget exhausted/.test(error.message))return storeUncertain(dir);throw error;}
   }
   if(req.action==='publish' && Object.hasOwn(projects,req.repo) && sha(req.sha)){
     const current=await gh('repos/'+req.repo+'/git/ref/heads/dev');
@@ -193,7 +223,7 @@ do {
     const pending=join(dir,'request.ready');
     let consult=false;
     try{
-      await regular(pending,1024*1024);
+      await regular(pending,3*1024*1024);
       consult=JSON.parse(await readFile(pending,'utf8')).action==='consult';
     }catch(error){if(error.code==='ENOENT'){
       if(!running.has(id))await recoverClaim(dir,id).catch(error=>console.error('Cannot reconcile publisher request',id,error.code??error.name));

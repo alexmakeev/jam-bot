@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {projectRecipes,testCandidate} from '../scripts/macos/profile-recipes.mjs';
+import {developmentRecipe,projectRecipes,testCandidate} from '../scripts/macos/profile-recipes.mjs';
 
 test('legacy operator settings retain direct Node tests for every configured repository',()=>{
   const result=projectRecipes({repositories:['o/a','o/b'],image:'sha256:pinned'});
@@ -43,4 +43,16 @@ test('Sandbox clear action is selected only by a positive issue number on an ena
   assert.doesNotThrow(()=>load({...project,clearTotalsCard:8}));
   assert.throws(()=>load({...project,clearTotalsCard:'8'}),/Invalid clear totals/);
   assert.throws(()=>load({...project,clearTotalsCard:8,sumBrowserImage:undefined}),/Invalid clear totals/);
+});
+
+test('a projected Development recipe exposes only the actual phase and issue-selected checks',()=>{
+  const project={image:'sha256:'+'8'.repeat(64),recipe:'node-strip',qualityGate:'development-static-v1',
+    sumBrowserImage:'sha256:'+'7'.repeat(64),runningTotalsCard:7,clearTotalsCard:8};
+  const ordinary=developmentRecipe(project,37,false);
+  assert.deepEqual(ordinary.checks,['baseline','assertion-red','worker-green','combined-green','browser-sum']);
+  const clear=developmentRecipe(project,8,false);
+  assert.deepEqual(clear.checks,[...ordinary.checks,'browser-clearTotals']);
+  assert.notEqual(clear.identity,ordinary.identity);
+  assert.notEqual(developmentRecipe({...project,image:'sha256:'+'9'.repeat(64)},37,false).identity,ordinary.identity);
+  assert.equal(developmentRecipe({...project,qualityGate:undefined},37,false),undefined);
 });

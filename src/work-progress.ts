@@ -70,7 +70,7 @@ export function recordProgress(state:string,issue:number,identity:string,summary
     };
     if(routine && board.kind==='development/roles'){
       // Internal reports remain in the producing stage's local checkpoint.
-      if(!/^(?:blocked:|validated:|integrated:|scope-plan:|designer-.*-received$|fix-spec:)/.test(identity))report=undefined;
+      if(!/^(?:cleaner-|blocked:|validated:|integrated:|scope-plan:|designer-.*-received$|fix-spec:)/.test(identity))report=undefined;
       const previous=(identity.startsWith('blocked:')||identity.startsWith('material-decision:'))?db.prepare("SELECT identity FROM role_updates WHERE issue=? AND identity NOT LIKE 'blocked:%' AND identity NOT LIKE 'material-decision:%' ORDER BY rowid DESC LIMIT 1").get(issue):undefined;
       const owner=progressOwner(previous?String(previous.identity):identity);
       const boardKey=segment(owner,fingerprint('work-card-role:'+owner));
@@ -214,7 +214,7 @@ export async function publishTimeline(state:string,topic:Topic,signal:AbortSigna
     for(const row of db.prepare('SELECT DISTINCT issue,board FROM role_updates').all()){
       if(db.prepare('SELECT 1 FROM human_turns WHERE issue=?').get(row.issue!))continue;
       const history=db.prepare('SELECT identity,summary FROM role_updates WHERE issue=? AND board=? ORDER BY rowid').all(row.issue!,row.board!).map(r=>({identity:String(r.identity),summary:String(r.summary)}));
-      const owner=(['Designer','Architect','Worker','Integrator'] as const).find(role=>fingerprint('work-card-role:'+role)===row.board);
+      const owner=(['Designer','Architect','Worker','Integrator','Cleaner'] as const).find(role=>fingerprint('work-card-role:'+role)===row.board);
       if(!owner)continue;
       const body=roleChecklist(owner,history)+'\n\n<!-- jam-bot:progress:'+row.board+' -->';
       db.prepare("UPDATE events SET body=?,version=version+1,status=CASE WHEN receipt IS NULL THEN status ELSE 'dirty' END,retryAt=0 WHERE issue=? AND key=? AND body<>?").run(body,row.issue!,row.board!,body);

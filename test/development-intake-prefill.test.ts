@@ -1,0 +1,50 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,rm} from 'node:fs/promises';
+import {join} from 'node:path';
+import {tmpdir} from 'node:os';
+import {Journal} from '../src/intake-journal.js';
+import {BranchValidation} from '../src/branch-validation.js';
+import {prefillDevelopmentTasks} from '../src/developer-profile.js';
+
+test('opt-in Development admits a bounded queued task buffer without delaying in-flight validation',async t=>{
+  const state=await mkdtemp(join(tmpdir(),'jam-intake-buffer-'));t.after(()=>rm(state,{recursive:true,force:true}));
+  const journal=new Journal(join(state,'intake.sqlite'));t.after(()=>journal.db.close());new BranchValidation(journal.db);
+  const topic={repository:'fixture/project',repoId:1,installation:2,cwd:state};
+  const previous=process.env.JAM_DEVELOPMENT_V2_REPOSITORIES;delete process.env.JAM_DEVELOPMENT_V2_REPOSITORIES;t.after(()=>{if(previous===undefined)delete process.env.JAM_DEVELOPMENT_V2_REPOSITORIES;else process.env.JAM_DEVELOPMENT_V2_REPOSITORIES=previous;});
+  journal.db.prepare('INSERT INTO intake(delivery,issue,action,title,body,state,workerState) VALUES(?,?,?,?,?,?,?)').run('first',1,'task','first','','received','pending');
+  journal.db.prepare('INSERT INTO intake(delivery,issue,action,title,body,state) VALUES(?,?,?,?,?,?)').run('second',2,'task','second','','queued');
+  assert.equal(prefillDevelopmentTasks(topic,journal),false);process.env.JAM_DEVELOPMENT_V2_REPOSITORIES=topic.repository;
+  assert.equal(prefillDevelopmentTasks(topic,journal),true);
+  journal.db.exec("UPDATE intake SET seedRetryAt=unixepoch()+60 WHERE issue=2");assert.equal(prefillDevelopmentTasks(topic,journal),false);journal.db.exec('UPDATE intake SET seedRetryAt=0');
+  new BranchValidation(journal.db).submit({issue:1,branch:'jam/issue-1',sha:'a'.repeat(40)},1000);assert.equal(prefillDevelopmentTasks(topic,journal),false);
+  journal.db.exec("UPDATE branch_validation SET state='ready'");assert.equal(prefillDevelopmentTasks(topic,journal),true);
+  for(let issue=3;issue<=11;issue++)journal.db.prepare('INSERT INTO intake(delivery,issue,action,title,body,state,workerState) VALUES(?,?,?,?,?,?,?)').run('task-'+issue,issue,'task','buffer','','received','pending');
+  assert.equal(prefillDevelopmentTasks(topic,journal),false);
+});
+
+test('two disjoint immutable advice waits survive reopen and can resume through only one native lane',async t=>{
+  const state=await mkdtemp(join(tmpdir(),'jam-advice-lane-'));t.after(()=>rm(state,{recursive:true,force:true}));
+  const path=join(state,'intake.sqlite'),topic={repository:'fixture/project',repoId:1,installation:2,cwd:state};
+  let journal=new Journal(path);journal.start(topic);
+  for(let issue=1;issue<=3;issue++)journal.db.prepare("INSERT INTO intake(delivery,issue,action,title,body,state,workerState) VALUES(?,?,'task','scope','','received','pending')").run('issue-'+issue,issue);
+  const snapshot={id:'a'.repeat(36),digest:'a'.repeat(64),head:'b'.repeat(40),approval:'c'.repeat(64),submittedAt:Date.now(),files:['src/a.ts']};
+  assert.equal(journal.nextWorker(()=>true,()=>true)?.issue,1);
+  journal.suspendForAdvice('issue-1',snapshot);
+  assert.equal(journal.nextWorker(()=>true,()=>true)?.issue,2);
+  assert.equal(journal.resumeAdvice('issue-1'),undefined);
+  assert.throws(()=>journal.suspendForAdvice('issue-2',snapshot),/topic scope/);
+  const second={...snapshot,id:'b'.repeat(36),files:['src/b.ts']};
+  journal.suspendForAdvice('issue-2',second);
+  assert.equal(journal.nextWorker(()=>true,()=>true),undefined);
+  assert.equal(journal.pendingWorkers().length,0);
+  journal.db.close();
+  journal=new Journal(path);journal.start(topic);t.after(()=>journal.db.close());
+  assert.deepEqual(journal.activeAdviceWaits(),[{delivery:'issue-1',wait:snapshot},{delivery:'issue-2',wait:second}]);
+  assert.equal(journal.resumeAdvice('issue-1')?.issue,1);
+  assert.equal(journal.resumeAdvice('issue-2'),undefined);
+  assert.deepEqual(journal.adviceWait('issue-1'),{wait:snapshot,resumed:true});
+  journal.finishWorker('issue-1','Review retained');
+  assert.equal(journal.resumeAdvice('issue-2'),undefined);
+  assert.equal(journal.nextWorker(),undefined);
+});

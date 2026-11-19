@@ -95,7 +95,15 @@ export async function cli(argv:string[],config=process.env.JAM_MANAGEMENT_CONFIG
     await save();return result;
   }
   if((cmd!=='route' && cmd!=='call') || !operation || !target)throw Error('Use add NAME URL TOKEN_FILE, inventory [NAME], call NAME OPERATION [JSON], or route SOURCE_URI OPERATION [JSON]');
-  const input=z.record(z.string(),z.unknown()).parse(JSON.parse(arg ?? '{}'));
+  if(operation==='secret_set'&&arg!=='-')throw Error('Supply secret_set JSON through stdin using -; values must not be command arguments');
+  let json=arg??'{}';
+  if(arg==='-'){
+    const chunks:Buffer[]=[];let size=0;
+    for await(const chunk of process.stdin){const bytes=Buffer.from(chunk);size+=bytes.length;if(size>262144)throw Error('Operation input is too large');chunks.push(bytes);}
+    json=Buffer.concat(chunks).toString('utf8');
+  }
+  let parsed:unknown;try{parsed=JSON.parse(json);}catch{throw Error('Invalid operation JSON');}
+  const input=z.record(z.string(),z.unknown()).parse(parsed);
   let endpoint:Endpoint;
   if(cmd==='route'){
     const cached=settings.endpoints.filter(e=>e.topics.some(t=>sameUri(t.sourceUri,target)));

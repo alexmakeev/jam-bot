@@ -1,0 +1,14 @@
+ARG WORKSPACE_IMAGE
+ARG CODEX_IMAGE
+ARG ANTIGRAVITY_IMAGE
+FROM ${CODEX_IMAGE} AS codex
+FROM ${ANTIGRAVITY_IMAGE} AS antigravity
+FROM ${WORKSPACE_IMAGE}
+USER root
+COPY --from=codex /bin/codex /bin/codex
+COPY --from=codex /usr/bin/codex-code-mode-host /usr/bin/codex-code-mode-host
+COPY --from=antigravity /usr/local/bin/agy /usr/local/bin/agy
+RUN install -d -m 755 -o jam -g jam /work /task /work/.agents
+USER jam
+WORKDIR /task
+ENTRYPOINT ["/bin/codex"]

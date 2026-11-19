@@ -9,7 +9,7 @@ label=local.jam-bot.calculator-release
 plist="$HOME/Library/LaunchAgents/$label.plist"
 mkdir -p "$runtime" "$HOME/Library/LaunchAgents" "$HOME/Library/Logs/JAM-Bot"
 test -f "$root/calculator-release-pilot/config.json"
-for src in release-pilot.mjs profile-recipes.mjs release-routes.mjs nightly-sites.mjs; do
+for src in release-pilot.mjs profile-recipes.mjs static-quality.mjs unit-reporter.mjs release-routes.mjs nightly-sites.mjs; do
   install -m 700 "$(dirname "$0")/$src" "$runtime/$src.new"
   mv "$runtime/$src.new" "$runtime/$src"
 done

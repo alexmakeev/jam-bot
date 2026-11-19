@@ -1,5 +1,8 @@
 import { DatabaseSync, type SQLOutputValue } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
+import type {ConsultationSubmission} from './profile-checkout.js';
+
+export interface AdviceWait extends ConsultationSubmission {head:string;approval:string;files:string[]}
 
 export interface Topic { repository: string; repoId: number; installation: number; cwd: string; defaultEnvironment?: string; defaultClass?: import("./profile-card.js").ProfileKind }
 export interface Intake {
@@ -46,6 +49,14 @@ export class Journal {
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS topic(singleton INTEGER PRIMARY KEY CHECK(singleton=1), binding TEXT NOT NULL, session TEXT NOT NULL, established INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS resolutions(delivery TEXT NOT NULL, operator TEXT NOT NULL, decision TEXT NOT NULL, session_state TEXT NOT NULL, time TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE IF NOT EXISTS dependency_wakeup(singleton INTEGER PRIMARY KEY CHECK(singleton=1),epoch INTEGER NOT NULL);
+        INSERT OR IGNORE INTO dependency_wakeup VALUES(1,0);
+        CREATE TABLE IF NOT EXISTS dependency_wakeup_events(delivery TEXT PRIMARY KEY);
+        CREATE TABLE IF NOT EXISTS dependency_claims(
+          issue INTEGER NOT NULL, blocker INTEGER NOT NULL, githubId INTEGER NOT NULL, confirmed INTEGER NOT NULL,
+          PRIMARY KEY(issue,blocker)
+        );
+        CREATE TABLE IF NOT EXISTS worker_advice_waits(delivery TEXT PRIMARY KEY, snapshot TEXT NOT NULL, resumed INTEGER NOT NULL DEFAULT 0);
       `);
       const columns = this.db.prepare('PRAGMA table_info(intake)').all();
       if (!columns.length) this.db.exec(createIntake);
@@ -67,6 +78,8 @@ export class Journal {
         this.db.exec('ALTER TABLE intake ADD COLUMN seedRetryAt INTEGER NOT NULL DEFAULT 0');
       if (!this.db.prepare("SELECT 1 FROM pragma_table_info('intake') WHERE name='specCheckpoint'").get())
         this.db.exec('ALTER TABLE intake ADD COLUMN specCheckpoint TEXT');
+      if (!this.db.prepare("SELECT 1 FROM pragma_table_info('intake') WHERE name='integrationParked'").get())
+        this.db.exec('ALTER TABLE intake ADD COLUMN integrationParked INTEGER NOT NULL DEFAULT 0');
       if (!this.db.prepare("SELECT 1 FROM pragma_table_info('intake') WHERE name='lockVerified'").get()) {
         this.db.exec("ALTER TABLE intake ADD COLUMN lockVerified INTEGER NOT NULL DEFAULT 0");
         // Previous versions left the lock to the consumer. Recover their queued signed approvals at startup.
@@ -134,6 +147,58 @@ export class Journal {
     });
   }
 
+  hasQueuedIntake(){
+    return Boolean(this.db.prepare("SELECT 1 FROM intake WHERE state='queued' AND seedRetryAt<=unixepoch() LIMIT 1").get());
+  }
+
+  activeAdviceWaits(){
+    return this.db.prepare(`SELECT i.delivery, w.snapshot FROM worker_advice_waits w JOIN intake i ON i.delivery=w.delivery
+      WHERE i.workerState='waiting-advice' AND w.resumed=0 ORDER BY i.rowid`).all().map(row=>({delivery:String(row.delivery),wait:JSON.parse(String(row.snapshot)) as AdviceWait}));
+  }
+
+  adviceWait(delivery:string){
+    const prior=this.db.prepare('SELECT snapshot,resumed FROM worker_advice_waits WHERE delivery=?').get(delivery);
+    return prior?{wait:JSON.parse(String(prior.snapshot)) as AdviceWait,resumed:prior.resumed===1}:undefined;
+  }
+
+  suspendForAdvice(delivery:string,wait:AdviceWait){
+    this.transaction(()=>{
+      const pending=this.activeAdviceWaits();
+      if(pending.length>=2||pending.some(row=>row.wait.files.some(path=>wait.files.includes(path))))throw Error('Consultation wait would exceed the topic scope');
+      const result=this.db.prepare("UPDATE intake SET workerState='waiting-advice' WHERE delivery=? AND workerState='running' AND specCheckpoint IS NOT NULL").run(delivery);
+      if(result.changes!==1)throw Error('Missing worker ownership for consultation wait');
+      this.db.prepare('INSERT INTO worker_advice_waits(delivery,snapshot) VALUES(?,?)').run(delivery,JSON.stringify(wait));
+    });
+  }
+
+  resumeAdvice(delivery:string){
+    return this.transaction(()=>{
+      const row=this.db.prepare(`SELECT i.* FROM intake i JOIN worker_advice_waits w ON w.delivery=i.delivery
+        WHERE i.delivery=? AND i.workerState='waiting-advice' AND w.resumed=0
+        AND NOT EXISTS(SELECT 1 FROM intake WHERE workerState IN ('running','review') OR state IN ('running','review'))`).get(delivery);
+      if(!row)return;
+      this.db.prepare("UPDATE intake SET workerState='running',workerReason=NULL WHERE delivery=?").run(delivery);
+      this.db.prepare('UPDATE worker_advice_waits SET resumed=1 WHERE delivery=?').run(delivery);
+      return intake(row);
+    });
+  }
+
+  yieldWorker(delivery:string){
+    const result=this.db.prepare("UPDATE intake SET workerState='pending' WHERE delivery=? AND workerState='running' AND specCheckpoint IS NOT NULL").run(delivery);
+    if(result.changes!==1)throw Error('Missing worker checkpoint at native stage boundary');
+  }
+
+  parkWorkerForIntegration(delivery:string){
+    const result=this.db.prepare(`UPDATE intake SET workerState='pending',integrationParked=1
+      WHERE delivery=? AND workerState='running' AND specCheckpoint IS NOT NULL`).run(delivery);
+    if(result.changes!==1)throw Error('Missing worker checkpoint at integration boundary');
+  }
+
+  hasIntegrationContinuation(){
+    return Boolean(this.db.prepare(`SELECT 1 FROM intake WHERE action='task' AND workerState='pending'
+      AND integrationParked=1 AND seedRetryAt<=unixepoch() LIMIT 1`).get());
+  }
+
   complete(ack: Receipt, recovered=false) {
     this.transaction(() => {
       // The same transaction that records JAM's verified receipt creates the execution intent.
@@ -150,12 +215,44 @@ export class Journal {
     return this.transaction(() => {
       const rows = this.db.prepare(`SELECT * FROM intake WHERE action='task' AND workerState='pending' AND seedRetryAt<=unixepoch()
         AND NOT EXISTS(SELECT 1 FROM intake WHERE workerState IN ('running','review') OR state IN ('running','review'))
-        ORDER BY rowid`).all();
+        AND (SELECT COUNT(*) FROM intake WHERE workerState='waiting-advice')<2
+        ORDER BY integrationParked DESC,rowid`).all();
       const row=rows.find(item=>canStart(intake(item)));
       if (!row) return;
-      this.db.prepare("UPDATE intake SET workerState='running',specCheckpoint=COALESCE(specCheckpoint,?) WHERE delivery=?").run(checkpointable(intake(row))?'starting':null,row.delivery!);
+      this.db.prepare(`UPDATE intake SET workerState='running',workerReason=NULL,integrationParked=0,
+        specCheckpoint=COALESCE(specCheckpoint,?) WHERE delivery=?`).run(checkpointable(intake(row))?'starting':null,row.delivery!);
       return intake(row);
     });
+  }
+
+  pendingWorkers(){
+    return this.db.prepare(`SELECT * FROM intake WHERE action='task' AND workerState='pending' AND seedRetryAt<=unixepoch()
+      AND NOT EXISTS(SELECT 1 FROM intake WHERE workerState IN ('running','review') OR state IN ('running','review'))
+      AND (SELECT COUNT(*) FROM intake WHERE workerState='waiting-advice')<2 ORDER BY integrationParked DESC,rowid`).all().map(intake);
+  }
+
+  workerCandidates(){
+    return this.db.prepare("SELECT * FROM intake WHERE action='task' AND workerState='pending' AND seedRetryAt<=unixepoch() ORDER BY rowid").all().map(intake);
+  }
+
+  dependencyEpoch(){
+    return Number(this.db.prepare('SELECT epoch FROM dependency_wakeup WHERE singleton=1').get()!.epoch);
+  }
+
+  wakeDependencies(delivery?:string){
+    this.transaction(()=>{
+      if(delivery&&!this.db.prepare('INSERT OR IGNORE INTO dependency_wakeup_events VALUES(?)').run(delivery).changes)return;
+      this.db.exec('UPDATE dependency_wakeup SET epoch=epoch+1 WHERE singleton=1');
+    });
+  }
+
+  waitForDependencies(delivery:string,reason:string){
+    this.db.prepare("UPDATE intake SET workerState='pending',workerReason=?,integrationParked=0 WHERE delivery=? AND workerState IN ('pending','running')").run(reason,delivery);
+  }
+
+  withdrawPendingWorker(delivery:string){
+    const result=this.db.prepare("UPDATE intake SET workerState='abandon',workerReason='Verified GitHub withdrawal before work',integrationParked=0 WHERE delivery=? AND workerState='pending' AND state='received'").run(delivery);
+    if(result.changes!==1)throw Error('No pending work to withdraw for this delivery');
   }
 
   specificationCheckpoint(issue: number): string | null {
@@ -195,6 +292,10 @@ export class Journal {
 
   fail(delivery: string, reason: string) {
     this.db.prepare("UPDATE intake SET state='review', reason=? WHERE delivery=? AND state='running'").run(reason,delivery);
+  }
+
+  withdrawIntake(delivery:string){
+    this.db.prepare("UPDATE intake SET state='abandoned', reason='Verified GitHub withdrawal before intake' WHERE delivery=? AND state='running' AND receipt IS NULL").run(delivery);
   }
 
   list() {
