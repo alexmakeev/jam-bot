@@ -188,8 +188,8 @@ test("capacity-one role adapter parks ordinary work and preserves stage parity a
 	);
 	assert.equal(outcome.output, baseline.output);
 	assert.equal(outcome.developer, baseline.developer);
-	recovery.finish(task);
-	reopened.finishWorker(task.delivery);
+	assert.equal(recovery.finish(task), true);
+	assert.equal(recovery.finish(task), false);
 	assert.equal(reopened.list()[0]?.workerState, "complete");
 	assert.deepEqual(
 		{ starts, authChecks, closes },

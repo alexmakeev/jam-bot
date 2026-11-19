@@ -38,6 +38,17 @@ test("a collapsed terminal paste must retain the exact assignment under its nati
 		'">\n';
 	assert.equal(exactNativeTerminalSubmission(prompt, prompt), true);
 	assert.equal(exactNativeTerminalSubmission(wrap(prompt), prompt), true);
+	const compact = wrap(prompt).trim();
+	assert.equal(exactNativeTerminalSubmission(compact, prompt), false);
+	assert.equal(exactNativeTerminalSubmission(compact, prompt, true), true);
+	assert.equal(
+		exactNativeTerminalSubmission(compact + "\n", prompt, true),
+		false,
+	);
+	assert.equal(
+		exactNativeTerminalSubmission(wrap(prompt, "f000").trim(), prompt, true),
+		false,
+	);
 	assert.equal(
 		exactNativeTerminalSubmission(wrap(prompt, "f000"), prompt),
 		false,

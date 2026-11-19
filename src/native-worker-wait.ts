@@ -231,4 +231,16 @@ export class NativeWorkerWaits {
 		if (removed.changes !== 1)
 			throw Error("Native worker cannot release an unowned continuation");
 	}
+
+	completeDelivery(intent: NativeWorkerIntent) {
+		this.write(() => {
+			this.finishEffect(intent);
+			const completed = this.db
+				.prepare(`UPDATE intake SET workerState='complete',workerReason=NULL
+				WHERE delivery=? AND issue=? AND workerState='running'`)
+				.run(intent.delivery, intent.issue);
+			if (completed.changes !== 1)
+				throw Error("Native effect has no original running delivery");
+		});
+	}
 }

@@ -248,7 +248,9 @@ export class NativeConsumerLane {
 		const previous = this.waits
 			.waiting()
 			.find((row) => row.intent.delivery === task.delivery);
-		if (previous) this.waits.finishEffect(previous.intent);
+		if (!previous) return false;
+		this.waits.completeDelivery(previous.intent);
+		return true;
 	}
 
 	async settle() {

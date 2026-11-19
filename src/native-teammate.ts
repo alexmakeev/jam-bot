@@ -111,16 +111,26 @@ export function nativeMailboxBody(
 export function exactNativeTerminalSubmission(
 	content: unknown,
 	prompt: string,
+	allowCompactPaste = false,
 ) {
 	if (content === prompt) return true;
 	if (typeof content !== "string") return false;
-	return nativePastedContent(content) === prompt;
+	return nativePastedContent(content, allowCompactPaste) === prompt;
 }
 
-function nativePastedContent(content: string) {
-	return /^\n\n<pasted_content id="([a-f0-9]{4})">\n([\s\S]*)\n<\/pasted_content id="\1">\n$/.exec(
-		content,
-	)?.[2];
+function nativePastedContent(content: string, allowCompactPaste: boolean) {
+	const formatted =
+		/^\n\n<pasted_content id="([a-f0-9]{4})">\n([\s\S]*)\n<\/pasted_content id="\1">\n$/.exec(
+			content,
+		)?.[2];
+	return (
+		formatted ??
+		(allowCompactPaste
+			? /^<pasted_content id="([a-f0-9]{4})">\n([\s\S]*)\n<\/pasted_content id="\1">$/.exec(
+					content,
+				)?.[2]
+			: undefined)
+	);
 }
 
 export function nativeTerminalPasteEnabled(rendered: string) {
@@ -748,7 +758,10 @@ export async function nativeWorkspaceTurn(
 			!row.isMeta &&
 			row.promptId === promptId &&
 			typeof row.message?.content === "string" &&
-			[row.message.content, nativePastedContent(row.message.content)].some(
+			[
+				row.message.content,
+				nativePastedContent(row.message.content, true),
+			].some(
 				(text) =>
 					text !== undefined &&
 					createHash("sha256").update(text).digest("hex") === promptDigest,
@@ -826,7 +839,7 @@ export async function nativeFollowupReceipt({
 			!row.isMeta &&
 			(row.message?.content === prompt ||
 				(allowLaterDelivery &&
-					exactNativeTerminalSubmission(row.message?.content, prompt))),
+					exactNativeTerminalSubmission(row.message?.content, prompt, true))),
 	);
 	if (submitted.length > 1)
 		throw Error("Duplicate native follow-up submission");

@@ -543,7 +543,7 @@ export class PersistentNativeLead {
 				(row) =>
 					row.type === "user" &&
 					!row.isMeta &&
-					exactNativeTerminalSubmission(row.message?.content, prompt),
+					exactNativeTerminalSubmission(row.message?.content, prompt, true),
 			);
 			if (matching.length > 1)
 				throw Error("Duplicate native terminal submission");

@@ -352,8 +352,8 @@ export async function consume(
 						(error) =>
 							error instanceof NativeRoleDeferred ? "parked" : "error",
 					);
-					native?.finish(execution);
-					journal.finishWorker(execution.delivery);
+					if (!native?.finish(execution))
+						journal.finishWorker(execution.delivery);
 				} catch (err) {
 					if (native && err instanceof NativeRoleDeferred && err.job) {
 						const authorize = () =>

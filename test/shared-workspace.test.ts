@@ -185,7 +185,12 @@ test("shared MCP grants a one-use read only to the authenticated member and curr
 					type: "user",
 					sessionId: session,
 					promptId: turn,
-					message: { content: prompt },
+					message: {
+						content:
+							member === "b"
+								? `<pasted_content id="abcd">\n${prompt}\n</pasted_content id="abcd">`
+								: prompt,
+					},
 				},
 				{
 					type: "assistant",
