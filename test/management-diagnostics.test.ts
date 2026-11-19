@@ -391,7 +391,10 @@ test("following artifact cursors rebuilds the complete redacted report", async (
 			assert.ok(result.next > offset, `${label}: cursor did not advance`);
 			offset = result.next;
 		}
-		assert.ok(pieces.length > 1, `maxBytes ${maxBytes}: expected several pages`);
+		assert.ok(
+			pieces.length > 1,
+			`maxBytes ${maxBytes}: expected several pages`,
+		);
 		assert.equal(
 			pieces.join(""),
 			expected,
