@@ -111,7 +111,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 		}
 		if (!allocated) throw Error("Workspace is unavailable");
 		const reader = new WorkspaceReader(allocated);
-		let result;
+		let result: Awaited<
+			ReturnType<WorkspaceReader["read" | "list" | "search"]>
+		>;
 		if (name === "workspace_search") {
 			const x = schemas.workspace_search.parse(request.params.arguments);
 			result = await reader.search(

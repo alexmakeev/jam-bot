@@ -183,7 +183,7 @@ export async function recoverPersistentDispatch(
 		"shared-native-leads",
 		original.initial.session,
 	);
-	let workspaceEvidence;
+	let workspaceEvidence: Awaited<ReturnType<typeof sharedWorkspaceEvidence>>;
 	if (original.workspacePin) {
 		const workspace = new SharedWorkspace(join(directory, "workspace.sqlite"));
 		try {
@@ -681,6 +681,10 @@ export class PersistentNativeLead {
 				output: result.output,
 				...(workspaceEvidence ? { workspaceEvidence } : {}),
 			};
+			if (registered) {
+				registered = false;
+				this.workspace.retire(job.challenge);
+			}
 			await atomicJson(
 				join(this.directory, "receipts", job.challenge + ".json"),
 				receipt,
@@ -688,19 +692,22 @@ export class PersistentNativeLead {
 			return receipt;
 		} catch (error) {
 			this.unavailable = true;
-			throw error;
-		} finally {
-			try {
-				if (registered) this.workspace.retire(job.challenge);
-			} catch (error) {
-				this.unavailable = true;
-				throw error;
+			if (registered) {
+				try {
+					this.workspace.retire(job.challenge);
+				} catch (retirement) {
+					throw new AggregateError([error, retirement], String(error), {
+						cause: error,
+					});
+				}
 			}
+			throw error;
 		}
 	}
 	private closing?: Promise<void>;
 	close() {
-		return (this.closing ??= this.dispose());
+		this.closing ??= this.dispose();
+		return this.closing;
 	}
 	private async dispose() {
 		this.unavailable = true;
