@@ -1,41 +1,179 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import {mkdtemp,mkdir,writeFile,readFile,lstat,rm,realpath} from 'node:fs/promises';
-import {join} from 'node:path';
-import {tmpdir} from 'node:os';
-import {randomUUID} from 'node:crypto';
-import {git} from '../src/profile-checkout.js';
-import {atomicJson} from '../src/storage.js';
-import {cleanDevelopmentTask,cleanDevelopmentCandidate} from '../src/development-cleaner.js';
+import test from "node:test";
+import assert from "node:assert/strict";
+import {
+	mkdtemp,
+	mkdir,
+	writeFile,
+	readFile,
+	lstat,
+	rm,
+	realpath,
+} from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { randomUUID } from "node:crypto";
+import { git } from "../src/profile-checkout.js";
+import { atomicJson } from "../src/storage.js";
+import {
+	cleanDevelopmentTask,
+	cleanDevelopmentCandidate,
+} from "../src/development-cleaner.js";
 
-test('Development Cleaner records scoped deletion, preserves evidence and replays without deleting twice',async t=>{
-  const state=await realpath(await mkdtemp(join(tmpdir(),'jam-cleaner-')));t.after(()=>rm(state,{recursive:true,force:true}));
-  const seed=join(state,'seed');await mkdir(seed);await git(seed,'init');await writeFile(join(seed,'code.ts'),'export const value=1;\n');await git(seed,'add','.');await git(seed,'commit','-m','baseline');const head=await git(seed,'rev-parse','HEAD');
-  const store=join(state,'project.git');await git(state,'clone','--bare',seed,store);
-  const tree=join(state,'worktrees','1');await git(store,'worktree','add','-b','jam/issue-1',tree,head);
-  await mkdir(join(state,'.creds'));await writeFile(join(state,'.creds','token'),'preserve');
-  const input={state,issue:1,head,dev:head,store,tree,branch:'jam/issue-1'};
-  await assert.rejects(cleanDevelopmentTask(input));assert.ok(await lstat(tree));
-  await atomicJson(join(state,'assignments','1','closed.json'),{issue:1,head,dev:head});await writeFile(join(state,'assignments','1','spec.md'),'retained specification');
-  const first=await cleanDevelopmentTask(input);assert.ok(BigInt(first.removedLogicalBytes??'0')>0n);await assert.rejects(lstat(tree));assert.equal(await git(store,'branch','--list','jam/issue-1'),'');
-  assert.equal(await readFile(join(state,'.creds','token'),'utf8'),'preserve');assert.equal(await readFile(join(state,'assignments','1','spec.md'),'utf8'),'retained specification');
-  assert.deepEqual(await cleanDevelopmentTask(input),first);assert.match(first.markdown!,/not a claim of physically reclaimed/);
-  await assert.rejects(cleanDevelopmentTask({...input,tree:seed}));
-  const dirty=join(state,'worktrees','2');await git(store,'worktree','add','-b','jam/issue-2',dirty,head);await writeFile(join(dirty,'unexpected'),'uncommitted');await atomicJson(join(state,'assignments','2','closed.json'),{issue:2,head,dev:head});
-  const retained=await cleanDevelopmentTask({...input,issue:2,tree:dirty,branch:'jam/issue-2'});assert.match(retained.summary!,/retained/);assert.ok(await lstat(dirty));assert.ok(await git(store,'branch','--list','jam/issue-2'));
-  const batch=randomUUID(),candidate=join(state,'integration',batch,'worktree');await git(store,'worktree','add','--detach',candidate,head);
-  await assert.rejects(cleanDevelopmentCandidate(state,batch,head,[{issue:3,head}]));assert.ok(await lstat(candidate));
-  const cleaned=await cleanDevelopmentCandidate(state,batch,head,[{issue:1,head}]);assert.match(cleaned.markdown!,/counted once/);await assert.rejects(lstat(candidate));
-  const interruptedTree=join(state,'worktrees','3');await git(store,'worktree','add','-b','jam/issue-3',interruptedTree,head);
-  await atomicJson(join(state,'assignments','3','closed.json'),{issue:3,head,dev:head});
-  const interrupted={...input,issue:3,tree:interruptedTree,branch:'jam/issue-3'};
-  await assert.rejects(cleanDevelopmentTask(interrupted,async path=>{if(path==='worktrees/3')throw Error('Injected termination after deletion');}),/Injected termination/);
-  const intent=await readFile(join(state,'assignments','3','cleanup-intent.json'),'utf8');
-  const resumed=await cleanDevelopmentTask(interrupted);
-  const operation=JSON.parse(await readFile(join(state,'assignments','3','cleanup-worktree.json'),'utf8'));
-  assert.equal(operation.status,'reconciled-absent');assert.ok(BigInt(operation.bytes)>0n);assert.match(resumed.markdown!,/attribution remains uncertain/);
-  assert.equal(await readFile(join(state,'assignments','3','cleanup-intent.json'),'utf8'),intent);
-  const interruptedBatch=randomUUID(),interruptedCandidate=join(state,'integration',interruptedBatch,'worktree');await git(store,'worktree','add','--detach',interruptedCandidate,head);
-  await assert.rejects(cleanDevelopmentCandidate(state,interruptedBatch,head,[{issue:3,head}],async()=>{throw Error('Injected candidate termination');}),/Injected candidate termination/);
-  const resumedBatch=await cleanDevelopmentCandidate(state,interruptedBatch,head,[{issue:3,head}]);assert.match(resumedBatch.markdown!,/reconciled-absent/);assert.match(resumedBatch.markdown!,/pre-removal inventory/);
+test("Development Cleaner records scoped deletion, preserves evidence and replays without deleting twice", async (t) => {
+	const state = await realpath(await mkdtemp(join(tmpdir(), "jam-cleaner-")));
+	t.after(() => rm(state, { recursive: true, force: true }));
+	const seed = join(state, "seed");
+	await mkdir(seed);
+	await git(seed, "init");
+	await writeFile(join(seed, "code.ts"), "export const value=1;\n");
+	await git(seed, "add", ".");
+	await git(seed, "commit", "-m", "baseline");
+	const head = await git(seed, "rev-parse", "HEAD");
+	const store = join(state, "project.git");
+	await git(state, "clone", "--bare", seed, store);
+	const tree = join(state, "worktrees", "1");
+	await git(store, "worktree", "add", "-b", "jam/issue-1", tree, head);
+	await mkdir(join(state, ".creds"));
+	await writeFile(join(state, ".creds", "token"), "preserve");
+	const input = {
+		state,
+		issue: 1,
+		head,
+		dev: head,
+		store,
+		tree,
+		branch: "jam/issue-1",
+	};
+	await assert.rejects(cleanDevelopmentTask(input));
+	assert.ok(await lstat(tree));
+	await atomicJson(join(state, "assignments", "1", "closed.json"), {
+		issue: 1,
+		head,
+		dev: head,
+	});
+	await writeFile(
+		join(state, "assignments", "1", "spec.md"),
+		"retained specification",
+	);
+	const first = await cleanDevelopmentTask(input);
+	assert.ok(BigInt(first.removedLogicalBytes ?? "0") > 0n);
+	await assert.rejects(lstat(tree));
+	assert.equal(await git(store, "branch", "--list", "jam/issue-1"), "");
+	assert.equal(
+		await readFile(join(state, ".creds", "token"), "utf8"),
+		"preserve",
+	);
+	assert.equal(
+		await readFile(join(state, "assignments", "1", "spec.md"), "utf8"),
+		"retained specification",
+	);
+	assert.deepEqual(await cleanDevelopmentTask(input), first);
+	assert.match(first.markdown!, /not a claim of physically reclaimed/);
+	await assert.rejects(cleanDevelopmentTask({ ...input, tree: seed }));
+	const dirty = join(state, "worktrees", "2");
+	await git(store, "worktree", "add", "-b", "jam/issue-2", dirty, head);
+	await writeFile(join(dirty, "unexpected"), "uncommitted");
+	await atomicJson(join(state, "assignments", "2", "closed.json"), {
+		issue: 2,
+		head,
+		dev: head,
+	});
+	const retained = await cleanDevelopmentTask({
+		...input,
+		issue: 2,
+		tree: dirty,
+		branch: "jam/issue-2",
+	});
+	assert.match(retained.summary!, /retained/);
+	assert.ok(await lstat(dirty));
+	assert.ok(await git(store, "branch", "--list", "jam/issue-2"));
+	const batch = randomUUID(),
+		candidate = join(state, "integration", batch, "worktree");
+	await git(store, "worktree", "add", "--detach", candidate, head);
+	await assert.rejects(
+		cleanDevelopmentCandidate(state, batch, head, [{ issue: 3, head }]),
+	);
+	assert.ok(await lstat(candidate));
+	const cleaned = await cleanDevelopmentCandidate(state, batch, head, [
+		{ issue: 1, head },
+	]);
+	assert.match(cleaned.markdown!, /counted once/);
+	await assert.rejects(lstat(candidate));
+	const interruptedTree = join(state, "worktrees", "3");
+	await git(
+		store,
+		"worktree",
+		"add",
+		"-b",
+		"jam/issue-3",
+		interruptedTree,
+		head,
+	);
+	await atomicJson(join(state, "assignments", "3", "closed.json"), {
+		issue: 3,
+		head,
+		dev: head,
+	});
+	const interrupted = {
+		...input,
+		issue: 3,
+		tree: interruptedTree,
+		branch: "jam/issue-3",
+	};
+	await assert.rejects(
+		cleanDevelopmentTask(interrupted, async (path) => {
+			if (path === "worktrees/3")
+				throw Error("Injected termination after deletion");
+		}),
+		/Injected termination/,
+	);
+	const intent = await readFile(
+		join(state, "assignments", "3", "cleanup-intent.json"),
+		"utf8",
+	);
+	const resumed = await cleanDevelopmentTask(interrupted);
+	const operation = JSON.parse(
+		await readFile(
+			join(state, "assignments", "3", "cleanup-worktree.json"),
+			"utf8",
+		),
+	);
+	assert.equal(operation.status, "reconciled-absent");
+	assert.ok(BigInt(operation.bytes) > 0n);
+	assert.match(resumed.markdown!, /attribution remains uncertain/);
+	assert.equal(
+		await readFile(
+			join(state, "assignments", "3", "cleanup-intent.json"),
+			"utf8",
+		),
+		intent,
+	);
+	const interruptedBatch = randomUUID(),
+		interruptedCandidate = join(
+			state,
+			"integration",
+			interruptedBatch,
+			"worktree",
+		);
+	await git(store, "worktree", "add", "--detach", interruptedCandidate, head);
+	await assert.rejects(
+		cleanDevelopmentCandidate(
+			state,
+			interruptedBatch,
+			head,
+			[{ issue: 3, head }],
+			async () => {
+				throw Error("Injected candidate termination");
+			},
+		),
+		/Injected candidate termination/,
+	);
+	const resumedBatch = await cleanDevelopmentCandidate(
+		state,
+		interruptedBatch,
+		head,
+		[{ issue: 3, head }],
+	);
+	assert.match(resumedBatch.markdown!, /reconciled-absent/);
+	assert.match(resumedBatch.markdown!, /pre-removal inventory/);
 });

@@ -1,23 +1,66 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import {antigravityArgs,consultAntigravity} from '../scripts/macos/antigravity-consultant.mjs';
-const profile={volume:'jam-antigravity-home',image:'sha256:'+'1'.repeat(64)};
-test('isolated consultant pins the image, mounts only its own volume and denies model-invoked tools',()=>{
- const args=antigravityArgs(profile,'test');
- assert.deepEqual(args.filter(a=>a.includes('type=volume')),['type=volume,src=jam-antigravity-home,dst=/home/jam']);
- assert.equal(args[args.indexOf('--network')+1],'jam-antigravity-private');
- assert.equal(args[args.indexOf('--entrypoint')+1],'/bin/sh');assert.ok(args.includes(profile.image));
- const settings=JSON.parse(args[args.indexOf('--settings')+1]);
- assert.deepEqual(new Set(settings.permissions.deny),new Set(['read_file(*)','write_file(*)','command(*)','unsandboxed(*)','execute_url(*)','read_url(*)','download_url(*)','mcp(*)']));
- for(const changed of [{image:'latest'},{volume:'other'},{model:'--new-project'}])assert.throws(()=>antigravityArgs({...profile,...changed},'test'));
+import test from "node:test";
+import assert from "node:assert/strict";
+import {
+	antigravityArgs,
+	consultAntigravity,
+} from "../scripts/macos/antigravity-consultant.mjs";
+const profile = {
+	volume: "jam-antigravity-home",
+	image: "sha256:" + "1".repeat(64),
+};
+test("isolated consultant pins the image, mounts only its own volume and denies model-invoked tools", () => {
+	const args = antigravityArgs(profile, "test");
+	assert.deepEqual(
+		args.filter((a) => a.includes("type=volume")),
+		["type=volume,src=jam-antigravity-home,dst=/home/jam"],
+	);
+	assert.equal(args[args.indexOf("--network") + 1], "jam-antigravity-private");
+	assert.equal(args[args.indexOf("--entrypoint") + 1], "/bin/sh");
+	assert.ok(args.includes(profile.image));
+	const settings = JSON.parse(args[args.indexOf("--settings") + 1]);
+	assert.deepEqual(
+		new Set(settings.permissions.deny),
+		new Set([
+			"read_file(*)",
+			"write_file(*)",
+			"command(*)",
+			"unsandboxed(*)",
+			"execute_url(*)",
+			"read_url(*)",
+			"download_url(*)",
+			"mcp(*)",
+		]),
+	);
+	for (const changed of [
+		{ image: "latest" },
+		{ volume: "other" },
+		{ model: "--new-project" },
+	])
+		assert.throws(() => antigravityArgs({ ...profile, ...changed }, "test"));
 });
-test('workspace mode permits only the three registered tools and hides global MCP configuration',()=>{
- const args=antigravityArgs(profile,'test','Review',{root:'/trusted/workspace',audit:'/trusted/audit'});
- const settings=JSON.parse(args[args.indexOf('--settings')+1]);
- assert.deepEqual(settings.permissions.allow,['mcp(jam_workspace/workspace_list)','mcp(jam_workspace/workspace_read)','mcp(jam_workspace/workspace_search)']);
- assert.ok(settings.permissions.deny.includes('read_file(*)'));assert.ok(settings.permissions.deny.includes('command(*)'));assert.ok(settings.permissions.deny.includes('download_url(*)'));
- assert.ok(args.some(arg=>arg.includes('dst=/home/jam/.gemini/config/mcp_config.json,readonly')));
+test("workspace mode permits only the three registered tools and hides global MCP configuration", () => {
+	const args = antigravityArgs(profile, "test", "Review", {
+		root: "/trusted/workspace",
+		audit: "/trusted/audit",
+	});
+	const settings = JSON.parse(args[args.indexOf("--settings") + 1]);
+	assert.deepEqual(settings.permissions.allow, [
+		"mcp(jam_workspace/workspace_list)",
+		"mcp(jam_workspace/workspace_read)",
+		"mcp(jam_workspace/workspace_search)",
+	]);
+	assert.ok(settings.permissions.deny.includes("read_file(*)"));
+	assert.ok(settings.permissions.deny.includes("command(*)"));
+	assert.ok(settings.permissions.deny.includes("download_url(*)"));
+	assert.ok(
+		args.some((arg) =>
+			arg.includes("dst=/home/jam/.gemini/config/mcp_config.json,readonly"),
+		),
+	);
 });
-test('review input is bounded before accessing the engine',async()=>{
- await assert.rejects(consultAntigravity({profile,packet:'é'.repeat(33000)}),/packet/);
+test("review input is bounded before accessing the engine", async () => {
+	await assert.rejects(
+		consultAntigravity({ profile, packet: "é".repeat(33000) }),
+		/packet/,
+	);
 });

@@ -1,356 +1,860 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import {mkdtemp,rm,writeFile,readFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
-import {DatabaseSync} from 'node:sqlite';
-import {spawnSync} from 'node:child_process';
-import {git} from '../src/profile-checkout.js';
-import {checkpointImplementationCorrection,implementationCommit} from '../src/implementation-checkpoint.js';
-import {Journal} from '../src/intake-journal.js';
-import {recordProgress,publishProgress} from '../src/work-progress.js';
-import {checkpointRole} from '../src/role-checkpoint.js';
-import {publishDirectResult} from '../src/profile-publication.js';
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { spawnSync } from "node:child_process";
+import { git } from "../src/profile-checkout.js";
+import {
+	checkpointImplementationCorrection,
+	implementationCommit,
+} from "../src/implementation-checkpoint.js";
+import { Journal } from "../src/intake-journal.js";
+import { recordProgress, publishProgress } from "../src/work-progress.js";
+import { checkpointRole } from "../src/role-checkpoint.js";
+import { publishDirectResult } from "../src/profile-publication.js";
 
-const topic={repository:'owner/repo',repoId:10,installation:11,cwd:'/unused'};
+const topic = {
+	repository: "owner/repo",
+	repoId: 10,
+	installation: 11,
+	cwd: "/unused",
+};
 
-test('timeline authenticates the issue and bot, and reconciles an accepted POST with a lost response',async t=>{
-  const dir=await mkdtemp(join(tmpdir(),'timeline-'));t.after(()=>rm(dir,{recursive:true,force:true}));
-  recordProgress(dir,6,'one','Architecture handed off.');
-  const db=new DatabaseSync(join(dir,'work-progress.sqlite'));
-  const body=String(db.prepare('select body from events').get()!.body);
-  const issue_url='https://api.github.com/repos/owner/repo/issues/6';
-  const rows=[{id:200,user:{id:20},body,issue_url}];
-  let posts=0;
-  const api=async (path:string,method?:string)=>{
-    if(path==='')return {id:topic.repoId};
-    if(!method)return rows;
-    posts++;rows.push({id:201,user:{id:40},body,issue_url});throw Error('lost response');
-  };
-  const credentials=async():Promise<[typeof api,number]>=>[api,40];
-  await publishProgress(dir,topic,credentials);
-  assert.equal(posts,1);
-  assert.equal(db.prepare('select status from events').get()!.status,'sending');
-  db.exec('update events set retryAt=0');
-  recordProgress(dir,6,'one','Architecture handed off.');
-  await publishProgress(dir,topic,credentials);
-  assert.equal(posts,1);assert.equal(db.prepare('select receipt from events').get()!.receipt,201);
-  assert.equal(await publishProgress(dir,topic,credentials),false);db.close();
+test("timeline authenticates the issue and bot, and reconciles an accepted POST with a lost response", async (t) => {
+	const dir = await mkdtemp(join(tmpdir(), "timeline-"));
+	t.after(() => rm(dir, { recursive: true, force: true }));
+	recordProgress(dir, 6, "one", "Architecture handed off.");
+	const db = new DatabaseSync(join(dir, "work-progress.sqlite"));
+	const body = String(db.prepare("select body from events").get()!.body);
+	const issue_url = "https://api.github.com/repos/owner/repo/issues/6";
+	const rows = [{ id: 200, user: { id: 20 }, body, issue_url }];
+	let posts = 0;
+	const api = async (path: string, method?: string) => {
+		if (path === "") return { id: topic.repoId };
+		if (!method) return rows;
+		posts++;
+		rows.push({ id: 201, user: { id: 40 }, body, issue_url });
+		throw Error("lost response");
+	};
+	const credentials = async (): Promise<[typeof api, number]> => [api, 40];
+	await publishProgress(dir, topic, credentials);
+	assert.equal(posts, 1);
+	assert.equal(
+		db.prepare("select status from events").get()!.status,
+		"sending",
+	);
+	db.exec("update events set retryAt=0");
+	recordProgress(dir, 6, "one", "Architecture handed off.");
+	await publishProgress(dir, topic, credentials);
+	assert.equal(posts, 1);
+	assert.equal(db.prepare("select receipt from events").get()!.receipt, 201);
+	assert.equal(await publishProgress(dir, topic, credentials), false);
+	db.close();
 });
 
-test('SIGKILL after native output resumes from the original receipt without a second native assignment',async t=>{
-  const dir=await mkdtemp(join(tmpdir(),'stage-kill-'));t.after(()=>rm(dir,{recursive:true,force:true}));
-  const job={state:dir,cwd:dir,session:'session',issue:4,role:'developer' as const,input:'approved input'};
-  const result={developer:'member-id',nativeMember:'developer@team',backend:'in-process',team:'team',output:'approved changes'};
-  const script=`import {writeFile} from 'node:fs/promises';import {checkpointRole} from ${JSON.stringify(new URL('../src/role-checkpoint.js',import.meta.url).href)};
+test("SIGKILL after native output resumes from the original receipt without a second native assignment", async (t) => {
+	const dir = await mkdtemp(join(tmpdir(), "stage-kill-"));
+	t.after(() => rm(dir, { recursive: true, force: true }));
+	const job = {
+		state: dir,
+		cwd: dir,
+		session: "session",
+		issue: 4,
+		role: "developer" as const,
+		input: "approved input",
+	};
+	const result = {
+		developer: "member-id",
+		nativeMember: "developer@team",
+		backend: "in-process",
+		team: "team",
+		output: "approved changes",
+	};
+	const script = `import {writeFile} from 'node:fs/promises';import {checkpointRole} from ${JSON.stringify(new URL("../src/role-checkpoint.js", import.meta.url).href)};
     await checkpointRole({...JSON.parse(process.argv[1]),signal:new AbortController().signal},'validation',async (_job,challenge)=>{
       await writeFile(process.argv[2],JSON.stringify({challenge,receipt:JSON.parse(process.argv[3])}));process.kill(process.pid,'SIGKILL');
     })`;
-  const evidence=join(dir,'mailbox.json');
-  const child=spawnSync(process.execPath,['--input-type=module','-e',script,JSON.stringify(job),evidence,JSON.stringify(result)]);
-  assert.equal(child.signal,'SIGKILL',String(child.stderr));
-  let replay=0;
-  const resume=()=>checkpointRole({...job,signal:new AbortController().signal},'validation',async()=>{replay++;throw Error('duplicate assignment');},
-    async (_,attempt)=>{const actual=JSON.parse(await readFile(evidence,'utf8'));assert.equal(actual.challenge,attempt.challenge);return {receipt:actual.receipt};});
-  const saved=await resume();
-  const {dispatchIdentity,...receipt}=saved;
-  assert.match(dispatchIdentity??'',/^developer-.*-received$/);
-  assert.deepEqual(receipt,result);assert.deepEqual(await resume(),saved);assert.equal(replay,0);
-  const next=await checkpointRole({...job,input:'different approved input',signal:new AbortController().signal},'validation',async()=>result);
-  assert.notEqual(next.dispatchIdentity,dispatchIdentity);
+	const evidence = join(dir, "mailbox.json");
+	const child = spawnSync(process.execPath, [
+		"--input-type=module",
+		"-e",
+		script,
+		JSON.stringify(job),
+		evidence,
+		JSON.stringify(result),
+	]);
+	assert.equal(child.signal, "SIGKILL", String(child.stderr));
+	let replay = 0;
+	const resume = () =>
+		checkpointRole(
+			{ ...job, signal: new AbortController().signal },
+			"validation",
+			async () => {
+				replay++;
+				throw Error("duplicate assignment");
+			},
+			async (_, attempt) => {
+				const actual = JSON.parse(await readFile(evidence, "utf8"));
+				assert.equal(actual.challenge, attempt.challenge);
+				return { receipt: actual.receipt };
+			},
+		);
+	const saved = await resume();
+	const { dispatchIdentity, ...receipt } = saved;
+	assert.match(dispatchIdentity ?? "", /^developer-.*-received$/);
+	assert.deepEqual(receipt, result);
+	assert.deepEqual(await resume(), saved);
+	assert.equal(replay, 0);
+	const next = await checkpointRole(
+		{
+			...job,
+			input: "different approved input",
+			signal: new AbortController().signal,
+		},
+		"validation",
+		async () => result,
+	);
+	assert.notEqual(next.dispatchIdentity, dispatchIdentity);
 });
 
-test('developer recovers a previously committed tree and never commits it twice',async t=>{
-  const state=await mkdtemp(join(tmpdir(),'commit-checkpoint-'));t.after(()=>rm(state,{recursive:true,force:true}));
-  const tree=join(state,'repo');await git(state,'init','repo');await writeFile(join(tree,'file'),'old');
-  await git(tree,'add','file');await git(tree,'commit','-m','base');
-  const path=join(state,'intent.json');let calls=0;
-  const payload=JSON.stringify({files:[{path:'file',content:'new'}]});
-  const unexpected=()=>implementationCommit(tree,path,1,['file'],async()=>payload+'\n\nUnknown wrapper',async()=>{});
-  await assert.rejects(unexpected,SyntaxError);
-  assert.equal(await git(tree,'status','--porcelain'),'');
-  const run=()=>implementationCommit(tree,path,1,['file'],async()=>{
-    calls++;
-    return payload+'\n\nHandoff notes:\n{"files":[{"path":"outside","content":"example"}]}';
-  },async()=>{});
-  const head=await run();
-  const intent=JSON.parse(await readFile(path,'utf8'));delete intent.sha;
-  await writeFile(path,JSON.stringify(intent)); // process stopped immediately after Git committed
-  assert.equal(await run(),head);assert.equal(calls,1);
-  assert.equal(await git(tree,'rev-list','--count','HEAD'),'2');
-  assert.equal(await git(tree,'show','HEAD:file'),'new');
-  await writeFile(join(tree,'file'),'unexpected');await assert.rejects(run,/Unexpected worktree revision/);
+test("developer recovers a previously committed tree and never commits it twice", async (t) => {
+	const state = await mkdtemp(join(tmpdir(), "commit-checkpoint-"));
+	t.after(() => rm(state, { recursive: true, force: true }));
+	const tree = join(state, "repo");
+	await git(state, "init", "repo");
+	await writeFile(join(tree, "file"), "old");
+	await git(tree, "add", "file");
+	await git(tree, "commit", "-m", "base");
+	const path = join(state, "intent.json");
+	let calls = 0;
+	const payload = JSON.stringify({ files: [{ path: "file", content: "new" }] });
+	const unexpected = () =>
+		implementationCommit(
+			tree,
+			path,
+			1,
+			["file"],
+			async () => payload + "\n\nUnknown wrapper",
+			async () => {},
+		);
+	await assert.rejects(unexpected, SyntaxError);
+	assert.equal(await git(tree, "status", "--porcelain"), "");
+	const run = () =>
+		implementationCommit(
+			tree,
+			path,
+			1,
+			["file"],
+			async () => {
+				calls++;
+				return (
+					payload +
+					'\n\nHandoff notes:\n{"files":[{"path":"outside","content":"example"}]}'
+				);
+			},
+			async () => {},
+		);
+	const head = await run();
+	const intent = JSON.parse(await readFile(path, "utf8"));
+	delete intent.sha;
+	await writeFile(path, JSON.stringify(intent)); // process stopped immediately after Git committed
+	assert.equal(await run(), head);
+	assert.equal(calls, 1);
+	assert.equal(await git(tree, "rev-list", "--count", "HEAD"), "2");
+	assert.equal(await git(tree, "show", "HEAD:file"), "new");
+	await writeFile(join(tree, "file"), "unexpected");
+	await assert.rejects(run, /Unexpected worktree revision/);
 });
 
-test('adviser suspension after a corrected implementation carries the exact review attempt across restart',async t=>{
-  const state=await mkdtemp(join(tmpdir(),'jam-corrected-review-'));t.after(()=>rm(state,{recursive:true,force:true}));
-  const tree=join(state,'repo'),path=join(state,'intake.sqlite');
-  await git(state,'init','repo');await writeFile(join(tree,'file'),'base');await git(tree,'add','file');await git(tree,'commit','-m','base');
-  const base=await git(tree,'rev-parse','HEAD');
-  const project={tree,store:tree,branch:await git(tree,'branch','--show-current'),base,expected:base};
-  const issue=38,delivery='fixture-correction';
-  let journal=new Journal(path);journal.start(topic);
-  journal.enqueue({delivery,issue,title:'Scoped change',body:'Approved fixture',action:'task'});
-  assert.ok(journal.next());journal.complete({delivery,issue,disposition:'intake_received'});
-  assert.ok(journal.nextWorker(()=>true,()=>true));
-  const produce=(attempt:number,text:string)=>implementationCommit(tree,join(state,'implementation-'+attempt+'.json'),issue,['file'],
-    async()=>JSON.stringify({files:[{path:'file',content:text}]}),async()=>{});
-  const first=await produce(0,'first attempt');
-  await checkpointImplementationCorrection(state,issue,project,{sha:first,attempt:1,feedback:'Correct the failed tests'});
-  const head=await produce(1,'corrected attempt');
-  await checkpointImplementationCorrection(state,issue,project,{sha:head,attempt:1,feedback:'Resume exact GREEN candidate',reviewOnly:true});
-  journal.suspendForAdvice(delivery,{id:'a'.repeat(36),digest:'b'.repeat(64),head,approval:'c'.repeat(64),submittedAt:Date.now(),files:['file']});
-  journal.db.close();journal=new Journal(path);journal.start(topic);t.after(()=>journal.db.close());
-  assert.equal(journal.resumeAdvice(delivery)?.issue,issue);
-  assert.deepEqual(JSON.parse(journal.specificationCheckpoint(issue)!),{...project,correcting:true});
-  const correction=JSON.parse(await readFile(join(state,'assignments','38','correction.json'),'utf8'));
-  assert.deepEqual(correction,{project,sha:head,attempt:1,feedback:'Resume exact GREEN candidate',reviewOnly:true});
-  assert.equal(await git(tree,'rev-parse','HEAD'),journal.adviceWait(delivery)?.wait.head);
-  await assert.rejects(produce(0,'must not apply again'),/Unexpected worktree revision/);
-  assert.equal(await git(tree,'rev-list','--count','HEAD'),'3');
+test("adviser suspension after a corrected implementation carries the exact review attempt across restart", async (t) => {
+	const state = await mkdtemp(join(tmpdir(), "jam-corrected-review-"));
+	t.after(() => rm(state, { recursive: true, force: true }));
+	const tree = join(state, "repo"),
+		path = join(state, "intake.sqlite");
+	await git(state, "init", "repo");
+	await writeFile(join(tree, "file"), "base");
+	await git(tree, "add", "file");
+	await git(tree, "commit", "-m", "base");
+	const base = await git(tree, "rev-parse", "HEAD");
+	const project = {
+		tree,
+		store: tree,
+		branch: await git(tree, "branch", "--show-current"),
+		base,
+		expected: base,
+	};
+	const issue = 38,
+		delivery = "fixture-correction";
+	let journal = new Journal(path);
+	journal.start(topic);
+	journal.enqueue({
+		delivery,
+		issue,
+		title: "Scoped change",
+		body: "Approved fixture",
+		action: "task",
+	});
+	assert.ok(journal.next());
+	journal.complete({ delivery, issue, disposition: "intake_received" });
+	assert.ok(
+		journal.nextWorker(
+			() => true,
+			() => true,
+		),
+	);
+	const produce = (attempt: number, text: string) =>
+		implementationCommit(
+			tree,
+			join(state, "implementation-" + attempt + ".json"),
+			issue,
+			["file"],
+			async () => JSON.stringify({ files: [{ path: "file", content: text }] }),
+			async () => {},
+		);
+	const first = await produce(0, "first attempt");
+	await checkpointImplementationCorrection(state, issue, project, {
+		sha: first,
+		attempt: 1,
+		feedback: "Correct the failed tests",
+	});
+	const head = await produce(1, "corrected attempt");
+	await checkpointImplementationCorrection(state, issue, project, {
+		sha: head,
+		attempt: 1,
+		feedback: "Resume exact GREEN candidate",
+		reviewOnly: true,
+	});
+	journal.suspendForAdvice(delivery, {
+		id: "a".repeat(36),
+		digest: "b".repeat(64),
+		head,
+		approval: "c".repeat(64),
+		submittedAt: Date.now(),
+		files: ["file"],
+	});
+	journal.db.close();
+	journal = new Journal(path);
+	journal.start(topic);
+	t.after(() => journal.db.close());
+	assert.equal(journal.resumeAdvice(delivery)?.issue, issue);
+	assert.deepEqual(JSON.parse(journal.specificationCheckpoint(issue)!), {
+		...project,
+		correcting: true,
+	});
+	const correction = JSON.parse(
+		await readFile(join(state, "assignments", "38", "correction.json"), "utf8"),
+	);
+	assert.deepEqual(correction, {
+		project,
+		sha: head,
+		attempt: 1,
+		feedback: "Resume exact GREEN candidate",
+		reviewOnly: true,
+	});
+	assert.equal(
+		await git(tree, "rev-parse", "HEAD"),
+		journal.adviceWait(delivery)?.wait.head,
+	);
+	await assert.rejects(
+		produce(0, "must not apply again"),
+		/Unexpected worktree revision/,
+	);
+	assert.equal(await git(tree, "rev-list", "--count", "HEAD"), "3");
 });
 
-test('identical direct text is journaled under its producing dispatch on replay',async t=>{
-  const state=await mkdtemp(join(tmpdir(),'jam-direct-result-'));
-  t.after(()=>rm(state,{recursive:true,force:true}));
-  const subject={...topic,cwd:join(state,'leo')};
-  const first=await publishDirectResult(subject,7,'assignment','Same result','dispatch-a');
-  assert.equal(await publishDirectResult(subject,7,'assignment','Same result','dispatch-a'),first);
-  assert.notEqual(await publishDirectResult(subject,7,'assignment','Same result','dispatch-b'),first);
-  const db=new DatabaseSync(join(state,'work-progress.sqlite'),{readOnly:true});
-  try{assert.equal(db.prepare('SELECT count(*) AS n FROM events WHERE issue=7').get()?.n,2);}
-  finally{db.close();}
+test("identical direct text is journaled under its producing dispatch on replay", async (t) => {
+	const state = await mkdtemp(join(tmpdir(), "jam-direct-result-"));
+	t.after(() => rm(state, { recursive: true, force: true }));
+	const subject = { ...topic, cwd: join(state, "leo") };
+	const first = await publishDirectResult(
+		subject,
+		7,
+		"assignment",
+		"Same result",
+		"dispatch-a",
+	);
+	assert.equal(
+		await publishDirectResult(
+			subject,
+			7,
+			"assignment",
+			"Same result",
+			"dispatch-a",
+		),
+		first,
+	);
+	assert.notEqual(
+		await publishDirectResult(
+			subject,
+			7,
+			"assignment",
+			"Same result",
+			"dispatch-b",
+		),
+		first,
+	);
+	const db = new DatabaseSync(join(state, "work-progress.sqlite"), {
+		readOnly: true,
+	});
+	try {
+		assert.equal(
+			db.prepare("SELECT count(*) AS n FROM events WHERE issue=7").get()?.n,
+			2,
+		);
+	} finally {
+		db.close();
+	}
 });
 
-test('integration resumes after a fast-forward already happened before the next assembly checkpoint',async t=>{
-  const {assembleCandidate}=await import('../src/integration-assembly.js');
-  const {mkdir}=await import('node:fs/promises');
-  const state=await mkdtemp(join(tmpdir(),'integrator-recovery-'));t.after(()=>rm(state,{recursive:true,force:true}));
-  await git(state,'init','repo');const repo=join(state,'repo'),dir=join(state,'integration');
-  await mkdir(dir);await writeFile(join(repo,'file'),'1');await git(repo,'add','file');await git(repo,'commit','-m','base');
-  const base=await git(repo,'rev-parse','HEAD');
-  await writeFile(join(repo,'file'),'2');await git(repo,'commit','-am','candidate');
-  const head=await git(repo,'rev-parse','HEAD');
-  await writeFile(join(dir,'assembly.json'),JSON.stringify({base,expected:base,heads:[head],current:base,index:0}));
-  await git(repo,'worktree','add','--detach',join(dir,'worktree'),head);
-  const saved=await assembleCandidate(repo,dir,{sha:base,dev:base},[head]);
-  assert.deepEqual(saved,{sha:head,base,expected:base});
-  assert.deepEqual(await assembleCandidate(repo,dir,{sha:base,dev:base},[head]),saved);
+test("integration resumes after a fast-forward already happened before the next assembly checkpoint", async (t) => {
+	const { assembleCandidate } = await import("../src/integration-assembly.js");
+	const { mkdir } = await import("node:fs/promises");
+	const state = await mkdtemp(join(tmpdir(), "integrator-recovery-"));
+	t.after(() => rm(state, { recursive: true, force: true }));
+	await git(state, "init", "repo");
+	const repo = join(state, "repo"),
+		dir = join(state, "integration");
+	await mkdir(dir);
+	await writeFile(join(repo, "file"), "1");
+	await git(repo, "add", "file");
+	await git(repo, "commit", "-m", "base");
+	const base = await git(repo, "rev-parse", "HEAD");
+	await writeFile(join(repo, "file"), "2");
+	await git(repo, "commit", "-am", "candidate");
+	const head = await git(repo, "rev-parse", "HEAD");
+	await writeFile(
+		join(dir, "assembly.json"),
+		JSON.stringify({
+			base,
+			expected: base,
+			heads: [head],
+			current: base,
+			index: 0,
+		}),
+	);
+	await git(repo, "worktree", "add", "--detach", join(dir, "worktree"), head);
+	const saved = await assembleCandidate(repo, dir, { sha: base, dev: base }, [
+		head,
+	]);
+	assert.deepEqual(saved, { sha: head, base, expected: base });
+	assert.deepEqual(
+		await assembleCandidate(repo, dir, { sha: base, dev: base }, [head]),
+		saved,
+	);
 });
 
-test('source reconciliation ignores a forged marker and holds a missing or unrecognized authenticated handoff',async t=>{
-  const {reconcileProgress}=await import('../src/work-progress.js');
-  const dir=await mkdtemp(join(tmpdir(),'source-progress-'));t.after(()=>rm(dir,{recursive:true,force:true}));
-  recordProgress(dir,6,'handoff','Architecture delivered.');
-  const db=new DatabaseSync(join(dir,'work-progress.sqlite'));t.after(()=>db.close());
-  const row=db.prepare('select body from events').get()!;
-  const comment={id:22,user:{id:19},body:String(row.body),issue_url:'https://api.github.com/repos/owner/repo/issues/6'};
-  const comments=[comment];
-  const api=async(path:string)=>path===''?{id:10}:comments;
-  const creds=async():Promise<[typeof api,number]>=>[api,19];
-  await reconcileProgress(dir,topic,6,creds);
-  assert.equal(db.prepare('select receipt from events').get()!.receipt,22);
-  comment.user.id=18;
-  await assert.rejects(reconcileProgress(dir,topic,6,creds),/missing/);
-  comment.user.id=19;comment.body='another outcome'+comment.body.slice(comment.body.indexOf('\n'));
-  await assert.rejects(reconcileProgress(dir,topic,6,creds),/disagree/);
+test("source reconciliation ignores a forged marker and holds a missing or unrecognized authenticated handoff", async (t) => {
+	const { reconcileProgress } = await import("../src/work-progress.js");
+	const dir = await mkdtemp(join(tmpdir(), "source-progress-"));
+	t.after(() => rm(dir, { recursive: true, force: true }));
+	recordProgress(dir, 6, "handoff", "Architecture delivered.");
+	const db = new DatabaseSync(join(dir, "work-progress.sqlite"));
+	t.after(() => db.close());
+	const row = db.prepare("select body from events").get()!;
+	const comment = {
+		id: 22,
+		user: { id: 19 },
+		body: String(row.body),
+		issue_url: "https://api.github.com/repos/owner/repo/issues/6",
+	};
+	const comments = [comment];
+	const api = async (path: string) => (path === "" ? { id: 10 } : comments);
+	const creds = async (): Promise<[typeof api, number]> => [api, 19];
+	await reconcileProgress(dir, topic, 6, creds);
+	assert.equal(db.prepare("select receipt from events").get()!.receipt, 22);
+	comment.user.id = 18;
+	await assert.rejects(reconcileProgress(dir, topic, 6, creds), /missing/);
+	comment.user.id = 19;
+	comment.body =
+		"another outcome" + comment.body.slice(comment.body.indexOf("\n"));
+	await assert.rejects(reconcileProgress(dir, topic, 6, creds), /disagree/);
 });
 
-test('one authenticated result gains multiple late Markdown files in-place and reconciles a lost edit reply',async t=>{
-  const dir=await mkdtemp(join(tmpdir(),'late-reports-'));t.after(()=>rm(dir,{recursive:true,force:true}));
-  const db=new DatabaseSync(join(dir,'work-progress.sqlite'));t.after(()=>db.close());
-  const comments:{id:number;issue_url:string;user:{id:number};body:string}[]=[];
-  const artifacts:{id:number;number:number;name:string;body:string;type:string;creator:{id:number};html_url:string}[]=[];
-  let posts=0,patches=0,loseEdit=true;
-  const api=async(path:string,method='GET',raw?:object):Promise<any>=>{
-    if(path==='')return {id:topic.repoId};
-    if(path.startsWith('/issues/6/comments?'))return comments;
-    if(path.startsWith('/issues/6/artifacts?'))return artifacts;
-    if(/^\/issues\/6\/artifacts\/\d+$/.test(path))return {artifact:artifacts[Number(path.split('/').at(-1))-1]};
-    const data=raw as {body:string;name:string;type:string};
-    if(path==='/issues/6/artifacts' && method==='POST'){
-      const num=artifacts.length+1;
-      const row={...data,id:num,number:num,creator:{id:40},html_url:'https://github.com/owner/repo/issues/6/artifacts/'+num};artifacts.push(row);return row;
-    }
-    if(path==='/issues/6/comments' && method==='POST'){
-      posts++;const c={id:81,issue_url:'https://api.github.com/repos/owner/repo/issues/6',user:{id:40},body:data.body};comments.push(c);return c;
-    }
-    if(path==='/issues/comments/81' && method==='GET')return comments[0];
-    if(path==='/issues/comments/81' && method==='PATCH'){
-      patches++;comments[0]!.body=data.body;if(loseEdit){loseEdit=false;throw Error('lost PATCH response');}return comments[0];
-    }
-    throw Error('Unexpected '+method+' '+path);
-  };
-  const credentials=async():Promise<[typeof api,number]>=>[api,40];
-  recordProgress(dir,6,'review','The integrator passed this candidate.');
-  await publishProgress(dir,topic,credentials);
-  const reports=[{purpose:'review' as const,markdown:'# Findings\n\nPass.\n'},{purpose:'tests' as const,markdown:'# Validation\n\n24 tests passed.\n'}];
-  recordProgress(dir,6,'review','The integrator passed this candidate.',reports);
-  await publishProgress(dir,topic,credentials);db.exec('UPDATE events SET retryAt=0');
-  await publishProgress(dir,topic,credentials);
-  recordProgress(dir,6,'review','The integrator passed this candidate.',reports);
-  assert.equal(await publishProgress(dir,topic,credentials),false);
-  assert.equal(posts,1);assert.equal(patches,1);assert.equal(artifacts.length,2);
-  assert.equal(comments.length,1);assert.match(comments[0]!.body,/The integrator passed this candidate\. \[review-6-/);
-  assert.match(comments[0]!.body,/\[tests-6-/);assert.equal(db.prepare('select receipt from events').get()!.receipt,81);
+test("one authenticated result gains multiple late Markdown files in-place and reconciles a lost edit reply", async (t) => {
+	const dir = await mkdtemp(join(tmpdir(), "late-reports-"));
+	t.after(() => rm(dir, { recursive: true, force: true }));
+	const db = new DatabaseSync(join(dir, "work-progress.sqlite"));
+	t.after(() => db.close());
+	const comments: {
+		id: number;
+		issue_url: string;
+		user: { id: number };
+		body: string;
+	}[] = [];
+	const artifacts: {
+		id: number;
+		number: number;
+		name: string;
+		body: string;
+		type: string;
+		creator: { id: number };
+		html_url: string;
+	}[] = [];
+	let posts = 0,
+		patches = 0,
+		loseEdit = true;
+	const api = async (
+		path: string,
+		method = "GET",
+		raw?: object,
+	): Promise<any> => {
+		if (path === "") return { id: topic.repoId };
+		if (path.startsWith("/issues/6/comments?")) return comments;
+		if (path.startsWith("/issues/6/artifacts?")) return artifacts;
+		if (/^\/issues\/6\/artifacts\/\d+$/.test(path))
+			return { artifact: artifacts[Number(path.split("/").at(-1)) - 1] };
+		const data = raw as { body: string; name: string; type: string };
+		if (path === "/issues/6/artifacts" && method === "POST") {
+			const num = artifacts.length + 1;
+			const row = {
+				...data,
+				id: num,
+				number: num,
+				creator: { id: 40 },
+				html_url: "https://github.com/owner/repo/issues/6/artifacts/" + num,
+			};
+			artifacts.push(row);
+			return row;
+		}
+		if (path === "/issues/6/comments" && method === "POST") {
+			posts++;
+			const c = {
+				id: 81,
+				issue_url: "https://api.github.com/repos/owner/repo/issues/6",
+				user: { id: 40 },
+				body: data.body,
+			};
+			comments.push(c);
+			return c;
+		}
+		if (path === "/issues/comments/81" && method === "GET") return comments[0];
+		if (path === "/issues/comments/81" && method === "PATCH") {
+			patches++;
+			comments[0]!.body = data.body;
+			if (loseEdit) {
+				loseEdit = false;
+				throw Error("lost PATCH response");
+			}
+			return comments[0];
+		}
+		throw Error("Unexpected " + method + " " + path);
+	};
+	const credentials = async (): Promise<[typeof api, number]> => [api, 40];
+	recordProgress(dir, 6, "review", "The integrator passed this candidate.");
+	await publishProgress(dir, topic, credentials);
+	const reports = [
+		{ purpose: "review" as const, markdown: "# Findings\n\nPass.\n" },
+		{
+			purpose: "tests" as const,
+			markdown: "# Validation\n\n24 tests passed.\n",
+		},
+	];
+	recordProgress(
+		dir,
+		6,
+		"review",
+		"The integrator passed this candidate.",
+		reports,
+	);
+	await publishProgress(dir, topic, credentials);
+	db.exec("UPDATE events SET retryAt=0");
+	await publishProgress(dir, topic, credentials);
+	recordProgress(
+		dir,
+		6,
+		"review",
+		"The integrator passed this candidate.",
+		reports,
+	);
+	assert.equal(await publishProgress(dir, topic, credentials), false);
+	assert.equal(posts, 1);
+	assert.equal(patches, 1);
+	assert.equal(artifacts.length, 2);
+	assert.equal(comments.length, 1);
+	assert.match(
+		comments[0]!.body,
+		/The integrator passed this candidate\. \[review-6-/,
+	);
+	assert.match(comments[0]!.body, /\[tests-6-/);
+	assert.equal(db.prepare("select receipt from events").get()!.receipt, 81);
 });
 
-test('adopting a verified legacy specification comment preserves its original ID and other issue history',async t=>{
-  const {adoptVerifiedLegacyResult}=await import('../src/work-progress.js');
-  const state=await mkdtemp(join(tmpdir(),'legacy-spec-'));t.after(()=>rm(state,{recursive:true,force:true}));
-  const url='https://github.com/owner/repo/issues/6/artifacts/1',name='spec-6-a01.md';
-  const original='['+name+']('+url+')';
-  const owned={id:90,body:original,user:{id:42},issue_url:'https://api.github.com/repos/owner/repo/issues/6'};
-  let patches=0;
-  const api=async(path:string,method?:string,data?:object)=>{
-    if(!path)return {id:10};
-    if(path==='/issues/comments/90' && !method)return owned;
-    if(path==='/issues/comments/90' && method==='PATCH'){
-      patches++;owned.body=(data as {body:string}).body;return owned;
-    }
-    throw Error('Unexpected request '+path);
-  };
-  recordProgress(state,6,'spec','Architect handed off the specification.',undefined,[{name,url}]);
-  adoptVerifiedLegacyResult(state,6,'spec',90,original);
-  const creds=async():Promise<[typeof api,number]>=>[api,42];
-  await publishProgress(state,topic,creds);
-  assert.match(owned.body,/Architect handed off the specification\. \[spec-6/);
-  assert.equal(await publishProgress(state,topic,creds),false);
-  assert.equal(patches,1);assert.equal(owned.id,90);
+test("adopting a verified legacy specification comment preserves its original ID and other issue history", async (t) => {
+	const { adoptVerifiedLegacyResult } = await import("../src/work-progress.js");
+	const state = await mkdtemp(join(tmpdir(), "legacy-spec-"));
+	t.after(() => rm(state, { recursive: true, force: true }));
+	const url = "https://github.com/owner/repo/issues/6/artifacts/1",
+		name = "spec-6-a01.md";
+	const original = "[" + name + "](" + url + ")";
+	const owned = {
+		id: 90,
+		body: original,
+		user: { id: 42 },
+		issue_url: "https://api.github.com/repos/owner/repo/issues/6",
+	};
+	let patches = 0;
+	const api = async (path: string, method?: string, data?: object) => {
+		if (!path) return { id: 10 };
+		if (path === "/issues/comments/90" && !method) return owned;
+		if (path === "/issues/comments/90" && method === "PATCH") {
+			patches++;
+			owned.body = (data as { body: string }).body;
+			return owned;
+		}
+		throw Error("Unexpected request " + path);
+	};
+	recordProgress(
+		state,
+		6,
+		"spec",
+		"Architect handed off the specification.",
+		undefined,
+		[{ name, url }],
+	);
+	adoptVerifiedLegacyResult(state, 6, "spec", 90, original);
+	const creds = async (): Promise<[typeof api, number]> => [api, 42];
+	await publishProgress(state, topic, creds);
+	assert.match(owned.body, /Architect handed off the specification\. \[spec-6/);
+	assert.equal(await publishProgress(state, topic, creds), false);
+	assert.equal(patches, 1);
+	assert.equal(owned.id, 90);
 });
 
-test('one live checklist survives replay, retains late files and finishes on its original comment',async t=>{
-  const {beginDashboard,storedResultComment}=await import('../src/work-progress.js');
-  const dir=await mkdtemp(join(tmpdir(),'checklist-'));t.after(()=>rm(dir,{recursive:true,force:true}));
-  const rows:{id:number;user:{id:number};body:string;issue_url:string}[]=[];
-  const api=async(path:string,method?:string,data?:object)=>{
-    if(path==='')return {id:10};
-    if(method==='POST'){rows.push({id:87,user:{id:40},body:(data as {body:string}).body,issue_url:'https://api.github.com/repos/owner/repo/issues/6'});return rows[0];}
-    if(method==='PATCH')rows[0]!.body=(data as {body:string}).body;
-    return path.includes('comments?')?rows:rows[0];
-  };
-  const publish=()=>publishProgress(dir,topic,async()=>[api,40]);
-  beginDashboard(dir,6,'assignment');await publish();assert.match(rows[0]!.body,/◻️ Prepare/);
-  recordProgress(dir,6,'waiting-profile','Waiting for project profile read access.');await publish();
-  assert.match(rows[0]!.body,/⏸️/);
-  beginDashboard(dir,6,'assignment');
-  recordProgress(dir,6,'result','The lessons are ready.',undefined,[{name:'lessons.md',url:'https://github.com/owner/repo/issues/6/artifacts/1'}]);
-  recordProgress(dir,6,'card-result-verified','Result verified.');await Promise.all([publish(),publish()]);
-  assert.equal(rows.length,1);assert.match(rows[0]!.body,/✅ Deliver/);assert.match(rows[0]!.body,/lessons.md/);
-  assert.equal(storedResultComment(dir,6,'result'),87);assert.equal(storedResultComment(dir,6,'unknown'),0);
+test("one live checklist survives replay, retains late files and finishes on its original comment", async (t) => {
+	const { beginDashboard, storedResultComment } = await import(
+		"../src/work-progress.js"
+	);
+	const dir = await mkdtemp(join(tmpdir(), "checklist-"));
+	t.after(() => rm(dir, { recursive: true, force: true }));
+	const rows: {
+		id: number;
+		user: { id: number };
+		body: string;
+		issue_url: string;
+	}[] = [];
+	const api = async (path: string, method?: string, data?: object) => {
+		if (path === "") return { id: 10 };
+		if (method === "POST") {
+			rows.push({
+				id: 87,
+				user: { id: 40 },
+				body: (data as { body: string }).body,
+				issue_url: "https://api.github.com/repos/owner/repo/issues/6",
+			});
+			return rows[0];
+		}
+		if (method === "PATCH") rows[0]!.body = (data as { body: string }).body;
+		return path.includes("comments?") ? rows : rows[0];
+	};
+	const publish = () => publishProgress(dir, topic, async () => [api, 40]);
+	beginDashboard(dir, 6, "assignment");
+	await publish();
+	assert.match(rows[0]!.body, /◻️ Prepare/);
+	recordProgress(
+		dir,
+		6,
+		"waiting-profile",
+		"Waiting for project profile read access.",
+	);
+	await publish();
+	assert.match(rows[0]!.body, /⏸️/);
+	beginDashboard(dir, 6, "assignment");
+	recordProgress(dir, 6, "result", "The lessons are ready.", undefined, [
+		{
+			name: "lessons.md",
+			url: "https://github.com/owner/repo/issues/6/artifacts/1",
+		},
+	]);
+	recordProgress(dir, 6, "card-result-verified", "Result verified.");
+	await Promise.all([publish(), publish()]);
+	assert.equal(rows.length, 1);
+	assert.match(rows[0]!.body, /✅ Deliver/);
+	assert.match(rows[0]!.body, /lessons.md/);
+	assert.equal(storedResultComment(dir, 6, "result"), 87);
+	assert.equal(storedResultComment(dir, 6, "unknown"), 0);
 });
-test('a denied profile before JAM dispatch retries the same approved intake after reopening the journal',async t=>{
-  const {Journal}=await import('../src/intake-journal.js');
-  const dir=await mkdtemp(join(tmpdir(),'profile-retry-'));t.after(()=>rm(dir,{recursive:true,force:true}));
-  const path=join(dir,'intake.sqlite');let journal=new Journal(path);
-  journal.start(topic);journal.enqueue({issue:6,delivery:'original',action:'task',title:'Lessons',body:'All five lessons'});
-  assert.equal(journal.next()?.issue,6);journal.deferProfile('original');assert.equal(journal.next(),undefined);journal.db.close();
-  journal=new Journal(path);journal.start(topic);journal.db.exec('update intake set seedRetryAt=0');
-  assert.equal(journal.next()?.body,'All five lessons');
-  journal.complete({delivery:'original',issue:6,disposition:'intake_received'});assert.throws(()=>journal.deferProfile('original'));
-  assert.equal(journal.nextWorker()?.delivery,'original');assert.equal(journal.nextWorker(),undefined);journal.db.close();
-});
-
-test('development handoffs retain separate role comments and reset worker checks on integration correction',async t=>{
-  const {beginDashboard}=await import('../src/work-progress.js');
-  const dir=await mkdtemp(join(tmpdir(),'role-checklists-'));t.after(()=>rm(dir,{recursive:true,force:true}));
-  beginDashboard(dir,4,'development');
-  for(const [id,msg] of [['architecture:1:requested','Draft ready'],['architecture-adviser:1:Codex:ok','Codex responded'],['architecture-adviser:1:Antigravity:error','Unavailable'],['spec-ready:abc','Published'],['validated:abc','Passed'],['integration:abc','Checking candidate'],['fix-spec:abc','Correction attached'],['rework:abc','Worker received correction']]){
-    recordProgress(dir,4,id!,msg!);
-  }
-  const db=new DatabaseSync(join(dir,'work-progress.sqlite'));
-  const bodies=db.prepare('SELECT body FROM events ORDER BY rowid').all().map(row=>String(row.body));db.close();
-  assert.equal(bodies.length,3);assert.match(bodies[0]!,/✅ Codex review/);assert.match(bodies[0]!,/❌ Antigravity review\n    Error:/);
-  assert.match(bodies[1]!,/Worker:.*\n[^]*◻️ Pass review/);assert.match(bodies[2]!,/Correction attached/);assert.match(bodies[2]!,/◻️ Publish the verified revision/);
-});
-
-test('parallel adviser reviews have independent noninteractive status marks',async()=>{
-  const {roleChecklist}=await import('../src/role-progress.js');
-  const html=roleChecklist('Architect',['architecture:1:requested','architecture-adviser:1:Codex:running','architecture-adviser:1:Antigravity:running','architecture-adviser:1:Codex:ok'].map(identity=>({identity,summary:'Reviewing'})));
-  assert.match(html,/✅ Codex review/);assert.match(html,/🟨 Antigravity review/);assert.match(html,/◻️ Publish/);
-  assert.doesNotMatch(html,/^[-*] /m);
-  assert.match(html,/^\*\*🍯 JAM Architect:.*\*\*\n\n```text\n  ✅ /);
-  assert.match(html,/  ✅ Codex review\n  🟨 Antigravity review/);
-  assert.match(html,/\n```$/);
-});
-
-test('human comments preserve the question and start one new editable progress comment',async t=>{
-  const {beginDashboard,startHumanTurn}=await import('../src/work-progress.js');
-  for(const kind of ['development','assignment']){
-    const dir=await mkdtemp(join(tmpdir(),'jam-human-turn-'));t.after(()=>rm(dir,{recursive:true,force:true}));
-    beginDashboard(dir,6,kind);
-    recordProgress(dir,6,'scope-plan:one','❓ @owner — which files do you approve?',{purpose:'plan',markdown:'Plan for this issue.'});
-    const db=new DatabaseSync(join(dir,'work-progress.sqlite'));t.after(()=>db.close());
-    const rows=()=>db.prepare('SELECT key,body FROM events WHERE issue=6 ORDER BY rowid').all();
-    const before=rows();assert.equal(before.length,1);assert.match(String(before[0]?.body),/❓ @owner/);
-    startHumanTurn(dir,6,101);
-    recordProgress(dir,6,'architect-resumed','Continued with the answer.');
-    startHumanTurn(dir,6,101);startHumanTurn(dir,6,99);
-    recordProgress(dir,6,'material-decision:one:answer','Verified.');
-    recordProgress(dir,6,'scope-plan:one','❓ @owner — which files do you approve?',{purpose:'plan',markdown:'Plan for this issue.'});
-    const after=rows();assert.equal(after.length,2);assert.deepEqual(after[0],before[0]);assert.match(String(after[1]?.body),/Verified/);
-  }
-});
-
-test('GitHub rate-limit pauses respect response headers and distinguish permission errors',async()=>{
-  const {rateLimitReset}=await import('../src/github-app.js');
-  assert.equal(rateLimitReset(429,new Headers({'retry-after':'120'}),'',1000),121000);
-  assert.equal(rateLimitReset(403,new Headers({'x-ratelimit-remaining':'0','x-ratelimit-reset':'260'}),'',1000),260000);
-  assert.equal(rateLimitReset(403,new Headers(),'secondary rate limit',1000),61000);
-  assert.equal(rateLimitReset(403,new Headers(),'not permitted',1000),undefined);
-});
-
-test('internal teammate messages retain their local checkpoint without a GitHub edit or intermediate upload',async t=>{
-  const {beginDashboard}=await import('../src/work-progress.js');
-  const dir=await mkdtemp(join(tmpdir(),'milestone-only-'));t.after(()=>rm(dir,{recursive:true,force:true}));
-  beginDashboard(dir,4,'development');
-  recordProgress(dir,4,'architect-a-assigned-1','Architect started.');
-  const db=new DatabaseSync(join(dir,'work-progress.sqlite'));t.after(()=>db.close());
-  const events=()=>db.prepare('SELECT body,version FROM events ORDER BY rowid').all();
-  const before=events();
-  recordProgress(dir,4,'architect-a-received','Internal message.');
-  recordProgress(dir,4,'architect-b-assigned-1','Waiting again.',{purpose:'consultation',markdown:'Local feedback'});
-  assert.deepEqual(events(),before);
-  assert.equal(db.prepare('SELECT COUNT(*) n FROM event_reports').get()!.n,0);
-  recordProgress(dir,4,'spec-ready:done','Use an accessible input.',undefined,[{name:'spec.md',url:'https://github.com/owner/repo/issues/4/artifacts/2'}]);
-  assert.match(String(events()[0]?.body),/✅ Publish the specification/);
-  assert.equal(db.prepare('SELECT COUNT(*) n FROM event_links').get()!.n,1);
+test("a denied profile before JAM dispatch retries the same approved intake after reopening the journal", async (t) => {
+	const { Journal } = await import("../src/intake-journal.js");
+	const dir = await mkdtemp(join(tmpdir(), "profile-retry-"));
+	t.after(() => rm(dir, { recursive: true, force: true }));
+	const path = join(dir, "intake.sqlite");
+	let journal = new Journal(path);
+	journal.start(topic);
+	journal.enqueue({
+		issue: 6,
+		delivery: "original",
+		action: "task",
+		title: "Lessons",
+		body: "All five lessons",
+	});
+	assert.equal(journal.next()?.issue, 6);
+	journal.deferProfile("original");
+	assert.equal(journal.next(), undefined);
+	journal.db.close();
+	journal = new Journal(path);
+	journal.start(topic);
+	journal.db.exec("update intake set seedRetryAt=0");
+	assert.equal(journal.next()?.body, "All five lessons");
+	journal.complete({
+		delivery: "original",
+		issue: 6,
+		disposition: "intake_received",
+	});
+	assert.throws(() => journal.deferProfile("original"));
+	assert.equal(journal.nextWorker()?.delivery, "original");
+	assert.equal(journal.nextWorker(), undefined);
+	journal.db.close();
 });
 
-test('evidence-only corrections preserve HEAD and do not permit an empty initial implementation',async t=>{
-  const state=await mkdtemp(join(tmpdir(),'evidence-only-'));t.after(()=>rm(state,{recursive:true,force:true}));
-  const tree=join(state,'repo');await git(state,'init','repo');await writeFile(join(tree,'file'),'original');
-  await git(tree,'add','file');await git(tree,'commit','-m','base');const head=await git(tree,'rev-parse','HEAD');
-  await assert.rejects(implementationCommit(tree,join(state,'initial.json'),1,['file'],async()=>'{"files":[]}',async()=>{}),/files array/);
-  const run=()=>implementationCommit(tree,join(state,'correction.json'),1,['file'],async()=>'{"files":[]}',async()=>{},true);
-  assert.equal(await run(),head);assert.equal(await run(),head);
-  assert.equal(await git(tree,'rev-list','--count','HEAD'),'1');
+test("development handoffs retain separate role comments and reset worker checks on integration correction", async (t) => {
+	const { beginDashboard } = await import("../src/work-progress.js");
+	const dir = await mkdtemp(join(tmpdir(), "role-checklists-"));
+	t.after(() => rm(dir, { recursive: true, force: true }));
+	beginDashboard(dir, 4, "development");
+	for (const [id, msg] of [
+		["architecture:1:requested", "Draft ready"],
+		["architecture-adviser:1:Codex:ok", "Codex responded"],
+		["architecture-adviser:1:Antigravity:error", "Unavailable"],
+		["spec-ready:abc", "Published"],
+		["validated:abc", "Passed"],
+		["integration:abc", "Checking candidate"],
+		["fix-spec:abc", "Correction attached"],
+		["rework:abc", "Worker received correction"],
+	]) {
+		recordProgress(dir, 4, id!, msg!);
+	}
+	const db = new DatabaseSync(join(dir, "work-progress.sqlite"));
+	const bodies = db
+		.prepare("SELECT body FROM events ORDER BY rowid")
+		.all()
+		.map((row) => String(row.body));
+	db.close();
+	assert.equal(bodies.length, 3);
+	assert.match(bodies[0]!, /✅ Codex review/);
+	assert.match(bodies[0]!, /❌ Antigravity review\n {4}Error:/);
+	assert.match(bodies[1]!, /Worker:.*\n[\s\S]*◻️ Pass review/);
+	assert.match(bodies[2]!, /Correction attached/);
+	assert.match(bodies[2]!, /◻️ Publish the verified revision/);
 });
 
-test('one shared integration start remains unchanged during assembly and resets for a reduced batch',async()=>{
-  const {roleChecklist}=await import('../src/role-progress.js');
-  const start={identity:'integration-start:batch-a',summary:'Integration checks started for the shared batch #1, #2.'};
-  const initial=roleChecklist('Integrator',[start]);
-  assert.match(initial,/🟨 Pass combined tests/);
-  assert.equal(roleChecklist('Integrator',[start,{identity:'integration:sha-a',summary:'Assembled'}]),initial);
-  const result=[start,{identity:'integration:sha-a',summary:'Assembled'},{identity:'integration-tests:sha-a',summary:'Passed'}];
-  assert.match(roleChecklist('Integrator',result),/✅ Pass combined tests/);
-  const retry=roleChecklist('Integrator',[...result,{identity:'integration-retest:batch-a',summary:'A new test round after excluding #2.'}]);
-  assert.match(retry,/🟨 Pass combined tests/);
-  assert.doesNotMatch(retry,/✅ Pass combined tests/);
-  assert.match(retry,/excluding #2/);
+test("parallel adviser reviews have independent noninteractive status marks", async () => {
+	const { roleChecklist } = await import("../src/role-progress.js");
+	const html = roleChecklist(
+		"Architect",
+		[
+			"architecture:1:requested",
+			"architecture-adviser:1:Codex:running",
+			"architecture-adviser:1:Antigravity:running",
+			"architecture-adviser:1:Codex:ok",
+		].map((identity) => ({ identity, summary: "Reviewing" })),
+	);
+	assert.match(html, /✅ Codex review/);
+	assert.match(html, /🟨 Antigravity review/);
+	assert.match(html, /◻️ Publish/);
+	assert.doesNotMatch(html, /^[-*] /m);
+	assert.match(html, /^\*\*🍯 JAM Architect:.*\*\*\n\n```text\n {2}✅ /);
+	assert.match(html, / {2}✅ Codex review\n {2}🟨 Antigravity review/);
+	assert.match(html, /\n```$/);
 });
 
-test('repeated incident updates stay with the producing role and retain the sanitized report',async t=>{
-  const {beginDashboard}=await import('../src/work-progress.js');
-  const state=await mkdtemp(join(tmpdir(),'role-incident-board-'));t.after(()=>rm(state,{recursive:true,force:true}));
-  beginDashboard(state,35,'development');
-  recordProgress(state,35,'architect-assigned','Architect started');
-  recordProgress(state,35,'blocked:old','Generic failure');
-  recordProgress(state,35,'blocked:incident','Responsible human requested',{purpose:'review',markdown:'# Sanitized incident'});
-  const db=new DatabaseSync(join(state,'work-progress.sqlite'));
-  try{
-    assert.deepEqual(db.prepare('SELECT DISTINCT owner FROM progress_boards WHERE issue=35').all().map(r=>r.owner),['Architect']);
-    assert.equal(db.prepare('SELECT markdown FROM event_reports').get()?.markdown,'# Sanitized incident');
-  }finally{db.close();}
+test("human comments preserve the question and start one new editable progress comment", async (t) => {
+	const { beginDashboard, startHumanTurn } = await import(
+		"../src/work-progress.js"
+	);
+	for (const kind of ["development", "assignment"]) {
+		const dir = await mkdtemp(join(tmpdir(), "jam-human-turn-"));
+		t.after(() => rm(dir, { recursive: true, force: true }));
+		beginDashboard(dir, 6, kind);
+		recordProgress(
+			dir,
+			6,
+			"scope-plan:one",
+			"❓ @owner — which files do you approve?",
+			{ purpose: "plan", markdown: "Plan for this issue." },
+		);
+		const db = new DatabaseSync(join(dir, "work-progress.sqlite"));
+		t.after(() => db.close());
+		const rows = () =>
+			db
+				.prepare("SELECT key,body FROM events WHERE issue=6 ORDER BY rowid")
+				.all();
+		const before = rows();
+		assert.equal(before.length, 1);
+		assert.match(String(before[0]?.body), /❓ @owner/);
+		startHumanTurn(dir, 6, 101);
+		recordProgress(dir, 6, "architect-resumed", "Continued with the answer.");
+		startHumanTurn(dir, 6, 101);
+		startHumanTurn(dir, 6, 99);
+		recordProgress(dir, 6, "material-decision:one:answer", "Verified.");
+		recordProgress(
+			dir,
+			6,
+			"scope-plan:one",
+			"❓ @owner — which files do you approve?",
+			{ purpose: "plan", markdown: "Plan for this issue." },
+		);
+		const after = rows();
+		assert.equal(after.length, 2);
+		assert.deepEqual(after[0], before[0]);
+		assert.match(String(after[1]?.body), /Verified/);
+	}
+});
+
+test("GitHub rate-limit pauses respect response headers and distinguish permission errors", async () => {
+	const { rateLimitReset } = await import("../src/github-app.js");
+	assert.equal(
+		rateLimitReset(429, new Headers({ "retry-after": "120" }), "", 1000),
+		121000,
+	);
+	assert.equal(
+		rateLimitReset(
+			403,
+			new Headers({ "x-ratelimit-remaining": "0", "x-ratelimit-reset": "260" }),
+			"",
+			1000,
+		),
+		260000,
+	);
+	assert.equal(
+		rateLimitReset(403, new Headers(), "secondary rate limit", 1000),
+		61000,
+	);
+	assert.equal(
+		rateLimitReset(403, new Headers(), "not permitted", 1000),
+		undefined,
+	);
+});
+
+test("internal teammate messages retain their local checkpoint without a GitHub edit or intermediate upload", async (t) => {
+	const { beginDashboard } = await import("../src/work-progress.js");
+	const dir = await mkdtemp(join(tmpdir(), "milestone-only-"));
+	t.after(() => rm(dir, { recursive: true, force: true }));
+	beginDashboard(dir, 4, "development");
+	recordProgress(dir, 4, "architect-a-assigned-1", "Architect started.");
+	const db = new DatabaseSync(join(dir, "work-progress.sqlite"));
+	t.after(() => db.close());
+	const events = () =>
+		db.prepare("SELECT body,version FROM events ORDER BY rowid").all();
+	const before = events();
+	recordProgress(dir, 4, "architect-a-received", "Internal message.");
+	recordProgress(dir, 4, "architect-b-assigned-1", "Waiting again.", {
+		purpose: "consultation",
+		markdown: "Local feedback",
+	});
+	assert.deepEqual(events(), before);
+	assert.equal(db.prepare("SELECT COUNT(*) n FROM event_reports").get()!.n, 0);
+	recordProgress(
+		dir,
+		4,
+		"spec-ready:done",
+		"Use an accessible input.",
+		undefined,
+		[
+			{
+				name: "spec.md",
+				url: "https://github.com/owner/repo/issues/4/artifacts/2",
+			},
+		],
+	);
+	assert.match(String(events()[0]?.body), /✅ Publish the specification/);
+	assert.equal(db.prepare("SELECT COUNT(*) n FROM event_links").get()!.n, 1);
+});
+
+test("evidence-only corrections preserve HEAD and do not permit an empty initial implementation", async (t) => {
+	const state = await mkdtemp(join(tmpdir(), "evidence-only-"));
+	t.after(() => rm(state, { recursive: true, force: true }));
+	const tree = join(state, "repo");
+	await git(state, "init", "repo");
+	await writeFile(join(tree, "file"), "original");
+	await git(tree, "add", "file");
+	await git(tree, "commit", "-m", "base");
+	const head = await git(tree, "rev-parse", "HEAD");
+	await assert.rejects(
+		implementationCommit(
+			tree,
+			join(state, "initial.json"),
+			1,
+			["file"],
+			async () => '{"files":[]}',
+			async () => {},
+		),
+		/files array/,
+	);
+	const run = () =>
+		implementationCommit(
+			tree,
+			join(state, "correction.json"),
+			1,
+			["file"],
+			async () => '{"files":[]}',
+			async () => {},
+			true,
+		);
+	assert.equal(await run(), head);
+	assert.equal(await run(), head);
+	assert.equal(await git(tree, "rev-list", "--count", "HEAD"), "1");
+});
+
+test("one shared integration start remains unchanged during assembly and resets for a reduced batch", async () => {
+	const { roleChecklist } = await import("../src/role-progress.js");
+	const start = {
+		identity: "integration-start:batch-a",
+		summary: "Integration checks started for the shared batch #1, #2.",
+	};
+	const initial = roleChecklist("Integrator", [start]);
+	assert.match(initial, /🟨 Pass combined tests/);
+	assert.equal(
+		roleChecklist("Integrator", [
+			start,
+			{ identity: "integration:sha-a", summary: "Assembled" },
+		]),
+		initial,
+	);
+	const result = [
+		start,
+		{ identity: "integration:sha-a", summary: "Assembled" },
+		{ identity: "integration-tests:sha-a", summary: "Passed" },
+	];
+	assert.match(roleChecklist("Integrator", result), /✅ Pass combined tests/);
+	const retry = roleChecklist("Integrator", [
+		...result,
+		{
+			identity: "integration-retest:batch-a",
+			summary: "A new test round after excluding #2.",
+		},
+	]);
+	assert.match(retry, /🟨 Pass combined tests/);
+	assert.doesNotMatch(retry, /✅ Pass combined tests/);
+	assert.match(retry, /excluding #2/);
+});
+
+test("repeated incident updates stay with the producing role and retain the sanitized report", async (t) => {
+	const { beginDashboard } = await import("../src/work-progress.js");
+	const state = await mkdtemp(join(tmpdir(), "role-incident-board-"));
+	t.after(() => rm(state, { recursive: true, force: true }));
+	beginDashboard(state, 35, "development");
+	recordProgress(state, 35, "architect-assigned", "Architect started");
+	recordProgress(state, 35, "blocked:old", "Generic failure");
+	recordProgress(state, 35, "blocked:incident", "Responsible human requested", {
+		purpose: "review",
+		markdown: "# Sanitized incident",
+	});
+	const db = new DatabaseSync(join(state, "work-progress.sqlite"));
+	try {
+		assert.deepEqual(
+			db
+				.prepare("SELECT DISTINCT owner FROM progress_boards WHERE issue=35")
+				.all()
+				.map((r) => r.owner),
+			["Architect"],
+		);
+		assert.equal(
+			db.prepare("SELECT markdown FROM event_reports").get()?.markdown,
+			"# Sanitized incident",
+		);
+	} finally {
+		db.close();
+	}
 });

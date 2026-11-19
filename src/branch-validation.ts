@@ -1,76 +1,158 @@
-import type { DatabaseSync } from 'node:sqlite';
-import { IntegrationQueue, type IntegrationBatch, type ReadyBranch } from './integration-queue.js';
+import type { DatabaseSync } from "node:sqlite";
+import type {
+	IntegrationQueue,
+	IntegrationBatch,
+	ReadyBranch,
+} from "./integration-queue.js";
 
-import type {Intake} from './intake-journal.js';
-import {parseTaskCard, type ProfileKind} from './profile-card.js';
+import type { Intake } from "./intake-journal.js";
+import { parseTaskCard, type ProfileKind } from "./profile-card.js";
 
 type Validation = (head: ReadyBranch) => Promise<void>;
-interface Tick { batch?: IntegrationBatch; waiting: boolean }
+interface Tick {
+	batch?: IntegrationBatch;
+	waiting: boolean;
+}
 
 /** Final deterministic checks run outside the repository's one native coordinator session. */
 export class BranchValidation {
-  private readonly active = new Map<number,Promise<void>>();
-  constructor(private readonly db: DatabaseSync) {
-    db.exec(`CREATE TABLE IF NOT EXISTS branch_validation(
+	private readonly active = new Map<number, Promise<void>>();
+	constructor(private readonly db: DatabaseSync) {
+		db.exec(`CREATE TABLE IF NOT EXISTS branch_validation(
       issue INTEGER NOT NULL, branch TEXT NOT NULL, sha TEXT NOT NULL, submittedAt INTEGER NOT NULL,
       elapsedEstimate INTEGER NOT NULL, startedAt INTEGER, readyAt INTEGER, error TEXT,
       state TEXT NOT NULL CHECK(state IN ('pending','checking','ready','failed')), PRIMARY KEY(issue,sha))`);
-  }
+	}
 
-  submit(head:ReadyBranch, elapsedMs:number) {
-    if (!Number.isSafeInteger(elapsedMs) || elapsedMs<1 || !Number.isSafeInteger(head.issue) || head.issue<1 ||
-        !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(head.sha)) throw Error('Invalid reviewed branch handoff');
-    this.db.prepare(`INSERT INTO branch_validation(issue,branch,sha,submittedAt,elapsedEstimate,state)
+	submit(head: ReadyBranch, elapsedMs: number) {
+		if (
+			!Number.isSafeInteger(elapsedMs) ||
+			elapsedMs < 1 ||
+			!Number.isSafeInteger(head.issue) ||
+			head.issue < 1 ||
+			!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(head.sha)
+		)
+			throw Error("Invalid reviewed branch handoff");
+		this.db
+			.prepare(`INSERT INTO branch_validation(issue,branch,sha,submittedAt,elapsedEstimate,state)
       VALUES(?,?,?,?,?,'pending') ON CONFLICT(issue,sha) DO NOTHING`)
-      .run(head.issue,head.branch,head.sha,Date.now(),elapsedMs);
-  }
+			.run(head.issue, head.branch, head.sha, Date.now(), elapsedMs);
+	}
 
-  recover() {
-    // Only immutable, read-only checks may be repeated. The service already holds its owner lock.
-    this.db.exec("UPDATE branch_validation SET state='pending', startedAt=NULL WHERE state='checking'");
-  }
+	recover() {
+		// Only immutable, read-only checks may be repeated. The service already holds its owner lock.
+		this.db.exec(
+			"UPDATE branch_validation SET state='pending', startedAt=NULL WHERE state='checking'",
+		);
+	}
 
-  // tick() already claims ready integrations. Checking heads still need their overlapping successor to wait.
-  canStart(task:Intake, defaultClass?:ProfileKind):boolean {
-    const next=parseTaskCard(task.title,task.body,task.kind,defaultClass);
-    if (!next?.files.length) return true;
-    const rows=this.db.prepare(`SELECT i.title,i.body,i.kind FROM branch_validation AS v
-      JOIN intake AS i ON i.issue=v.issue AND i.action='task' WHERE v.state IN ('pending','checking')`).all();
-    return !rows.some(row=>{
-      const previous=parseTaskCard(String(row.title),String(row.body),(row.kind ?? undefined) as ProfileKind|undefined,defaultClass);
-      return previous?.files.some(file=>next.files.includes(file));
-    });
-  }
+	// tick() already claims ready integrations. Checking heads still need their overlapping successor to wait.
+	canStart(task: Intake, defaultClass?: ProfileKind): boolean {
+		const next = parseTaskCard(task.title, task.body, task.kind, defaultClass);
+		if (!next?.files.length) return true;
+		const rows = this.db
+			.prepare(`SELECT i.title,i.body,i.kind FROM branch_validation AS v
+      JOIN intake AS i ON i.issue=v.issue AND i.action='task' WHERE v.state IN ('pending','checking')`)
+			.all();
+		return !rows.some((row) => {
+			const previous = parseTaskCard(
+				String(row.title),
+				String(row.body),
+				(row.kind ?? undefined) as ProfileKind | undefined,
+				defaultClass,
+			);
+			return previous?.files.some((file) => next.files.includes(file));
+		});
+	}
 
-  async settle() {await Promise.all(this.active.values());}
+	async settle() {
+		await Promise.all(this.active.values());
+	}
 
-  tick(queue:IntegrationQueue, validate:Validation, signal:AbortSignal, now = Date.now(),eligible?:(head:ReadyBranch)=>boolean): Tick {
-    // Keep tests off JAM's call stack and bound the local test load. Queueing alone is not a near-finish signal.
-    while (!signal.aborted && this.active.size<3) {
-      const row=this.db.prepare("SELECT rowid AS id,* FROM branch_validation WHERE state='pending' ORDER BY submittedAt,rowid LIMIT 1").get();
-      if (!row) break;
-      const head={issue:Number(row.issue),branch:String(row.branch),sha:String(row.sha)};
-      const id=Number(row.id);
-      this.db.prepare("UPDATE branch_validation SET state='checking',startedAt=? WHERE rowid=?").run(now,id);
-      const task=Promise.resolve().then(()=>validate(head)).then(()=>{
-        const readyAt=Date.now();
-        // An interruption between these writes repeats a read-only check. Queue insertion is idempotent.
-        queue.ready(head,readyAt);
-        this.db.prepare("UPDATE branch_validation SET state='ready',readyAt=? WHERE rowid=?").run(readyAt,id);
-      }).catch(error=>{
-        const reason=error instanceof Error ? error.message : 'Head validation failed';
-        this.db.prepare('UPDATE branch_validation SET state=?,error=? WHERE rowid=?')
-          .run(signal.aborted ? 'pending' : 'failed',reason.slice(0,1000),id);
-      }).finally(()=>{this.active.delete(id);});
-      this.active.set(id,task);
-    }
-    const current=queue.active();
-    if(current)return {batch:current,waiting:false};
-    const imminent=this.db.prepare(`SELECT v.issue,v.branch,v.sha,v.startedAt+v.elapsedEstimate AS eta FROM branch_validation v
+	tick(
+		queue: IntegrationQueue,
+		validate: Validation,
+		signal: AbortSignal,
+		now = Date.now(),
+		eligible?: (head: ReadyBranch) => boolean,
+	): Tick {
+		// Keep tests off JAM's call stack and bound the local test load. Queueing alone is not a near-finish signal.
+		while (!signal.aborted && this.active.size < 3) {
+			const row = this.db
+				.prepare(
+					"SELECT rowid AS id,* FROM branch_validation WHERE state='pending' ORDER BY submittedAt,rowid LIMIT 1",
+				)
+				.get();
+			if (!row) break;
+			const head = {
+				issue: Number(row.issue),
+				branch: String(row.branch),
+				sha: String(row.sha),
+			};
+			const id = Number(row.id);
+			this.db
+				.prepare(
+					"UPDATE branch_validation SET state='checking',startedAt=? WHERE rowid=?",
+				)
+				.run(now, id);
+			const task = Promise.resolve()
+				.then(() => validate(head))
+				.then(() => {
+					const readyAt = Date.now();
+					// An interruption between these writes repeats a read-only check. Queue insertion is idempotent.
+					queue.ready(head, readyAt);
+					this.db
+						.prepare(
+							"UPDATE branch_validation SET state='ready',readyAt=? WHERE rowid=?",
+						)
+						.run(readyAt, id);
+				})
+				.catch((error) => {
+					const reason =
+						error instanceof Error ? error.message : "Head validation failed";
+					this.db
+						.prepare(
+							"UPDATE branch_validation SET state=?,error=? WHERE rowid=?",
+						)
+						.run(
+							signal.aborted ? "pending" : "failed",
+							reason.slice(0, 1000),
+							id,
+						);
+				})
+				.finally(() => {
+					this.active.delete(id);
+				});
+			this.active.set(id, task);
+		}
+		const current = queue.active();
+		if (current) return { batch: current, waiting: false };
+		const imminent = this.db
+			.prepare(`SELECT v.issue,v.branch,v.sha,v.startedAt+v.elapsedEstimate AS eta FROM branch_validation v
       WHERE v.state='checking' AND v.startedAt+v.elapsedEstimate>?
         AND NOT EXISTS(SELECT 1 FROM integration_heads h WHERE h.issue=v.issue AND h.sha=v.sha)
-      ORDER BY eta,v.rowid`).all(now).find(row=>!eligible||eligible({issue:Number(row.issue),branch:String(row.branch),sha:String(row.sha)}));
-    const batch=queue.claim({targetSize:10,nearFinishAt:imminent&&Number(imminent.eta),eligible},now);
-    return {batch,waiting:!batch && queue.snapshot().ready.some(eligible??(()=>true))};
-  }
+      ORDER BY eta,v.rowid`)
+			.all(now)
+			.find(
+				(row) =>
+					!eligible ||
+					eligible({
+						issue: Number(row.issue),
+						branch: String(row.branch),
+						sha: String(row.sha),
+					}),
+			);
+		const batch = queue.claim(
+			{
+				targetSize: 10,
+				nearFinishAt: imminent && Number(imminent.eta),
+				eligible,
+			},
+			now,
+		);
+		return {
+			batch,
+			waiting: !batch && queue.snapshot().ready.some(eligible ?? (() => true)),
+		};
+	}
 }
