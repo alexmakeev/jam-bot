@@ -7,6 +7,7 @@ import test from "node:test";
 import { Journal } from "../src/intake-journal.js";
 import {
 	recoverPersistentDispatch,
+	persistentNativeActor,
 	reportsNativeAuthenticationFailure,
 } from "../src/native-persistent-lead.js";
 import { RoleStageFailure } from "../src/role-failure.js";
@@ -15,6 +16,7 @@ import type { RoleStage } from "../src/role-harness.js";
 import {
 	NativeRoleDeferred,
 	nativeWorkerAuthority,
+	nativeWorkerOwnsParkedStage,
 	NativeWorkerWaits,
 	type NativeWorkerIntent,
 } from "../src/native-worker-wait.js";
@@ -30,6 +32,21 @@ const intent = (issue: number, files: string[]): NativeWorkerIntent => ({
 	approvalDigest: fingerprint("trusted actor"),
 	revision: "a".repeat(40),
 	files,
+});
+
+test("persistent roles keep one manager per card and separate independent review", () => {
+	const manager = persistentNativeActor("assignment", 1);
+	assert.deepEqual(persistentNativeActor("developer", 1), manager);
+	assert.notDeepEqual(persistentNativeActor("developer", 2), manager);
+	assert.deepEqual(
+		persistentNativeActor("architect", 1),
+		persistentNativeActor("integrator", 2),
+	);
+	assert.notDeepEqual(persistentNativeActor("consultant", 1), manager);
+	assert.notDeepEqual(
+		persistentNativeActor("consultant", 1),
+		persistentNativeActor("architect", 1),
+	);
 });
 
 test("native recovery requires the exact approval envelope and refuses an older unbound dispatch", async (t) => {
@@ -52,7 +69,7 @@ test("native recovery requires the exact approval envelope and refuses an older 
 			cwd: state,
 			session: randomUUID(),
 			challenge: randomUUID(),
-			name: "manager",
+			...persistentNativeActor(authority.role, authority.issue),
 		},
 	};
 	await atomicJson(path, dispatch);
@@ -70,6 +87,17 @@ test("native recovery requires the exact approval envelope and refuses an older 
 	assert.deepEqual(
 		await recoverPersistentDispatch(state, issue, challenge, authority),
 		{ attempted: true },
+	);
+	await atomicJson(path, {
+		...dispatch,
+		initial: {
+			...dispatch.initial,
+			...persistentNativeActor("consultant", issue),
+		},
+	});
+	await assert.rejects(
+		recoverPersistentDispatch(state, issue, challenge, authority),
+		/approved role/,
 	);
 	await atomicJson(path, { ...dispatch, version: 2, authority: undefined });
 	await assert.rejects(
@@ -131,6 +159,8 @@ test("only the original verified disjoint stage can resume after process interru
 		first.delivery,
 	);
 	waits.park(first);
+	assert.equal(nativeWorkerOwnsParkedStage(journal.db, first), true);
+	assert.equal(nativeWorkerOwnsParkedStage(journal.db, second), false);
 	journal.db
 		.prepare(
 			"INSERT INTO intake(delivery,issue,action,title,body,state) VALUES(?,4,'opened','','','queued')",
@@ -178,6 +208,7 @@ test("only the original verified disjoint stage can resume after process interru
 		/durable intent/,
 	);
 	waits.recordVerifiedReply(second);
+	assert.equal(nativeWorkerOwnsParkedStage(journal.db, second), false);
 	journal.db.prepare("UPDATE intake SET state='review' WHERE issue=4").run();
 	assert.equal(waits.resume(second), false);
 	journal.db.prepare("UPDATE intake SET state='queued' WHERE issue=4").run();

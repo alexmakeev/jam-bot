@@ -73,6 +73,25 @@ export function nativeWorkerAuthority(intent: NativeWorkerIntent) {
 	});
 }
 
+export function nativeWorkerOwnsParkedStage(
+	db: DatabaseSync,
+	intent: NativeWorkerIntent,
+) {
+	return Boolean(
+		db
+			.prepare(`SELECT 1 FROM native_worker_waits w JOIN intake i ON w.delivery=i.delivery
+		WHERE w.delivery=? AND w.issue=? AND i.issue=w.issue AND w.challenge=? AND w.intent=?
+		AND w.ready=0 AND i.workerState='waiting-native' AND i.specCheckpoint IS NOT NULL
+		AND NOT EXISTS(SELECT 1 FROM intake WHERE state IN ('running','review') OR workerState='review')`)
+			.get(
+				intent.delivery,
+				intent.issue,
+				intent.challenge,
+				nativeWorkerAuthority(intent),
+			),
+	);
+}
+
 export class NativeWorkerWaits {
 	constructor(private readonly db: DatabaseSync) {
 		db.exec(`CREATE TABLE IF NOT EXISTS native_worker_waits(

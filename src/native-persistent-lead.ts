@@ -9,10 +9,12 @@ import {
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
+import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 import { nativeLeadBusyCode, startNativeLead } from "./native-lead.js";
 import {
 	nativeWorkerAuthority,
+	nativeWorkerOwnsParkedStage,
 	type NativeWorkerIntent,
 } from "./native-worker-wait.js";
 import {
@@ -25,6 +27,12 @@ import {
 	stageRefused,
 } from "./native-teammate.js";
 import { SharedWorkspace } from "./shared-workspace.js";
+import {
+	nativeRoleInput,
+	nativeRoleInstructions,
+	type RoleStage,
+} from "./role-harness.js";
+import { fingerprint } from "./work-progress.js";
 import {
 	bindWorkspace,
 	loadWorkspace,
@@ -39,7 +47,11 @@ interface Request {
 	issue: number;
 	input: string;
 	workspaceManifest?: string;
-	authority?: NativeWorkerIntent;
+}
+interface AuthorizedRequest extends Request {
+	authority: NativeWorkerIntent;
+	agentType: string;
+	beforeSend: () => Promise<void>;
 }
 interface Intent {
 	version: 1 | 2 | 3;
@@ -91,6 +103,21 @@ export function reportsNativeAuthenticationFailure(
 	);
 }
 const actorType = "jam-persistent-workspace-member";
+const managerType = "jam-persistent-card-manager";
+const architectType = "jam-persistent-architect-integrator";
+const consultantType = "jam-persistent-independent-consultant";
+
+export function persistentNativeActor(
+	role: NativeWorkerIntent["role"],
+	issue: number,
+) {
+	if (role === "assignment" || role === "developer")
+		return { name: "manager-" + issue, agentType: managerType };
+	if (role === "consultant")
+		return { name: "consultant-" + issue, agentType: consultantType };
+	return { name: "architect-integration", agentType: architectType };
+}
+
 const workspaceTools = [
 	"workspace_list",
 	"workspace_read",
@@ -185,6 +212,14 @@ export async function recoverPersistentDispatch(
 		!safeInput.test(original.initial.name)
 	)
 		throw Error("Invalid saved native generation");
+	if (expected) {
+		const actor = persistentNativeActor(expected.role, expected.issue);
+		if (
+			original.initial.name !== actor.name ||
+			original.initial.agentType !== actor.agentType
+		)
+			throw Error("Native dispatch member differs from its approved role");
+	}
 	const result = await nativeFollowupReceipt({
 		...original,
 		allowOtherMembers: true,
@@ -305,14 +340,23 @@ export class PersistentNativeLead {
 					],
 				},
 			};
-			const agents = {
-				[actorType]: {
-					description: "JAM-Bot named task member",
-					tools: ["SendMessage", ...capabilities],
-					prompt:
-						"Bootstrap by sending the supplied token exactly, without tools other than SendMessage. On a later assigned dispatch, follow the approved instructions and send the exact nonce on its own line followed by the work product. Only inspect the currently admitted workspace. Return one Blocked: line when runtime access prevents valid work.",
-				},
-			};
+			const agents = Object.fromEntries(
+				[
+					[actorType, "Named fixture member"],
+					[managerType, "Persistent manager of one approved work card"],
+					[architectType, "Shared architect and integrator for this topic"],
+					[consultantType, "Independent reviewer of one approved work card"],
+				].map(([type, description]) => [
+					type,
+					{
+						description: "JAM-Bot " + description,
+						tools: ["SendMessage", ...capabilities],
+						prompt:
+							description +
+							". Bootstrap by sending the supplied token exactly, without tools other than SendMessage. On a later assigned dispatch, follow the approved instructions and send the exact nonce on its own line followed by the work product. Only inspect the currently admitted workspace. Return one Blocked: line when runtime access prevents valid work.",
+					},
+				]),
+			);
 			const args = [
 				"--session-id",
 				session,
@@ -489,8 +533,10 @@ export class PersistentNativeLead {
 			return index < 0 ? undefined : index + 1;
 		}, 60000);
 	}
-	private async member(name: string) {
+	private async member(name: string, agentType = actorType) {
 		const existing = this.actors.get(name);
+		if (existing && existing.initial.agentType !== agentType)
+			throw Error("Native member capability changed within one generation");
 		if (existing) return existing;
 		const token = randomUUID();
 		const initial = {
@@ -498,7 +544,7 @@ export class PersistentNativeLead {
 			cwd: this.options.cwd,
 			session: this.session,
 			name,
-			agentType: actorType,
+			agentType,
 			challenge: token,
 			expected: token,
 		};
@@ -506,7 +552,7 @@ export class PersistentNativeLead {
 			"Use Agent once to spawn " +
 			name +
 			" as " +
-			actorType +
+			agentType +
 			". Tell it: Bootstrap " +
 			token +
 			". Wait for that exact token to arrive and end your turn. Keep the teammate available.";
@@ -530,6 +576,67 @@ export class PersistentNativeLead {
 		return this.startDispatch(job).completion;
 	}
 	startDispatch(job: Request) {
+		return this.begin(job);
+	}
+	async startRole(
+		job: RoleStage,
+		authority: NativeWorkerIntent,
+		authorize: () => Promise<void>,
+	) {
+		const stageDigest = fingerprint(
+			job.workspaceManifest
+				? JSON.stringify([job.input, job.workspaceManifest])
+				: job.input,
+		);
+		if (
+			job.state !== this.options.state ||
+			job.cwd !== this.options.cwd ||
+			job.issue !== authority.issue ||
+			job.role !== authority.role ||
+			stageDigest !== authority.inputDigest ||
+			(job.effort && job.effort !== this.options.effort)
+		)
+			throw Error(
+				"Native role differs from its approved stage or configured effort",
+			);
+		const { name, agentType } = persistentNativeActor(
+			authority.role,
+			authority.issue,
+		);
+		const { system } = nativeRoleInstructions(
+			job.role,
+			Boolean(job.workspaceManifest),
+		);
+		const input =
+			system +
+			"\n\n" +
+			(await nativeRoleInput(job.state, job.issue, job.input));
+		const beforeSend = async () => {
+			await authorize();
+			const db = new DatabaseSync(join(job.state, "intake.sqlite"), {
+				readOnly: true,
+			});
+			try {
+				if (!nativeWorkerOwnsParkedStage(db, authority))
+					throw Error(
+						"Native role requires the exact parked stage and a clear review barrier",
+					);
+			} finally {
+				db.close();
+			}
+		};
+		return this.begin({
+			name,
+			agentType,
+			challenge: authority.challenge,
+			issue: job.issue,
+			input,
+			workspaceManifest: job.workspaceManifest,
+			authority,
+			beforeSend,
+		});
+	}
+	private begin(job: Request | AuthorizedRequest) {
 		if (
 			!safeInput.test(job.name) ||
 			!safeInput.test(job.challenge) ||
@@ -545,11 +652,10 @@ export class PersistentNativeLead {
 			throw Error(
 				"Native member or generation already has its allowed dispatch load",
 			);
-		const authority = job.authority
-			? nativeWorkerAuthority(job.authority)
-			: undefined;
+		const authority =
+			"authority" in job ? nativeWorkerAuthority(job.authority) : undefined;
 		if (
-			job.authority &&
+			"authority" in job &&
 			(job.authority.issue !== job.issue ||
 				job.authority.challenge !== job.challenge)
 		)
@@ -577,7 +683,7 @@ export class PersistentNativeLead {
 		return { acknowledgement, completion };
 	}
 	private async completeDispatch(
-		job: Request,
+		job: Request | AuthorizedRequest,
 		acknowledge: (value: DispatchAcknowledgement) => void,
 		authority?: string,
 	) {
@@ -588,7 +694,12 @@ export class PersistentNativeLead {
 					throw Error("Native lead is unavailable; reconcile the generation");
 				if (await optionalText(intents(this.options.state, job.challenge)))
 					throw Error("Persistent dispatch already requires reconciliation");
-				const { initial, handle } = await this.member(job.name);
+				const authorized = "authority" in job ? job : undefined;
+				await authorized?.beforeSend();
+				const { initial, handle } = await this.member(
+					job.name,
+					authorized?.agentType,
+				);
 				const request = "Challenge " + job.challenge + "\n" + job.input;
 				const prompt =
 					"Use SendMessage to " +
@@ -605,8 +716,8 @@ export class PersistentNativeLead {
 					);
 					const scope = await loadWorkspace(job.workspaceManifest);
 					if (
-						job.authority &&
-						scope.identity.revision !== job.authority.revision
+						authorized &&
+						scope.identity.revision !== authorized.authority.revision
 					)
 						throw Error("Native workspace revision differs from its stage");
 					workspacePin = await bindWorkspace(
@@ -655,6 +766,7 @@ export class PersistentNativeLead {
 					!(await claimJson(intents(this.options.state, job.challenge), intent))
 				)
 					throw Error("Persistent dispatch already requires reconciliation");
+				await authorized?.beforeSend();
 				const startedAt = Date.now(),
 					turn = await this.submit(prompt, job.challenge);
 				const transcript = transcriptPath(
