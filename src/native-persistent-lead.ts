@@ -24,6 +24,8 @@ import {
 	nativeFollowupReceipt,
 	nativeMailboxBody,
 	nativeSharedWorkspaceEvidence,
+	nativeTerminalPasteDisplayed,
+	nativeTerminalPasteEnabled,
 	nativeWorkspaceTurn,
 	stageRefused,
 } from "./native-teammate.js";
@@ -289,7 +291,7 @@ export class PersistentNativeLead {
 	private readonly completions = new Set<Promise<unknown>>();
 	private unavailable = false;
 
-	static async start(options: LeadOptions) {
+	static async start(options: LeadOptions, launch = startNativeLead) {
 		const session = randomUUID();
 		const config = await realpath(
 			process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"),
@@ -382,7 +384,7 @@ export class PersistentNativeLead {
 					},
 				}),
 				"--tools",
-				"Agent,SendMessage",
+				["Agent", "SendMessage", ...capabilities].join(","),
 				"--allowedTools",
 				["Agent", "SendMessage", ...capabilities].join(","),
 				"--agents",
@@ -394,7 +396,7 @@ export class PersistentNativeLead {
 				"You coordinate one native team. Only spawn the requested named members and forward exact requests. End the lead turn after the requested receipt. Do not run workspace tools yourself.",
 				"Return READY without spawning anyone.",
 			];
-			const child = await startNativeLead(
+			const child = await launch(
 				options.state,
 				["-qefc", "exec " + invocation("claude", ...args), terminal],
 				{
@@ -404,6 +406,7 @@ export class PersistentNativeLead {
 						HOME: home,
 						TERM: "xterm-256color",
 						CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "1",
+						ENABLE_TOOL_SEARCH: "false",
 					},
 				},
 			);
@@ -519,9 +522,18 @@ export class PersistentNativeLead {
 					error ? reject(error) : resolve(),
 				),
 			);
-		await write(prompt);
 		await this.wait(
-			async () => (await optionalText(this.terminal)).includes(nonce),
+			async () => nativeTerminalPasteEnabled(await optionalText(this.terminal)),
+			15000,
+		);
+		const renderedBefore = (await optionalText(this.terminal)).length;
+		await write("\x1b[200~" + prompt + "\x1b[201~");
+		await this.wait(
+			async () =>
+				nativeTerminalPasteDisplayed(
+					(await optionalText(this.terminal)).slice(renderedBefore),
+					nonce,
+				),
 			15000,
 		);
 		await write("\r");
@@ -705,7 +717,11 @@ export class PersistentNativeLead {
 					job.name,
 					authorized?.agentType,
 				);
-				const request = "Challenge " + job.challenge + "\n" + job.input;
+				const request = authorized
+					? job.challenge +
+						"\n\nUse the token above as the complete first line of your SendMessage reply. Copy only the token, with no label, quotation marks or formatting. Put the work product on the following lines.\n\n" +
+						job.input
+					: "Challenge " + job.challenge + "\n" + job.input;
 				const prompt =
 					"Use SendMessage to " +
 					job.name +

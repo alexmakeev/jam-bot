@@ -6,7 +6,27 @@ import { tmpdir } from "node:os";
 import {
 	exactNativeTerminalSubmission,
 	nativeFollowupReceipt,
+	nativeTerminalPasteDisplayed,
+	nativeTerminalPasteEnabled,
 } from "../src/native-teammate.js";
+
+test("terminal submission waits for active bracketed paste and evidence of the staged buffer", () => {
+	assert.equal(nativeTerminalPasteEnabled("console"), false);
+	assert.equal(nativeTerminalPasteEnabled("\x1b[?2004l\x1b[?2004h"), true);
+	assert.equal(nativeTerminalPasteEnabled("\x1b[?2004h\x1b[?2004l"), false);
+	assert.equal(
+		nativeTerminalPasteDisplayed("\x1b[32mactive-token\x1b[0m", "active-token"),
+		true,
+	);
+	assert.equal(
+		nativeTerminalPasteDisplayed("[Pasted text #1 +40 lines]", "active-token"),
+		true,
+	);
+	assert.equal(
+		nativeTerminalPasteDisplayed("[Pasted files]", "active-token"),
+		false,
+	);
+});
 
 test("a collapsed terminal paste must retain the exact assignment under its native wrapper", () => {
 	const prompt = "JAM dispatch token. " + "Approved scope ".repeat(120);

@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { Journal, type Intake } from "../src/intake-journal.js";
+import { BranchValidation } from "../src/branch-validation.js";
+import { IntegrationQueue } from "../src/integration-queue.js";
 import {
 	NativeConsumerLane,
 	type NativeConsumerTransport,
@@ -147,6 +149,16 @@ test("capacity-one role adapter parks ordinary work and preserves stage parity a
 	assert.equal(lane.busy(), true);
 	assert.equal(lane.resume(), undefined);
 	assert.equal(journal.nextWorker(), undefined);
+	const checks = new BranchValidation(journal.db);
+	const integration = new IntegrationQueue(journal.db);
+	const ready = { issue: 99, branch: "jam/issue-99", sha: "c".repeat(40) };
+	checks.submit(ready, 1000);
+	checks.tick(integration, async () => {}, job.signal);
+	await checks.settle();
+	const due = checks.tick(integration, async () => {}, job.signal).batch;
+	assert.deepEqual(due?.entries, [ready]);
+	assert.deepEqual(integration.active(), due);
+	assert.equal(lane.busy(), true);
 	release();
 	await lane.settle();
 	assert.equal(closes, 1);
@@ -160,6 +172,10 @@ test("capacity-one role adapter parks ordinary work and preserves stage parity a
 		transport,
 	);
 	await recovery.harvest();
+	const integrationAfterRestart = new IntegrationQueue(reopened.db);
+	assert.deepEqual(integrationAfterRestart.active(), due);
+	assert.ok(due);
+	integrationAfterRestart.finish(due.id, "integrated");
 	assert.equal(reopened.list()[0]?.workerState, "waiting-native");
 	assert.equal(recovery.resume()?.delivery, task.delivery);
 	const restored = recovery.stage(task, scope);

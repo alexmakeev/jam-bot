@@ -123,6 +123,26 @@ function nativePastedContent(content: string) {
 	)?.[2];
 }
 
+export function nativeTerminalPasteEnabled(rendered: string) {
+	return (
+		rendered.lastIndexOf("\x1b[?2004h") > rendered.lastIndexOf("\x1b[?2004l")
+	);
+}
+
+export function nativeTerminalPasteDisplayed(
+	rendered: string,
+	challenge: string,
+) {
+	const plain = rendered.replaceAll(
+		new RegExp(String.fromCharCode(27) + "\\[[0-?]*[ -/]*[@-~]", "g"),
+		"",
+	);
+	return (
+		plain.includes(challenge) ||
+		/\[Pasted\s*text\s*#\d+[^\]\r\n]*\]/i.test(plain)
+	);
+}
+
 // The pinned harness leaves its interactive process open after a terminal model refusal.
 export async function stageRefused(
 	log: string,
@@ -1192,25 +1212,14 @@ async function executeNativeJob({
 				);
 			const dispatchPrompt = "JAM dispatch " + challenge + ". " + prompt;
 			await awaitReady(async () => {
-				const rendered = await optionalText(terminal);
-				return (
-					rendered.lastIndexOf("\x1b[?2004h") >
-					rendered.lastIndexOf("\x1b[?2004l")
-				);
+				return nativeTerminalPasteEnabled(await optionalText(terminal));
 			});
 			const renderedBefore = (await optionalText(terminal)).length;
 			await write("\x1b[200~" + dispatchPrompt + "\x1b[201~");
-			const terminalEscape = new RegExp(
-				String.fromCharCode(27) + "\\[[0-?]*[ -/]*[@-~]",
-				"g",
-			);
 			await awaitReady(async () => {
-				const rendered = (await optionalText(terminal))
-					.slice(renderedBefore)
-					.replaceAll(terminalEscape, "");
-				return (
-					rendered.includes(challenge) ||
-					/\[Pasted\s*text\s*#\d+[^\]\r\n]*\]/i.test(rendered)
+				return nativeTerminalPasteDisplayed(
+					(await optionalText(terminal)).slice(renderedBefore),
+					challenge,
 				);
 			});
 			await write("\r");
