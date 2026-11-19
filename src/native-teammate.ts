@@ -608,6 +608,7 @@ interface FollowupQuery {
 	request: string;
 	challenge: string;
 	allowOtherMembers?: boolean;
+	allowLaterDelivery?: boolean;
 }
 
 function sendResult(
@@ -712,6 +713,7 @@ export async function nativeFollowupReceipt({
 	request,
 	challenge,
 	allowOtherMembers = false,
+	allowLaterDelivery = false,
 }: FollowupQuery) {
 	const { config, cwd, session, name } = initial;
 	if (
@@ -783,7 +785,9 @@ export async function nativeFollowupReceipt({
 	const refused = (row: Row) =>
 		(row.type === "assistant" && row.message?.stop_reason === "refusal") ||
 		(row.type === "system" && row.subtype === "model_refusal_fallback");
-	if (leadTurn.some(refused)) throw Error("Native lead refused the follow-up");
+	const deliveryRows = allowLaterDelivery ? following : leadTurn;
+	if (deliveryRows.some(refused))
+		throw Error("Native lead refused the follow-up");
 	const outgoing = sendResult(
 		leadTurn,
 		(id) => id === name || id === original.nativeMember,
@@ -827,17 +831,19 @@ export async function nativeFollowupReceipt({
 			(text === challenge || text.startsWith(challenge + "\n")),
 	);
 	if (!reply) return;
-	if (
-		!leadTurn
-			.slice(outgoing.acknowledgedAt + 1)
-			.some(
-				(row) =>
-					row.type === "user" &&
-					typeof row.message?.content === "string" &&
-					nativeMailboxBody(row.message.content, name) === reply.message,
-			)
-	)
-		return;
+	const firstDeliveryRow = outgoing.acknowledgedAt + 1;
+	const deliveries = deliveryRows
+		.slice(firstDeliveryRow)
+		.filter(
+			(row, index) =>
+				row.type === "user" &&
+				(firstDeliveryRow + index < leadTurn.length || row.isMeta === true) &&
+				typeof row.message?.content === "string" &&
+				nativeMailboxBody(row.message.content, name) === reply.message,
+		);
+	if (allowLaterDelivery && deliveries.length > 1)
+		throw Error("Ambiguous native follow-up observation");
+	if (!deliveries.length) return;
 	return {
 		nativeMember: original.nativeMember,
 		handle,

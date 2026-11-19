@@ -256,4 +256,60 @@ test("a native follow-up requires a submitted turn, successful dispatch, the ori
 		{ ...member, type: "assistant", message: { stop_reason: "refusal" } },
 	]);
 	await assert.rejects(nativeFollowupReceipt(query), /refused/);
+
+	const originalTurn = [submitted, dispatch, confirmed];
+	const subsequentTurn = row(lead, "user", "Work for a different manager.");
+	const concurrentQuery = { ...query, allowLaterDelivery: true };
+	const nativeDelivery = { ...delivered, isMeta: true };
+	await persist([...originalTurn, subsequentTurn, delivered], memberTurn);
+	assert.equal(await nativeFollowupReceipt(concurrentQuery), undefined);
+	await persist([...originalTurn, subsequentTurn, nativeDelivery], memberTurn);
+	assert.equal(await nativeFollowupReceipt(query), undefined);
+	assert.equal(
+		(await nativeFollowupReceipt(concurrentQuery))?.replyId,
+		"reply",
+	);
+	const preview = envelope(
+		name,
+		JSON.stringify({
+			type: "idle_notification",
+			from: name,
+			result: followupBody,
+		}),
+	);
+	for (const nonDelivery of [
+		envelope("different-manager", followupBody),
+		envelope(name, followupBody + " "),
+		preview,
+	]) {
+		await persist(
+			[
+				...originalTurn,
+				subsequentTurn,
+				{ ...row(lead, "user", nonDelivery), isMeta: true },
+			],
+			memberTurn,
+		);
+		assert.equal(await nativeFollowupReceipt(concurrentQuery), undefined);
+	}
+	await persist(
+		[submitted, dispatch, subsequentTurn, confirmed, nativeDelivery],
+		memberTurn,
+	);
+	assert.equal(await nativeFollowupReceipt(concurrentQuery), undefined);
+	await persist(
+		[...originalTurn, subsequentTurn, nativeDelivery, nativeDelivery],
+		memberTurn,
+	);
+	await assert.rejects(nativeFollowupReceipt(concurrentQuery), /Ambiguous/);
+	const leadRefusal = {
+		...lead,
+		type: "assistant",
+		message: { stop_reason: "refusal" },
+	};
+	await persist(
+		[...originalTurn, subsequentTurn, leadRefusal, nativeDelivery],
+		memberTurn,
+	);
+	await assert.rejects(nativeFollowupReceipt(concurrentQuery), /refused/);
 });
