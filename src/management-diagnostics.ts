@@ -90,17 +90,6 @@ function boundResponse(
 				? Number(rows.at(-1)?.seq ?? offset)
 				: offset + rows.length;
 		}
-	} else if (typeof result.data?.text === "string") {
-		const bytes = Buffer.from(result.data.text);
-		let length = bytes.length;
-		while (length > 0 && size() > maximum) {
-			length = Math.max(0, length - 128);
-			result.data.text = bytes
-				.subarray(0, length)
-				.toString("utf8")
-				.replace(/\uFFFD$/, "");
-			result.next = offset + Buffer.byteLength(result.data.text);
-		}
 	}
 	if (size() > maximum || result.next === offset)
 		throw new ManagementError(
@@ -109,6 +98,54 @@ function boundResponse(
 			"Increase maxBytes to fit one diagnostic record.",
 		);
 	return result;
+}
+function artifactPage(
+	view: string,
+	artifactId: string,
+	safe: Buffer,
+	offset: number,
+	maximum: number,
+	limitations: string[],
+) {
+	const page = (end: number, notes: string[]) => ({
+		view,
+		data: {
+			artifactId,
+			text: safe.subarray(offset, end).toString("utf8"),
+			totalBytes: safe.length,
+		},
+		next: end < safe.length ? end : null,
+		limitations: notes,
+	});
+	const fits = (value: unknown) =>
+		Buffer.byteLength(JSON.stringify(value)) <= maximum;
+	const whole = page(Math.max(offset, safe.length), limitations);
+	if (offset >= safe.length || fits(whole)) return whole;
+	const notes = ["Response size limited; follow next or increase maxBytes."];
+	const complete = page(safe.length, notes);
+	if (fits(complete)) return complete;
+	const boundary = (end: number) => {
+		while (end > offset && (safe[end]! & 0xc0) === 0x80) end--;
+		return end;
+	};
+	let low = offset + 1,
+		high = safe.length - 1,
+		best = offset;
+	while (low <= high) {
+		const middle = Math.floor((low + high) / 2),
+			end = boundary(middle);
+		if (end > offset && fits(page(end, notes))) {
+			best = Math.max(best, end);
+			low = middle + 1;
+		} else high = middle - 1;
+	}
+	if (best === offset)
+		throw new ManagementError(
+			413,
+			"diagnostic_budget_too_small",
+			"Increase maxBytes to fit one diagnostic record.",
+		);
+	return page(best, notes);
 }
 function progressDb(state: string) {
 	const file = join(state, "work-progress.sqlite");
@@ -644,16 +681,14 @@ export function diagnosticOperations(
 							"The selected report does not belong to this work card.",
 						);
 					const safe = Buffer.from(diagnosticText(String(row.markdown)));
-					return {
+					return artifactPage(
 						view,
-						data: {
-							artifactId,
-							text: safe.subarray(offset, offset + maxBytes).toString("utf8"),
-							totalBytes: safe.length,
-						},
-						next: offset + maxBytes < safe.length ? offset + maxBytes : null,
+						artifactId,
+						safe,
+						offset,
+						maxBytes,
 						limitations,
-					};
+					);
 				} finally {
 					db.close();
 				}
