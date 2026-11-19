@@ -269,6 +269,42 @@ test("a native follow-up requires a submitted turn, successful dispatch, the ori
 		(await nativeFollowupReceipt(concurrentQuery))?.replyId,
 		"reply",
 	);
+	const pastedPrompt =
+		'\n\n<pasted_content id="a893">\n' +
+		prompt +
+		'\n</pasted_content id="a893">\n';
+	await persist(
+		[
+			row(lead, "user", pastedPrompt),
+			dispatch,
+			confirmed,
+			subsequentTurn,
+			nativeDelivery,
+		],
+		memberTurn,
+	);
+	assert.equal(
+		(await nativeFollowupReceipt(concurrentQuery))?.replyId,
+		"reply",
+	);
+	await persist(
+		[
+			row(
+				lead,
+				"user",
+				pastedPrompt.replace(
+					"</pasted_content",
+					"unapproved\n</pasted_content",
+				),
+			),
+			dispatch,
+			confirmed,
+			subsequentTurn,
+			nativeDelivery,
+		],
+		memberTurn,
+	);
+	assert.equal(await nativeFollowupReceipt(concurrentQuery), undefined);
 	const preview = envelope(
 		name,
 		JSON.stringify({

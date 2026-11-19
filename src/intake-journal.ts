@@ -444,6 +444,13 @@ export class Journal {
 			.filter((task) => !sharesNative || sharesNative(task));
 	}
 
+	workerTask(delivery: string) {
+		const row = this.db
+			.prepare("SELECT * FROM intake WHERE delivery=? AND action='task'")
+			.get(delivery);
+		return row ? intake(row) : undefined;
+	}
+
 	workerCandidates() {
 		return this.db
 			.prepare(

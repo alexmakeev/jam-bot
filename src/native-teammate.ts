@@ -114,11 +114,13 @@ export function exactNativeTerminalSubmission(
 ) {
 	if (content === prompt) return true;
 	if (typeof content !== "string") return false;
-	const pasted =
-		/^\n\n<pasted_content id="([a-f0-9]{4})">\n([\s\S]*)\n<\/pasted_content id="\1">\n$/.exec(
-			content,
-		);
-	return pasted?.[2] === prompt;
+	return nativePastedContent(content) === prompt;
+}
+
+function nativePastedContent(content: string) {
+	return /^\n\n<pasted_content id="([a-f0-9]{4})">\n([\s\S]*)\n<\/pasted_content id="\1">\n$/.exec(
+		content,
+	)?.[2];
 }
 
 // The pinned harness leaves its interactive process open after a terminal model refusal.
@@ -726,8 +728,11 @@ export async function nativeWorkspaceTurn(
 			!row.isMeta &&
 			row.promptId === promptId &&
 			typeof row.message?.content === "string" &&
-			createHash("sha256").update(row.message.content).digest("hex") ===
-				promptDigest,
+			[row.message.content, nativePastedContent(row.message.content)].some(
+				(text) =>
+					text !== undefined &&
+					createHash("sha256").update(text).digest("hex") === promptDigest,
+			),
 	);
 	if (initial.length !== 1) return false;
 	const turn = lead.slice(lead.indexOf(initial[0]!) + 1);
@@ -797,7 +802,11 @@ export async function nativeFollowupReceipt({
 		throw Error("Expected exactly one native roster spawn");
 	const submitted = lead.filter(
 		(row) =>
-			row.type === "user" && !row.isMeta && row.message?.content === prompt,
+			row.type === "user" &&
+			!row.isMeta &&
+			(row.message?.content === prompt ||
+				(allowLaterDelivery &&
+					exactNativeTerminalSubmission(row.message?.content, prompt))),
 	);
 	if (submitted.length > 1)
 		throw Error("Duplicate native follow-up submission");

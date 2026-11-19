@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { performance } from "node:perf_hooks";
 import type { DatabaseSync, SQLOutputValue } from "node:sqlite";
 
@@ -29,6 +30,7 @@ const outcomes = [
 	"timeout",
 	"interrupted",
 	"cancelled",
+	"parked",
 ] as const;
 const processStates = ["alive", "exited", "unknown"] as const;
 type Outcome = (typeof outcomes)[number];
@@ -315,14 +317,43 @@ export function readRunObservations(
 	return { data, next: summaries.length > limit ? offset + limit : null };
 }
 
+const topicTiming = new AsyncLocalStorage<{
+	state: string;
+	issue: number;
+	run: RunObservation;
+	parent?: string;
+}>();
+
 export async function observeTopicStep<T>(
 	state: string,
 	issue: number,
 	kind: TimingKind,
 	work: () => Promise<T>,
 	enabled = process.env.JAM_RUN_OBSERVATIONS === "1",
+	classify: (error: unknown) => Outcome = () => "error",
 ): Promise<T> {
 	if (!enabled) return work();
+	const active = topicTiming.getStore();
+	if (active?.state === state && active.issue === issue) {
+		let span: string | undefined;
+		try {
+			span = active.run.begin(kind, active.parent);
+		} catch {}
+		let outcome: Outcome = "finished";
+		try {
+			return await topicTiming.run(
+				{ ...active, parent: span ?? active.parent },
+				work,
+			);
+		} catch (error) {
+			outcome = classify(error);
+			throw error;
+		} finally {
+			try {
+				if (span) active.run.end(span, outcome);
+			} catch {}
+		}
+	}
 	const { DatabaseSync } = await import("node:sqlite");
 	const { join } = await import("node:path");
 	const { lstatSync } = await import("node:fs");
@@ -351,9 +382,9 @@ export async function observeTopicStep<T>(
 	timer.unref();
 	let outcome: Outcome = "finished";
 	try {
-		return await work();
+		return await topicTiming.run({ state, issue, run, parent: span }, work);
 	} catch (error) {
-		outcome = "error";
+		outcome = classify(error);
 		throw error;
 	} finally {
 		clearInterval(timer);

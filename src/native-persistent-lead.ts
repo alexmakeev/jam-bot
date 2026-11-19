@@ -18,6 +18,7 @@ import {
 	type NativeWorkerIntent,
 } from "./native-worker-wait.js";
 import {
+	exactNativeTerminalSubmission,
 	mailboxReceipt,
 	nativeDispatchRefused,
 	nativeFollowupReceipt,
@@ -526,11 +527,15 @@ export class PersistentNativeLead {
 		await write("\r");
 		return this.wait(async () => {
 			const rows = await this.transcript();
-			const index = rows.findIndex(
+			const matching = rows.filter(
 				(row) =>
-					row.type === "user" && !row.isMeta && row.message?.content === prompt,
+					row.type === "user" &&
+					!row.isMeta &&
+					exactNativeTerminalSubmission(row.message?.content, prompt),
 			);
-			return index < 0 ? undefined : index + 1;
+			if (matching.length > 1)
+				throw Error("Duplicate native terminal submission");
+			return matching[0] ? rows.indexOf(matching[0]) + 1 : undefined;
 		}, 60000);
 	}
 	private async member(name: string, agentType = actorType) {

@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import type { RoleStage } from "./role-harness.js";
 
 export interface NativeWorkerIntent {
 	delivery: string;
@@ -22,7 +23,10 @@ const roles = new Set([
 ]);
 
 export class NativeRoleDeferred extends Error {
-	constructor(readonly intent: NativeWorkerIntent) {
+	constructor(
+		readonly intent: NativeWorkerIntent,
+		readonly job?: RoleStage,
+	) {
 		super("Native worker awaits its original dispatch");
 	}
 }
@@ -118,6 +122,28 @@ export class NativeWorkerWaits {
 			.get(intent.delivery, intent.challenge);
 		if (saved?.intent !== intentString)
 			throw Error("Native worker dispatch differs from its durable intent");
+	}
+	waiting() {
+		return this.db
+			.prepare(`SELECT w.intent,w.ready,i.workerState FROM native_worker_waits w
+			JOIN intake i ON i.delivery=w.delivery AND i.issue=w.issue
+			WHERE i.workerState IN ('waiting-native','pending','running') ORDER BY i.rowid`)
+			.all()
+			.map((row) => ({
+				intent: JSON.parse(String(row.intent)) as NativeWorkerIntent,
+				state: String(row.workerState),
+				ready: row.ready === 1,
+			}));
+	}
+
+	freeze(intent: NativeWorkerIntent, reason: string) {
+		this.assertOriginal(intent);
+		const stopped = this.db
+			.prepare(`UPDATE intake SET workerState='review',workerReason=?
+			WHERE delivery=? AND issue=? AND workerState IN ('waiting-native','pending')`)
+			.run(reason, intent.delivery, intent.issue);
+		if (stopped.changes !== 1)
+			throw Error("No original parked native worker to hold");
 	}
 	canAdmit(files: readonly string[]) {
 		const others = this.db

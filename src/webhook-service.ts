@@ -72,6 +72,12 @@ import {
 	verifyDependencies,
 } from "./github-dependencies.js";
 import { nativeLeadOccupied } from "./native-lead.js";
+import {
+	NativeConsumerLane,
+	type NativeConsumerTransport,
+} from "./native-consumer-lane.js";
+import { NativeRoleDeferred } from "./native-worker-wait.js";
+import { observeTopicStep } from "./run-observations.js";
 
 function required(name: string): string {
 	const value = process.env[name];
@@ -94,13 +100,18 @@ async function requireOwnerLock(path: string) {
 export async function consume(
 	{ journal, topic, state }: TopicRuntime,
 	signal: AbortSignal,
+	nativeTransport?: NativeConsumerTransport,
 ) {
 	const integrations = new IntegrationQueue(journal.db);
 	const validations = new BranchValidation(journal.db);
 	validations.recover();
 	const runtime = { journal, topic, state };
+	const native = nativeTransport
+		? new NativeConsumerLane(runtime, nativeTransport)
+		: undefined;
 	const dependencyAware = usesDependencies(topic);
 	const overlap =
+		!native &&
 		dependencyAware &&
 		(process.env.JAM_DEVELOPMENT_ADVICE_OVERLAP_REPOSITORIES ?? "")
 			.split(",")
@@ -286,6 +297,7 @@ export async function consume(
 		}
 		while (!signal.aborted) {
 			await deliverReviewNotice(runtime, signal);
+			await native?.harvest();
 			const epoch = journal.dependencyEpoch();
 			const decision = validations.tick(
 				integrations,
@@ -295,28 +307,85 @@ export async function consume(
 				eligibleIntegration(epoch),
 			);
 			if (decision.batch) {
-				await integrateReady(runtime, signal, integrations, decision.batch);
+				if (native?.busy()) {
+					await delay(250);
+					continue;
+				}
+				const batch = decision.batch;
+				const first = batch.entries[0];
+				if (!first)
+					throw Error("Integration claim did not contain an eligible head");
+				await observeTopicStep(state, first.issue, "integration", () =>
+					integrateReady(runtime, signal, integrations, batch),
+				);
 				continue;
 			}
 			if (decision.waiting) {
 				await delay(250);
 				continue;
 			}
-			const execution = prefillDevelopmentTasks(topic, journal)
-				? undefined
-				: await eligibleWorker();
+			const execution =
+				native?.resume() ??
+				(prefillDevelopmentTasks(topic, journal) || native?.busy()
+					? undefined
+					: await eligibleWorker());
 			if (execution) {
 				try {
-					await dispatchApprovedWorker(
-						execution,
-						topic,
+					await observeTopicStep(
 						state,
-						signal,
-						journal.lead().id,
-						{ adviceLane: adviceLane(execution), beforeSpecification },
+						execution.issue,
+						"worker",
+						() =>
+							dispatchApprovedWorker(
+								execution,
+								topic,
+								state,
+								signal,
+								journal.lead().id,
+								{
+									adviceLane: adviceLane(execution),
+									beforeSpecification,
+									nativeStage: native?.stage(execution, filesOf(execution)),
+								},
+							),
+						undefined,
+						(error) =>
+							error instanceof NativeRoleDeferred ? "parked" : "error",
 					);
+					native?.finish(execution);
 					journal.finishWorker(execution.delivery);
 				} catch (err) {
+					if (native && err instanceof NativeRoleDeferred && err.job) {
+						const authorize = () =>
+							validateTaskApproval(
+								topic,
+								execution.issue,
+								approvalFromEvent(execution),
+							);
+						native.park(execution, err, async () => {
+							await authorize();
+							const card = parseTaskCard(
+								execution.title,
+								execution.body,
+								execution.kind,
+								topic.defaultClass,
+							);
+							if (card?.kind !== "development")
+								throw Error(
+									"Native stage requires an approved Development card",
+								);
+							await verifyDependencies(
+								state,
+								topic,
+								journal.db,
+								execution.issue,
+								signal,
+								authorize,
+								card.dependencies,
+							);
+						});
+						continue;
+					}
 					if (err instanceof ConsultationDeferred) {
 						const wait = journal.adviceWait(execution.delivery)?.wait;
 						if (!wait)
@@ -457,6 +526,7 @@ export async function consume(
 			}
 		}
 	} finally {
+		await native?.settle();
 		await validations.settle();
 	}
 }

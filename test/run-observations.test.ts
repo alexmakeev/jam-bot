@@ -196,6 +196,50 @@ test("timing diagnostics stays in the authorized topic and preserves the cursor 
 	await assert.rejects(call({ repoId: 12 }));
 });
 
+test("worker and nested parallel wait spans share one run and record parking as control flow", async (t) => {
+	const state = await mkdtemp(join(tmpdir(), "jam-timing-worker-"));
+	t.after(() => rm(state, { recursive: true, force: true }));
+	const parked = Error("fixture parked");
+	await assert.rejects(
+		observeTopicStep(
+			state,
+			4,
+			"worker",
+			async () => {
+				await Promise.all([
+					observeTopicStep(state, 4, "native-receipt", async () => 1, true),
+					observeTopicStep(state, 4, "waiting-tool", async () => 2, true),
+				]);
+				throw parked;
+			},
+			true,
+			(error) => (error === parked ? "parked" : "error"),
+		),
+		parked,
+	);
+	const db = new DatabaseSync(join(state, runObservationFile), {
+		readOnly: true,
+	});
+	t.after(() => db.close());
+	const summary = readRunObservations(db, 4, undefined, 0, 5);
+	assert.equal(summary.data.length, 1);
+	assert.equal(summary.data[0]?.outcome, "parked");
+	const root = db
+		.prepare("SELECT id FROM timing_spans WHERE parent IS NULL")
+		.get();
+	assert.ok(root?.id);
+	assert.equal(
+		db
+			.prepare("SELECT count(*) AS n FROM timing_spans WHERE parent=?")
+			.get(root.id)?.n,
+		2,
+	);
+	assert.equal(
+		Number(summary.data[0]?.phaseMs) + Number(summary.data[0]?.unclassifiedMs),
+		summary.data[0]?.observedMs,
+	);
+});
+
 test("sidecar contention does not block or change the normal operation", async (t) => {
 	const state = await mkdtemp(join(tmpdir(), "jam-timing-contention-"));
 	t.after(() => rm(state, { recursive: true, force: true }));
