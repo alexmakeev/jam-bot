@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, mkdir, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +16,8 @@ import {
 } from "../src/review-escalation.js";
 
 import { atomicJson } from "../src/storage.js";
+import { NativeRoleDeferred } from "../src/native-worker-wait.js";
+import { fingerprint } from "../src/work-progress.js";
 
 const answer = {
 	developer: "member",
@@ -41,6 +44,77 @@ async function project(
 		signal: new AbortController().signal,
 	};
 }
+test("a parked mandatory reviewer reuses its own exact receipt and keeps an original refusal final", async (t) => {
+	const job = await project(t);
+	let calls = 0;
+	let observed: "missing" | "verified" | "refused" = "missing";
+	const deps = {
+		run: async (_original: { input: string }, challenge?: string) => {
+			calls++;
+			assert.ok(challenge);
+			throw new NativeRoleDeferred({
+				delivery: randomUUID(),
+				challenge,
+				issue: job.issue,
+				role: job.role,
+				inputDigest: fingerprint(job.input),
+				approvalDigest: fingerprint("original approval"),
+				revision: job.revision,
+				files: ["src/example.ts"],
+			});
+		},
+		observe: async () =>
+			observed === "refused"
+				? { refused: true }
+				: observed === "verified"
+					? { receipt: answer }
+					: {},
+		graceMs: 0,
+		pause: noop,
+	};
+	await assert.rejects(mandatoryReview(job, noop, deps), NativeRoleDeferred);
+	await assert.rejects(mandatoryReview(job, noop, deps), NativeRoleDeferred);
+	observed = "verified";
+	assert.deepEqual(await mandatoryReview(job, noop, deps), answer);
+	observed = "missing";
+	await assert.rejects(mandatoryReview(job, noop, deps), NativeRoleDeferred);
+	observed = "refused";
+	await assert.rejects(mandatoryReview(job, noop, deps), /refused/);
+	observed = "verified";
+	await assert.rejects(mandatoryReview(job, noop, deps), /refused/);
+	assert.equal(calls, 1);
+});
+
+test("a persistent review cannot claim independent inspection from its output alone", async (t) => {
+	const job = await project(t);
+	job.workspaceManifest = join(job.state, "workspace.json");
+	const deps = {
+		run: async (_original: { input: string }, challenge?: string) => {
+			assert.ok(challenge);
+			throw new NativeRoleDeferred({
+				delivery: randomUUID(),
+				challenge,
+				issue: job.issue,
+				role: job.role,
+				inputDigest: fingerprint(
+					JSON.stringify([job.input, job.workspaceManifest]),
+				),
+				approvalDigest: fingerprint("fixture approval"),
+				revision: job.revision,
+				files: ["src/example.ts"],
+			});
+		},
+		observe: async () => ({ receipt: answer }),
+		pause: noop,
+		graceMs: 0,
+	};
+	await assert.rejects(mandatoryReview(job, noop, deps), NativeRoleDeferred);
+	await assert.rejects(
+		mandatoryReview(job, noop, deps),
+		/did not verify the exact source and specification index/,
+	);
+});
+
 test("late original receipt completes a timed-out review without a second reviewer", async (t) => {
 	const job = await project(t);
 	let calls = 0;

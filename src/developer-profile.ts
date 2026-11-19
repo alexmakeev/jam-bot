@@ -1360,6 +1360,14 @@ async function reviewedImplementation(
 						"consultant",
 						reason,
 					),
+				p.nativeStage
+					? {
+							run: p.nativeStage.run,
+							observe: p.nativeStage.recover,
+							pause: () => delay(1000, undefined, { signal: p.signal }),
+							graceMs: 30000,
+						}
+					: undefined,
 			);
 			await atomicJson(
 				join(directory(p.state, p.issue), "consultant.json"),

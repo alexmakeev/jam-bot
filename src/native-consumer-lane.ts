@@ -55,14 +55,17 @@ export class NativeConsumerLane {
 		if (!files.length) return;
 		return {
 			run: async (job, challenge) => {
-				if (job.role !== "developer" || !job.workspaceManifest)
+				if (
+					!["developer", "consultant"].includes(job.role) ||
+					!job.workspaceManifest
+				)
 					return runRoleStage(job, challenge);
 				if (!challenge) throw Error("Native stage was not checkpointed");
 				const workspace = await loadWorkspace(job.workspaceManifest);
 				const intent: NativeWorkerIntent = {
 					delivery: task.delivery,
 					issue: task.issue,
-					role: job.role,
+					role: job.role === "consultant" ? "consultant" : "developer",
 					challenge,
 					inputDigest: fingerprint(
 						JSON.stringify([job.input, job.workspaceManifest]),
@@ -92,13 +95,22 @@ export class NativeConsumerLane {
 					throw Error(
 						"Native recovery differs from the current authorized work card",
 					);
-				const result = await this.recover(
-					this.runtime.state,
-					task.issue,
-					attempt.challenge,
-					intent,
-				);
-				return result?.receipt ? { receipt: result.receipt } : {};
+				try {
+					const result = await this.recover(
+						this.runtime.state,
+						task.issue,
+						attempt.challenge,
+						intent,
+					);
+					return result?.receipt ? { receipt: result.receipt } : {};
+				} catch (error) {
+					if (
+						error instanceof Error &&
+						/^Native (lead|member) refused\b/.test(error.message)
+					)
+						return { refused: true };
+					throw error;
+				}
 			},
 		};
 	}

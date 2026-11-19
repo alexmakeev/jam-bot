@@ -1,9 +1,10 @@
-import { recordProgress } from "./work-progress.js";
+import { fingerprint, recordProgress } from "./work-progress.js";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { readdir, readFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
+import { isDeepStrictEqual } from "node:util";
 import { atomicJson, readJson } from "./storage.js";
 import {
 	mailboxReceipt,
@@ -18,6 +19,10 @@ import {
 } from "./role-harness.js";
 import { reportedRuntimeBlocker, RoleStageFailure } from "./role-failure.js";
 import { nativeLeadOccupied } from "./native-lead.js";
+import {
+	NativeRoleDeferred,
+	type NativeWorkerIntent,
+} from "./native-worker-wait.js";
 
 export type ReviewRole = "consultant" | "integrator";
 type Challenge = ReturnType<typeof randomUUID>;
@@ -29,6 +34,7 @@ interface Attempt {
 	startedAt: number;
 	endedAt?: number;
 	completedAt?: number;
+	nativeDeferred?: NativeWorkerIntent;
 }
 interface Checkpoint {
 	session: string;
@@ -247,6 +253,15 @@ export async function mandatoryReview(
 						receipt.developer,
 					).catch(() => undefined)
 				: receipt.workspaceEvidence;
+		if (
+			attempt.nativeDeferred &&
+			job.workspaceManifest &&
+			(!workspaceEvidence?.sourceRead ||
+				!workspaceEvidence.specificationIndexRead)
+		)
+			return stop(
+				"The mandatory reviewer did not verify the exact source and specification index",
+			);
 		checkpoint.receipt = workspaceEvidence
 			? { ...receipt, workspaceEvidence }
 			: receipt;
@@ -274,7 +289,19 @@ export async function mandatoryReview(
 			return stop(earlier.failure);
 	}
 	if (saved.failure) return stop(saved.failure);
-	if (saved.receipt) return done(saved.receipt);
+	if (saved.receipt) {
+		const last = saved.attempts.at(-1);
+		if (last?.nativeDeferred) {
+			const original = await deps.observe(job, last);
+			if (original.refused) return stop(refusal);
+			if (!original.receipt) throw new NativeRoleDeferred(last.nativeDeferred);
+			if (!isDeepStrictEqual(original.receipt, saved.receipt))
+				return stop(
+					"The verified reviewer result differs from its original dispatch",
+				);
+		}
+		return done(saved.receipt);
+	}
 	for (;;) {
 		job.signal.throwIfAborted();
 		const last = saved.attempts.at(-1);
@@ -296,6 +323,8 @@ export async function mandatoryReview(
 				}
 				if (observation.refused) return stop(refusal);
 				if (observation.receipt) return done(observation.receipt);
+				if (last.nativeDeferred)
+					throw new NativeRoleDeferred(last.nativeDeferred);
 				if (!observation.live) break;
 				if (Date.now() >= until) return stop(uncertain);
 				await deps.pause();
@@ -326,6 +355,26 @@ export async function mandatoryReview(
 			);
 		} catch (error) {
 			if (job.signal.aborted || checkpoint.failure) throw error;
+			if (error instanceof NativeRoleDeferred) {
+				const expected = fingerprint(
+					job.workspaceManifest
+						? JSON.stringify([saved.input, job.workspaceManifest])
+						: saved.input,
+				);
+				if (
+					error.intent.role !== job.role ||
+					error.intent.issue !== job.issue ||
+					error.intent.challenge !== attempt.challenge ||
+					error.intent.revision !== job.revision ||
+					error.intent.inputDigest !== expected
+				)
+					return stop(
+						"Mandatory review suspension differs from its original approved revision",
+					);
+				attempt.nativeDeferred = error.intent;
+				await atomicJson(path, saved);
+				throw error;
+			}
 			const message = error instanceof Error ? error.message : "";
 			if (error instanceof RoleStageFailure) return stop(error.message);
 			if (/refused this stage/.test(message)) return stop(refusal);
