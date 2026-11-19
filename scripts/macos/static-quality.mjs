@@ -61,7 +61,7 @@ export async function staticQuality(input,tools){
     const files=input.files.filter(codeFile).map(file=>'./'+file);
     await check('lint',()=>tools.run('biome',['lint','--config-path=/tmp/jam-quality',...files]));
     await check('format',()=>tools.run('biome',['format','--config-path=/tmp/jam-quality',...files]));
-    await check('types',()=>tools.run('tsc',input.recipe==='typescript-build'?['-p','tsconfig.json','--noEmit','--incremental','false']:['--allowJs','--checkJs','--allowImportingTsExtensions','--noEmit','--strict','--target','ES2022','--module','NodeNext','--moduleResolution','NodeNext','--skipLibCheck','--typeRoots','/opt/jam-bot/node_modules/@types','--types','node',...input.files.filter(scriptFile).map(file=>'./'+file)]));
+    await check('types',()=>tools.run('tsc',['typescript-build','typescript-compiled'].includes(input.recipe)?['-p','tsconfig.json','--noEmit','--incremental','false']:['--allowJs','--checkJs','--allowImportingTsExtensions','--noEmit','--strict','--target','ES2022','--module','NodeNext','--moduleResolution','NodeNext','--skipLibCheck','--typeRoots','/opt/jam-bot/node_modules/@types','--types','node',...input.files.filter(scriptFile).map(file=>'./'+file)]));
   }else{
     for(const name of ['generated-code-comments','lint','format','types'])checks.push({name,status:'unavailable',detail:'Trusted toolchain unavailable'});
   }

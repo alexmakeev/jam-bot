@@ -69,13 +69,15 @@ cp -R /code/. /workspace/
 cd /workspace
 node --version
 cmp -s package-lock.json /opt/jam-own/package-lock.json
+printf "%s  %s\n" 319636c130ef3ea6abe2be13b5b11d6d972879168e12c55c8987917481974531 package.json 835ee875d71421d87bc25bdab280fd951a1f4685af8bf9bae30fa3b1056dcbd8 tsconfig.json | sha256sum --check --status
 test ! -e dist && test ! -L dist
 test ! -e node_modules && test ! -L node_modules
 ln -s /opt/jam-own/node_modules node_modules
 node /gate/static-quality.mjs
 /opt/jam-bot/node_modules/.bin/tsc -p tsconfig.json
-node --test --test-reporter=/gate/unit-reporter.mjs --test-concurrency=1 "$@"
 if [ "$JAM_VALIDATION_STAGE" != test-red ]; then node /gate/own-management-smoke.mjs; fi
+for file in "$@"; do test -f "$file"; done
+exec node --test --test-reporter=/gate/unit-reporter.mjs --test-concurrency=1 "$@"
 `;
 
 async function calculatorPreview({tree,sha,image,name,checks,site,base}) {
@@ -148,7 +150,8 @@ export async function testCandidate({project,tree,files,sha,base,name,approvedIs
   const quality=await mkdtemp(join(tmpdir(),'jam-quality-'));
   try {
     const {stdout}=await run('git',['diff','--name-only','--no-renames','-z',base,'--'],{cwd:tree});
-    const changed=stdout.split('\0').filter(file=>file && files.includes(file) && codeFile(file));
+    const qualityFiles=compiled?files.filter(file=>/^(?:src\/.+\.ts|test\/.+\.test\.ts)$/.test(file)):files;
+    const changed=stdout.split('\0').filter(file=>file && qualityFiles.includes(file) && codeFile(file));
     const baseline={};
     for(const file of changed){
       try {baseline[file]=(await run('git',['show',base+':'+file],{cwd:tree,maxBuffer:1024*1024})).stdout;}
@@ -159,7 +162,7 @@ export async function testCandidate({project,tree,files,sha,base,name,approvedIs
     await run('git',['-c','core.fsmonitor=false','diff-files','--quiet','--'],{cwd:tree});
     const executionTree=(await run('git',['-c','core.fsmonitor=false','write-tree'],{cwd:tree})).stdout.trim();
     const execution={stage:stage??'test',tree:executionTree,productionRevision:stage==='test-red'?base:sha,testRevision:sha};
-    await writeFile(join(quality,'input.json'),JSON.stringify({recipe:project.recipe,sha,files,changed,baseline,execution}),{mode:0o644});
+    await writeFile(join(quality,'input.json'),JSON.stringify({recipe:project.recipe,sha,files:qualityFiles,changed,baseline,execution}),{mode:0o644});
   } catch(error){await rm(quality,{recursive:true,force:true});throw error;}
   const args=['run','--rm','--name',name,'--network','none','--read-only','--cap-drop','ALL','--user','1000:1000',
     '--label','jam-bot.validation='+name,
