@@ -5,11 +5,13 @@ import {
 	readdir,
 	readFile,
 	readlink,
+	realpath,
 	mkdir,
 	rm,
 	writeFile,
 } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import {
 	consultationReady,
@@ -89,7 +91,7 @@ async function requireOwnerLock(path: string) {
 	}
 	throw new Error("Start the service under flock -n -F " + path);
 }
-async function consume(
+export async function consume(
 	{ journal, topic, state }: TopicRuntime,
 	signal: AbortSignal,
 ) {
@@ -652,7 +654,11 @@ async function main() {
 	}
 	if (failure) throw failure;
 }
-main().catch((err) => {
-	console.error(err.message);
-	process.exitCode = 1;
-});
+if (
+	process.argv[1] &&
+	pathToFileURL(await realpath(process.argv[1])).href === import.meta.url
+)
+	main().catch((err) => {
+		console.error(err.message);
+		process.exitCode = 1;
+	});

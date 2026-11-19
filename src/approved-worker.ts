@@ -24,6 +24,7 @@ import {
 	type WorkerScheduling,
 } from "./developer-profile.js";
 import { ConsultationDeferred } from "./external-advice.js";
+import { NativeRoleDeferred } from "./native-worker-wait.js";
 import { atomicJson, readJson } from "./storage.js";
 
 export const WORKER_ACCEPTANCE_BODY =
@@ -168,6 +169,7 @@ export async function dispatchApprovedWorker(
 		if (
 			!signal.aborted &&
 			!(error instanceof ConsultationDeferred) &&
+			!(error instanceof NativeRoleDeferred) &&
 			!(error instanceof NativeLaneYield)
 		)
 			await setCardProgress(topic, event.issue, "blocked").catch(

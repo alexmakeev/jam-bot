@@ -8,8 +8,11 @@ import { checkpointRole } from "../src/role-checkpoint.js";
 import { RoleStageFailure } from "../src/role-failure.js";
 import { fingerprint } from "../src/work-progress.js";
 import { atomicJson } from "../src/storage.js";
-import { bindWorkspace } from "../src/workspace-binding.js";
-import { nativeWorkspaceEvidence } from "../src/native-teammate.js";
+import { bindWorkspace, loadWorkspace } from "../src/workspace-binding.js";
+import {
+	nativeSharedWorkspaceEvidence,
+	nativeWorkspaceEvidence,
+} from "../src/native-teammate.js";
 
 test("mandatory review evidence requires matching tool results from the exact native member", async (t) => {
 	const state = await mkdtemp(join(tmpdir(), "jam-review-catalogue-"));
@@ -180,6 +183,36 @@ test("mandatory review evidence requires matching tool results from the exact na
 		sourceRead: true,
 		specificationIndexRead: true,
 	});
+	const manifest = await loadWorkspace(report + ".manifest.json", {
+		digest: pin,
+		binding,
+	});
+	const query = { config, cwd, session, name, agentType, challenge: session };
+	assert.deepEqual(
+		await nativeSharedWorkspaceEvidence(
+			query,
+			handle,
+			manifest,
+			new Set(["read-0"]),
+			true,
+		),
+		{
+			advertised: true,
+			memberCalls: 1,
+			sourceRead: true,
+			specificationIndexRead: false,
+		},
+	);
+	assert.equal(
+		await nativeSharedWorkspaceEvidence(
+			query,
+			"wrong-handle",
+			manifest,
+			new Set(["read-0", "read-1"]),
+			true,
+		),
+		undefined,
+	);
 });
 
 test("a routine workspace role can recover an authenticated receipt without source reads", async (t) => {

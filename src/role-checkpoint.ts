@@ -2,10 +2,15 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { readdir } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
+import { isDeepStrictEqual } from "node:util";
 import { observe, roleRefused } from "./review-supervisor.js";
 import { atomicJson, readJson } from "./storage.js";
 import { runRoleStage, type RoleStage } from "./role-harness.js";
 import { fingerprint, recordProgress } from "./work-progress.js";
+import {
+	NativeRoleDeferred,
+	type NativeWorkerIntent,
+} from "./native-worker-wait.js";
 import {
 	reportedRuntimeBlocker,
 	RoleStageFailure,
@@ -28,6 +33,7 @@ interface Checkpoint {
 	failure?: string;
 	failureCategory?: RoleFailureCategory;
 	failureDetail?: string;
+	nativeDeferred?: NativeWorkerIntent;
 }
 
 export async function checkpointRole(
@@ -63,7 +69,7 @@ export async function checkpointRole(
 		}
 		if (name === id + ".json" || previous.failure) continue;
 		let priorReceipt = previous.receipt;
-		if (!priorReceipt) {
+		if (!priorReceipt || previous.nativeDeferred) {
 			const original = {
 				...job,
 				input: previous.input,
@@ -94,6 +100,14 @@ export async function checkpointRole(
 				await atomicJson(previousPath, previous);
 				throw failure;
 			}
+			if (
+				priorReceipt &&
+				observed.receipt &&
+				!isDeepStrictEqual(priorReceipt, observed.receipt)
+			)
+				throw Error(
+					"Reconciled native receipt differs from its original verified outcome",
+				);
 			priorReceipt = observed.receipt;
 			if (!priorReceipt)
 				throw roleStageFailure(
@@ -155,6 +169,10 @@ export async function checkpointRole(
 	if (!saved) await atomicJson(path, checkpoint);
 	const version = digest.slice(0, 12);
 	let receipt = checkpoint.receipt;
+	const recordedDeferredReceipt = checkpoint.nativeDeferred
+		? checkpoint.receipt
+		: undefined;
+	if (recordedDeferredReceipt) receipt = undefined;
 	let reconcile = Boolean(saved);
 	while (!receipt) {
 		job.signal.throwIfAborted();
@@ -178,9 +196,18 @@ export async function checkpointRole(
 				throw failure;
 			}
 			if (observed.receipt) {
+				if (
+					recordedDeferredReceipt &&
+					!isDeepStrictEqual(observed.receipt, recordedDeferredReceipt)
+				)
+					throw Error(
+						"Reconciled native receipt differs from its original verified outcome",
+					);
 				receipt = observed.receipt;
 				break;
 			}
+			if (checkpoint.nativeDeferred)
+				throw new NativeRoleDeferred(checkpoint.nativeDeferred);
 			if (observed.live) {
 				const minutes = Number(
 					process.env.JAM_NATIVE_STAGE_TIMEOUT_MINUTES ?? 15,
@@ -233,6 +260,21 @@ export async function checkpointRole(
 		try {
 			receipt = await run(job, checkpoint.challenge);
 		} catch (error) {
+			if (error instanceof NativeRoleDeferred) {
+				const intent = error.intent;
+				if (
+					intent.issue !== job.issue ||
+					intent.role !== job.role ||
+					intent.challenge !== checkpoint.challenge ||
+					intent.inputDigest !== digest
+				)
+					throw Error(
+						"Suspended native result differs from its role checkpoint",
+					);
+				checkpoint.nativeDeferred = intent;
+				await atomicJson(path, checkpoint);
+				throw error;
+			}
 			if (job.signal.aborted) throw error;
 			if (
 				error instanceof Error &&

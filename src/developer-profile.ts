@@ -56,6 +56,7 @@ import {
 	reconcileProgress,
 } from "./work-progress.js";
 import { checkpointRole } from "./role-checkpoint.js";
+import { NativeRoleDeferred } from "./native-worker-wait.js";
 import type { StageRole } from "./role-harness.js";
 import {
 	checkout,
@@ -120,6 +121,10 @@ export interface AdviceLane {
 export interface WorkerScheduling {
 	adviceLane?: AdviceLane;
 	beforeSpecification?: () => void;
+	nativeStage?: {
+		run: NonNullable<Parameters<typeof checkpointRole>[2]>;
+		recover: NonNullable<Parameters<typeof checkpointRole>[3]>;
+	};
 }
 type Project = Awaited<ReturnType<typeof checkout>>;
 interface Ready {
@@ -297,8 +302,8 @@ async function stage(
 					: {}),
 			},
 			next[role],
-			undefined,
-			undefined,
+			p.nativeStage?.run,
+			p.nativeStage?.recover,
 			emitResult,
 		);
 	let receipt = await invoke(input);
@@ -1822,6 +1827,7 @@ export async function runDeveloperProfile(p: ProfileRun) {
 			!signal.aborted &&
 			!(err instanceof DependencyHold) &&
 			!(err instanceof ConsultationDeferred) &&
+			!(err instanceof NativeRoleDeferred) &&
 			!(err instanceof NativeLaneYield)
 		) {
 			if (err instanceof ConsultationEscalation)

@@ -505,6 +505,27 @@ export async function nativeWorkspaceEvidence(
 		return;
 	const native = await nativeSpawn(query);
 	if (!native || native.handle !== developer) return;
+	return boundWorkspaceEvidence(manifest, query, developer, native.workerRows);
+}
+
+async function boundWorkspaceEvidence(
+	manifest: Awaited<ReturnType<typeof loadWorkspace>>,
+	query: ReceiptQuery,
+	developer: string,
+	workerRows: Row[],
+	usedCalls?: ReadonlySet<string>,
+	catalogAdvertised = false,
+): Promise<NativeWorkspaceEvidence | undefined> {
+	const { session, name } = query;
+	const challenge = manifest.binding?.challenge;
+	const { revision } = manifest.identity;
+	if (
+		!manifest.audit ||
+		!challenge ||
+		manifest.binding?.session !== session ||
+		manifest.binding.member !== name
+	)
+		return;
 	const events = (await optionalText(manifest.audit))
 		.trim()
 		.split("\n")
@@ -518,7 +539,7 @@ export async function nativeWorkspaceEvidence(
 				event.identity?.revision === revision &&
 				event.identity?.specifications === manifest.identity.specifications,
 		);
-	const calls = native.workerRows
+	const calls = workerRows
 		.filter(
 			(row) =>
 				row.agentId === developer &&
@@ -534,6 +555,7 @@ export async function nativeWorkspaceEvidence(
 			.filter(
 				(block) =>
 					block.type === "tool_use" &&
+					(!usedCalls || (block.id && usedCalls.has(block.id))) &&
 					toolbox.some((tool) => block.name === "mcp__jam_workspace__" + tool),
 			)
 			.map((call) => call.id)
@@ -546,6 +568,7 @@ export async function nativeWorkspaceEvidence(
 				block.type !== "tool_use" ||
 				block.name !== "mcp__jam_workspace__workspace_read" ||
 				!block.id ||
+				(usedCalls && !usedCalls.has(block.id)) ||
 				block.input?.root !== root ||
 				typeof file !== "string" ||
 				!path(file) ||
@@ -583,13 +606,15 @@ export async function nativeWorkspaceEvidence(
 			});
 		});
 	return {
-		advertised: events.some(
-			(event) =>
-				event.operation === "tools-list" &&
-				toolbox.every(
-					(tool) => Array.isArray(event.tools) && event.tools.includes(tool),
-				),
-		),
+		advertised:
+			catalogAdvertised ||
+			events.some(
+				(event) =>
+					event.operation === "tools-list" &&
+					toolbox.every(
+						(tool) => Array.isArray(event.tools) && event.tools.includes(tool),
+					),
+			),
 		memberCalls: member.size,
 		sourceRead: read("repository", (file) =>
 			/\.(?:[cm]?[jt]sx?|html?|css)$/i.test(file),
@@ -599,6 +624,25 @@ export async function nativeWorkspaceEvidence(
 			(file) => file === "index.json",
 		),
 	};
+}
+
+export async function nativeSharedWorkspaceEvidence(
+	query: ReceiptQuery,
+	handle: string,
+	manifest: Awaited<ReturnType<typeof loadWorkspace>>,
+	usedCalls: ReadonlySet<string>,
+	catalogAdvertised: boolean,
+) {
+	const native = await nativeSpawn(query);
+	if (!native || native.handle !== handle) return;
+	return boundWorkspaceEvidence(
+		manifest,
+		query,
+		handle,
+		native.workerRows,
+		usedCalls,
+		catalogAdvertised,
+	);
 }
 
 interface FollowupQuery {
