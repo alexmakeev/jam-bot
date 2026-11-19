@@ -201,6 +201,14 @@ const scopedSpecificationReview =
 export function prefillDevelopmentTasks(topic: Topic, journal: Journal) {
 	if (!independentWorkspace(topic) || journal.hasIntegrationContinuation())
 		return false;
+	if (
+		journal.db
+			.prepare(
+				"SELECT 1 FROM intake WHERE workerState='waiting-native' LIMIT 1",
+			)
+			.get()
+	)
+		return false;
 	const checking = journal.db
 		.prepare(
 			"SELECT 1 FROM branch_validation WHERE state IN ('pending','checking') LIMIT 1",

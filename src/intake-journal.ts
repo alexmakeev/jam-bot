@@ -267,7 +267,7 @@ export class Journal {
 		return this.transaction(() => {
 			const row = this.db
 				.prepare(`SELECT * FROM intake WHERE state='queued' AND seedRetryAt<=unixepoch()
-        AND NOT EXISTS(SELECT 1 FROM intake WHERE state IN ('review','running') OR workerState IN ('running','review'))
+        AND NOT EXISTS(SELECT 1 FROM intake WHERE state IN ('review','running') OR workerState IN ('running','review','waiting-native'))
         ORDER BY rowid LIMIT 1`)
 				.get();
 			if (!row) return;
@@ -318,6 +318,11 @@ export class Journal {
 			const pending = this.activeAdviceWaits();
 			if (
 				pending.length >= 2 ||
+				this.db
+					.prepare(
+						"SELECT 1 FROM intake WHERE workerState='waiting-native' LIMIT 1",
+					)
+					.get() ||
 				pending.some((row) =>
 					row.wait.files.some((path) => wait.files.includes(path)),
 				)
@@ -338,13 +343,14 @@ export class Journal {
 		});
 	}
 
-	resumeAdvice(delivery: string) {
+	resumeAdvice(delivery: string, canShareNative = false) {
 		return this.transaction(() => {
 			const row = this.db
 				.prepare(`SELECT i.* FROM intake i JOIN worker_advice_waits w ON w.delivery=i.delivery
         WHERE i.delivery=? AND i.workerState='waiting-advice' AND w.resumed=0
-        AND NOT EXISTS(SELECT 1 FROM intake WHERE workerState IN ('running','review') OR state IN ('running','review'))`)
-				.get(delivery);
+        AND NOT EXISTS(SELECT 1 FROM intake WHERE workerState IN ('running','review') OR state IN ('running','review'))
+        AND (? OR NOT EXISTS(SELECT 1 FROM intake WHERE workerState='waiting-native'))`)
+				.get(delivery, Number(canShareNative));
 			if (!row) return;
 			this.db
 				.prepare(
@@ -403,15 +409,20 @@ export class Journal {
 	nextWorker(
 		canStart: (task: Intake) => boolean = () => true,
 		checkpointable: (task: Intake) => boolean = () => false,
+		sharesNative?: (task: Intake) => boolean,
 	): Intake | undefined {
 		return this.transaction(() => {
 			const rows = this.db
 				.prepare(`SELECT * FROM intake WHERE action='task' AND workerState='pending' AND seedRetryAt<=unixepoch()
         AND NOT EXISTS(SELECT 1 FROM intake WHERE workerState IN ('running','review') OR state IN ('running','review'))
-        AND (SELECT COUNT(*) FROM intake WHERE workerState='waiting-advice')<2
+        AND (SELECT COUNT(*) FROM intake WHERE workerState IN ('waiting-advice','waiting-native'))<2
+        AND (? OR NOT EXISTS(SELECT 1 FROM intake WHERE workerState='waiting-native'))
         ORDER BY integrationParked DESC,rowid`)
-				.all();
-			const row = rows.find((item) => canStart(intake(item)));
+				.all(Number(Boolean(sharesNative)));
+			const row = rows.find((item) => {
+				const task = intake(item);
+				return canStart(task) && (!sharesNative || sharesNative(task));
+			});
 			if (!row) return;
 			this.db
 				.prepare(`UPDATE intake SET workerState='running',workerReason=NULL,integrationParked=0,
@@ -421,13 +432,16 @@ export class Journal {
 		});
 	}
 
-	pendingWorkers() {
+	pendingWorkers(sharesNative?: (task: Intake) => boolean) {
 		return this.db
 			.prepare(`SELECT * FROM intake WHERE action='task' AND workerState='pending' AND seedRetryAt<=unixepoch()
       AND NOT EXISTS(SELECT 1 FROM intake WHERE workerState IN ('running','review') OR state IN ('running','review'))
-      AND (SELECT COUNT(*) FROM intake WHERE workerState='waiting-advice')<2 ORDER BY integrationParked DESC,rowid`)
-			.all()
-			.map(intake);
+      AND (SELECT COUNT(*) FROM intake WHERE workerState IN ('waiting-advice','waiting-native'))<2
+      AND (? OR NOT EXISTS(SELECT 1 FROM intake WHERE workerState='waiting-native'))
+      ORDER BY integrationParked DESC,rowid`)
+			.all(Number(Boolean(sharesNative)))
+			.map(intake)
+			.filter((task) => !sharesNative || sharesNative(task));
 	}
 
 	workerCandidates() {

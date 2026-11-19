@@ -5,15 +5,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { Journal } from "../src/intake-journal.js";
-import { reportsNativeAuthenticationFailure } from "../src/native-persistent-lead.js";
+import {
+	recoverPersistentDispatch,
+	reportsNativeAuthenticationFailure,
+} from "../src/native-persistent-lead.js";
 import { RoleStageFailure } from "../src/role-failure.js";
 import { checkpointRole } from "../src/role-checkpoint.js";
 import type { RoleStage } from "../src/role-harness.js";
 import {
 	NativeRoleDeferred,
+	nativeWorkerAuthority,
 	NativeWorkerWaits,
 	type NativeWorkerIntent,
 } from "../src/native-worker-wait.js";
+import { atomicJson } from "../src/storage.js";
 import { fingerprint } from "../src/work-progress.js";
 
 const intent = (issue: number, files: string[]): NativeWorkerIntent => ({
@@ -25,6 +30,55 @@ const intent = (issue: number, files: string[]): NativeWorkerIntent => ({
 	approvalDigest: fingerprint("trusted actor"),
 	revision: "a".repeat(40),
 	files,
+});
+
+test("native recovery requires the exact approval envelope and refuses an older unbound dispatch", async (t) => {
+	const state = await mkdtemp(join(tmpdir(), "native-dispatch-bound-"));
+	t.after(() => rm(state, { recursive: true, force: true }));
+	const authority = intent(5, ["src/example.ts"]);
+	const { issue, challenge } = authority;
+	const path = join(state, "native-persistent-dispatches", challenge + ".json");
+	const request = "Challenge " + challenge;
+	const dispatch = {
+		version: 3,
+		issue,
+		challenge,
+		request,
+		prompt: "Send " + request,
+		handle: "member",
+		authority: nativeWorkerAuthority(authority),
+		initial: {
+			config: state,
+			cwd: state,
+			session: randomUUID(),
+			challenge: randomUUID(),
+			name: "manager",
+		},
+	};
+	await atomicJson(path, dispatch);
+	await assert.rejects(
+		recoverPersistentDispatch(state, issue, challenge),
+		/approved checkpoint/,
+	);
+	await assert.rejects(
+		recoverPersistentDispatch(state, issue, challenge, {
+			...authority,
+			revision: "b".repeat(40),
+		}),
+		/approved checkpoint/,
+	);
+	assert.deepEqual(
+		await recoverPersistentDispatch(state, issue, challenge, authority),
+		{ attempted: true },
+	);
+	await atomicJson(path, { ...dispatch, version: 2, authority: undefined });
+	await assert.rejects(
+		recoverPersistentDispatch(state, issue, challenge, authority),
+		/approved checkpoint/,
+	);
+	assert.deepEqual(await recoverPersistentDispatch(state, issue, challenge), {
+		attempted: true,
+	});
 });
 
 test("only an explicit native auth error from the observed lead stops startup", () => {
@@ -64,7 +118,8 @@ test("only the original verified disjoint stage can resume after process interru
 	const journal = new Journal(path);
 	journal.start(topic);
 	const waits = new NativeWorkerWaits(journal.db);
-	for (const job of [first, second]) {
+	const third = intent(3, ["src/third.ts"]);
+	for (const job of [first, second, third]) {
 		journal.db
 			.prepare(
 				"INSERT INTO intake(delivery,issue,action,title,body,state,workerState) VALUES(?,?,'task','','','received','pending')",
@@ -76,15 +131,43 @@ test("only the original verified disjoint stage can resume after process interru
 		first.delivery,
 	);
 	waits.park(first);
+	journal.db
+		.prepare(
+			"INSERT INTO intake(delivery,issue,action,title,body,state) VALUES(?,4,'opened','','','queued')",
+		)
+		.run(randomUUID());
+	assert.equal(journal.next(), undefined);
+	assert.equal(journal.nextWorker(), undefined);
+	assert.deepEqual(journal.pendingWorkers(), []);
 	assert.equal(waits.canAdmit([]), false);
 	assert.equal(waits.canAdmit(first.files), false);
 	assert.equal(waits.canAdmit(second.files), true);
 	assert.equal(
-		journal.nextWorker(undefined, () => true)?.delivery,
+		journal.nextWorker(
+			undefined,
+			() => true,
+			() => waits.canAdmit(first.files),
+		),
+		undefined,
+	);
+	assert.equal(
+		journal.nextWorker(
+			undefined,
+			() => true,
+			(job) => job.delivery === second.delivery && waits.canAdmit(second.files),
+		)?.delivery,
 		second.delivery,
 	);
 	waits.park(second);
 	assert.equal(waits.canAdmit(["src/third.ts"]), false);
+	assert.equal(
+		journal.nextWorker(
+			undefined,
+			() => true,
+			() => true,
+		),
+		undefined,
+	);
 	assert.equal(waits.resume(first), false);
 	assert.throws(
 		() =>
@@ -95,6 +178,9 @@ test("only the original verified disjoint stage can resume after process interru
 		/durable intent/,
 	);
 	waits.recordVerifiedReply(second);
+	journal.db.prepare("UPDATE intake SET state='review' WHERE issue=4").run();
+	assert.equal(waits.resume(second), false);
+	journal.db.prepare("UPDATE intake SET state='queued' WHERE issue=4").run();
 	assert.equal(waits.resume(second), true);
 	journal.db.close();
 

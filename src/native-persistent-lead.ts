@@ -12,6 +12,10 @@ import { performance } from "node:perf_hooks";
 import { setTimeout as delay } from "node:timers/promises";
 import { nativeLeadBusyCode, startNativeLead } from "./native-lead.js";
 import {
+	nativeWorkerAuthority,
+	type NativeWorkerIntent,
+} from "./native-worker-wait.js";
+import {
 	mailboxReceipt,
 	nativeDispatchRefused,
 	nativeFollowupReceipt,
@@ -35,9 +39,10 @@ interface Request {
 	issue: number;
 	input: string;
 	workspaceManifest?: string;
+	authority?: NativeWorkerIntent;
 }
 interface Intent {
-	version: 1 | 2;
+	version: 1 | 2 | 3;
 	issue: number;
 	initial: Bootstrap;
 	handle: string;
@@ -45,6 +50,7 @@ interface Intent {
 	request: string;
 	challenge: string;
 	workspacePin?: string;
+	authority?: string;
 }
 interface LeadOptions {
 	state: string;
@@ -149,6 +155,7 @@ export async function recoverPersistentDispatch(
 	state: string,
 	issue: number,
 	challenge: string,
+	expected?: NativeWorkerIntent,
 ) {
 	if (!safeInput.test(challenge))
 		throw Error("Invalid persistent dispatch identity");
@@ -160,9 +167,15 @@ export async function recoverPersistentDispatch(
 	);
 	if (!original) return;
 	if (
-		![1, 2].includes(original.version) ||
+		![1, 2, 3].includes(original.version) ||
 		original.issue !== issue ||
-		original.challenge !== challenge
+		original.challenge !== challenge ||
+		(original.version === 3 &&
+			(!expected || original.authority !== nativeWorkerAuthority(expected))) ||
+		(expected &&
+			(original.version !== 3 ||
+				expected.issue !== issue ||
+				expected.challenge !== challenge))
 	)
 		throw Error("Persistent dispatch differs from its approved checkpoint");
 	if (
@@ -175,7 +188,7 @@ export async function recoverPersistentDispatch(
 	const result = await nativeFollowupReceipt({
 		...original,
 		allowOtherMembers: true,
-		allowLaterDelivery: original.version === 2,
+		allowLaterDelivery: original.version >= 2,
 	});
 	if (!result) return { attempted: true as const };
 	const directory = join(
@@ -532,6 +545,15 @@ export class PersistentNativeLead {
 			throw Error(
 				"Native member or generation already has its allowed dispatch load",
 			);
+		const authority = job.authority
+			? nativeWorkerAuthority(job.authority)
+			: undefined;
+		if (
+			job.authority &&
+			(job.authority.issue !== job.issue ||
+				job.authority.challenge !== job.challenge)
+		)
+			throw Error("Native dispatch authority differs from its stage");
 		this.activeMembers.add(job.name);
 		let acknowledge!: (value: DispatchAcknowledgement) => void;
 		let rejectAcknowledgement!: (error: unknown) => void;
@@ -541,7 +563,11 @@ export class PersistentNativeLead {
 				rejectAcknowledgement = reject;
 			},
 		);
-		const completion = this.completeDispatch(job, acknowledge).finally(() => {
+		const completion = this.completeDispatch(
+			job,
+			acknowledge,
+			authority,
+		).finally(() => {
 			this.completions.delete(completion);
 			this.activeMembers.delete(job.name);
 		});
@@ -553,6 +579,7 @@ export class PersistentNativeLead {
 	private async completeDispatch(
 		job: Request,
 		acknowledge: (value: DispatchAcknowledgement) => void,
+		authority?: string,
 	) {
 		let registered = false;
 		try {
@@ -576,9 +603,15 @@ export class PersistentNativeLead {
 						"manifests",
 						job.challenge + ".json",
 					);
+					const scope = await loadWorkspace(job.workspaceManifest);
+					if (
+						job.authority &&
+						scope.identity.revision !== job.authority.revision
+					)
+						throw Error("Native workspace revision differs from its stage");
 					workspacePin = await bindWorkspace(
 						manifest,
-						await loadWorkspace(job.workspaceManifest),
+						scope,
 						{
 							session: this.session,
 							member: job.name,
@@ -608,7 +641,7 @@ export class PersistentNativeLead {
 					registered = true;
 				}
 				const intent: Intent = {
-					version: 2,
+					version: authority ? 3 : 2,
 					issue: job.issue,
 					initial,
 					handle,
@@ -616,6 +649,7 @@ export class PersistentNativeLead {
 					request,
 					challenge: job.challenge,
 					workspacePin,
+					authority,
 				};
 				if (
 					!(await claimJson(intents(this.options.state, job.challenge), intent))

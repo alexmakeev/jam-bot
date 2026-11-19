@@ -27,7 +27,7 @@ export class NativeRoleDeferred extends Error {
 	}
 }
 
-function sealed(intent: NativeWorkerIntent) {
+export function nativeWorkerAuthority(intent: NativeWorkerIntent) {
 	const {
 		delivery,
 		issue,
@@ -91,7 +91,7 @@ export class NativeWorkerWaits {
 		}
 	}
 	private assertOriginal(intent: NativeWorkerIntent) {
-		const intentString = sealed(intent);
+		const intentString = nativeWorkerAuthority(intent);
 		const saved = this.db
 			.prepare(
 				"SELECT intent FROM native_worker_waits WHERE delivery=? AND challenge=?",
@@ -104,16 +104,21 @@ export class NativeWorkerWaits {
 		const others = this.db
 			.prepare("SELECT intent FROM native_worker_waits")
 			.all();
-		const advice = Number(
-			this.db
-				.prepare(
-					"SELECT count(*) AS n FROM intake WHERE workerState='waiting-advice'",
-				)
-				.get()?.n,
-		);
+		const advice = this.db
+			.prepare(`SELECT w.snapshot FROM intake i LEFT JOIN worker_advice_waits w ON i.delivery=w.delivery
+				WHERE i.workerState='waiting-advice'`)
+			.all();
 		return (
 			files.length > 0 &&
-			others.length + advice < 2 &&
+			others.length + advice.length < 2 &&
+			advice.every((row) => {
+				if (typeof row.snapshot !== "string") return false;
+				const previous = JSON.parse(row.snapshot) as { files?: string[] };
+				return (
+					Array.isArray(previous.files) &&
+					!previous.files.some((path) => files.includes(path))
+				);
+			}) &&
 			!others.some((row) => {
 				const original = JSON.parse(String(row.intent)) as NativeWorkerIntent;
 				return original.files.some((path) => files.includes(path));
@@ -121,7 +126,7 @@ export class NativeWorkerWaits {
 		);
 	}
 	park(intent: NativeWorkerIntent) {
-		const encoded = sealed(intent);
+		const encoded = nativeWorkerAuthority(intent);
 		this.write(() => {
 			if (!this.canAdmit(intent.files))
 				throw Error("Native worker would exceed its topic scope");
@@ -144,7 +149,7 @@ export class NativeWorkerWaits {
 			.prepare(
 				"UPDATE native_worker_waits SET ready=1 WHERE delivery=? AND challenge=? AND intent=?",
 			)
-			.run(intent.delivery, intent.challenge, sealed(intent));
+			.run(intent.delivery, intent.challenge, nativeWorkerAuthority(intent));
 		if (recorded.changes !== 1)
 			throw Error("Native worker dispatch differs from its durable intent");
 	}
