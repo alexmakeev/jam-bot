@@ -13,6 +13,7 @@ import {
 } from "../src/native-consumer-lane.js";
 import {
 	NativeRoleDeferred,
+	NativeWorkerWaits,
 	nativeWorkerOwnsParkedStage,
 	type NativeWorkerIntent,
 } from "../src/native-worker-wait.js";
@@ -20,6 +21,7 @@ import { checkpointRole } from "../src/role-checkpoint.js";
 import type { RoleStage } from "../src/role-harness.js";
 import { atomicJson } from "../src/storage.js";
 import { consume } from "../src/webhook-service.js";
+import { fingerprint } from "../src/work-progress.js";
 
 const receipt = {
 	developer: "original",
@@ -214,4 +216,75 @@ test("the normal topic consumer accepts isolated opt-in without starting a provi
 		start: async () => assert.fail("No provider required"),
 	});
 	assert.deepEqual(journal.list(), []);
+});
+
+test("the ordinary consumer preserves an original refusal and does not dispatch a replacement", async (t) => {
+	const state = await mkdtemp(join(tmpdir(), "jam-native-refusal-consumer-"));
+	t.after(() => rm(state, { recursive: true, force: true }));
+	const journal = new Journal(join(state, "intake.sqlite"));
+	t.after(() => journal.db.close());
+	const topic = {
+		repository: "test/fixture",
+		repoId: 100,
+		installation: 200,
+		cwd: state,
+	};
+	journal.start(topic);
+	const delivery = randomUUID();
+	const task: Intake = {
+		delivery,
+		issue: 1,
+		action: "task",
+		title: "Original approved work",
+		body: "Preserve the original work.",
+		kind: "development",
+		actorId: 30,
+		actorLogin: "owner",
+		authorId: 30,
+		authorLogin: "owner",
+		typeId: 50,
+		approvalSource: "typed",
+	};
+	journal.enqueue(task);
+	assert.equal(journal.next()?.delivery, delivery);
+	journal.complete({ issue: 1, delivery, disposition: "intake_received" });
+	assert.equal(journal.nextWorker(undefined, () => true)?.delivery, delivery);
+	const actor = { id: 30, login: "owner", type: "User" };
+	const approval = {
+		actor,
+		author: actor,
+		kind: "development",
+		title: task.title,
+		body: task.body,
+		typeId: 50,
+	};
+	new NativeWorkerWaits(journal.db).park({
+		issue: 1,
+		delivery,
+		challenge: randomUUID(),
+		role: "developer",
+		inputDigest: fingerprint(task.body),
+		approvalDigest: fingerprint(JSON.stringify([100, 200, approval])),
+		revision: "a".repeat(40),
+		files: ["src/example.ts"],
+	});
+	const abort = new AbortController();
+	let inspected = 0;
+	await consume({ state, topic, journal }, abort.signal, {
+		start: async () =>
+			assert.fail("The original refusal must not launch another provider"),
+		occupied: async () => false,
+		recover: async () => {
+			inspected++;
+			abort.abort();
+			throw Error("Native member refused the original dispatch");
+		},
+	});
+	assert.equal(inspected, 1);
+	assert.equal(journal.list()[0]?.workerState, "review");
+	assert.match(
+		String(journal.list()[0]?.workerReason),
+		/Original native dispatch refused/,
+	);
+	assert.equal(journal.nextWorker(), undefined);
 });
