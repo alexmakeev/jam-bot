@@ -124,6 +124,7 @@ async function execute(dir) {
     await git(temp,['remote','add','origin',url]);
     const remote=await git(temp,['ls-remote','origin','refs/heads/dev']);
     const dev=remote.split(/\s+/)[0] || '';
+    if(projects[req.repo].controlledIssue!==undefined && !sha(dev))throw Error('Own-repository pilot requires an existing dev ref');
     if (req.action==='seed') {
       const source=dev?'dev':(await gh('repos/'+req.repo)).default_branch;
       await git(temp,['fetch','--no-tags','origin','refs/heads/'+source+':refs/heads/seed']);
