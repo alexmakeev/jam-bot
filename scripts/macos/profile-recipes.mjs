@@ -20,6 +20,7 @@ export function projectRecipes(config) {
   for (const [repo,project] of Object.entries(projects)) {
     if (project?.recipe===compiledRecipe && (repo!==ownRepository || project.image!==ownRecipeImage ||
         project.qualityGate!=='development-static-v1' || project.releaseProfile?.repoId!==1456661011 ||
+        project.releaseProfile.profileRef!=='dev' || !Number.isSafeInteger(project.controlledIssue) || project.controlledIssue<1 ||
         project.calculatorBrowserImage || project.sumBrowserImage || project.autoDeployCalculator || project.autoDeploySum))
       throw Error('Invalid disconnected own-repository recipe scope');
     if(project?.clearTotalsCard!==undefined && (!project.sumBrowserImage || !Number.isSafeInteger(project.clearTotalsCard) || project.clearTotalsCard<1))throw Error('Invalid clear totals work card');

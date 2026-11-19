@@ -144,7 +144,8 @@ test("own compiled validation is scoped to its repository identity and offline i
 		image:
 			"sha256:af6518a66aeaab0353568447cc00ecff09838cf969b22d1947ed5a9a2478f3c9",
 		qualityGate: "development-static-v1",
-		releaseProfile: { repoId: 1456661011 },
+		releaseProfile: { repoId: 1456661011, profileRef: "dev" },
+		controlledIssue: 41,
 	};
 	const load = (repo, settings) =>
 		projectRecipes({ projects: { [repo]: settings } });
@@ -157,6 +158,7 @@ test("own compiled validation is scoped to its repository identity and offline i
 		{ qualityGate: undefined },
 		{ releaseProfile: { repoId: 1 } },
 		{ autoDeploySum: true },
+		{ controlledIssue: 0 },
 	])
 		assert.throws(
 			() => load("alexmakeev/jam-bot", { ...profile, ...other }),

@@ -45,6 +45,8 @@ async function authorizedFiles(req){
   const allowed=new Set();
   for(const card of req.cards){
     if(!Number.isSafeInteger(card.issue)||card.issue<1)throw Error('Invalid issue');
+    const controlledIssue=projects[req.repo].controlledIssue;
+    if(controlledIssue!==undefined && card.issue!==controlledIssue)throw Error('Work card outside the configured own-repository pilot');
     if(card.recipeIdentity!==undefined&&developmentRecipe(projects[req.repo],card.issue,requiresLiveAcceptance({...req,cards:[card]}))?.identity!==card.recipeIdentity)
       throw Error('Trusted Development recipe differs from the approved specification contract');
     const base='repos/'+req.repo;

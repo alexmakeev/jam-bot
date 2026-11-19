@@ -71,6 +71,7 @@ import {
 	usesDependencies,
 	verifyDependencies,
 } from "./github-dependencies.js";
+import { verifyOwnPilotJournal } from "./own-pilot.js";
 import { nativeLeadOccupied } from "./native-lead.js";
 import {
 	NativeConsumerLane,
@@ -614,6 +615,7 @@ async function main() {
 		const abort = new AbortController(),
 			signal = AbortSignal.any([abort.signal, stop.signal]);
 		const task = withoutEnvironmentAuthority(async () => {
+			verifyOwnPilotJournal(route);
 			await admissions.recover([route]);
 			const tasks = [
 				consume(route, signal),

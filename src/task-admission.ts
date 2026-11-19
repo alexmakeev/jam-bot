@@ -1,3 +1,4 @@
+import { ownPilotIssue } from "./own-pilot.js";
 import type { Intake } from "./intake-journal.js";
 import {
 	approvalFromEvent,
@@ -12,6 +13,9 @@ export class TaskAdmission {
 	constructor(private readonly protect = validateTaskApproval) {}
 
 	admit(route: TopicRuntime, event: Intake): Promise<number> {
+		const pilot = ownPilotIssue(route);
+		if (pilot !== undefined && event.issue !== pilot)
+			return Promise.resolve(409);
 		const saved = route.journal.beginAdmission(event);
 		if (!saved || saved.state === "rejected") return Promise.resolve(409);
 		if (saved.state !== "admitting") return Promise.resolve(202);
