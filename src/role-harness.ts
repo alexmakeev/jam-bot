@@ -1,6 +1,7 @@
 import { profileContext } from "./project-values.js";
 import { randomUUID } from "node:crypto";
 import { runNativeJob } from "./native-teammate.js";
+import { observeTopicStep } from "./run-observations.js";
 import { join } from "node:path";
 import { reportedRuntimeBlocker } from "./role-failure.js";
 import { bindWorkspace, loadWorkspace } from "./workspace-binding.js";
@@ -117,21 +118,23 @@ export async function runRoleStage(
 		challenge +
 		". The remaining lines must be the requested artifact, without a preamble. Stage input (JSON string): " +
 		JSON.stringify((workspaceManifest ? access + "\n" : "") + input);
-	const receipt = await runNativeJob({
-		state,
-		cwd,
-		session,
-		name,
-		agentType,
-		challenge,
-		system,
-		prompt,
-		signal,
-		workspaceManifest,
-		workspacePin,
-		effort,
-		...(workspaceManifest ? { session: challenge } : {}),
-	});
+	const receipt = await observeTopicStep(state, issue, "native-receipt", () =>
+		runNativeJob({
+			state,
+			cwd,
+			session,
+			name,
+			agentType,
+			challenge,
+			system,
+			prompt,
+			signal,
+			workspaceManifest,
+			workspacePin,
+			effort,
+			...(workspaceManifest ? { session: challenge } : {}),
+		}),
+	);
 	const blocker = reportedRuntimeBlocker(role, receipt.output);
 	if (blocker) throw blocker;
 	return receipt;

@@ -11,6 +11,7 @@ import {
 	type ManagementOperation,
 } from "./management-contract.js";
 import type { TopicRuntime } from "./topics.js";
+import { readRunObservations, runObservationFile } from "./run-observations.js";
 
 const role = z.enum([
 	"architect",
@@ -70,6 +71,7 @@ function boundResponse(
 	result: Record<string, any>,
 	maximum: number,
 	offset: number,
+	sequenceCursor = false,
 ) {
 	const size = () => Buffer.byteLength(JSON.stringify(result));
 	if (size() <= maximum) return result;
@@ -84,7 +86,9 @@ function boundResponse(
 	if (rows) {
 		while (rows.length && size() > maximum) {
 			rows.pop();
-			result.next = offset + rows.length;
+			result.next = sequenceCursor
+				? Number(rows.at(-1)?.seq ?? offset)
+				: offset + rows.length;
 		}
 	} else if (typeof result.data?.text === "string") {
 		const bytes = Buffer.from(result.data.text);
@@ -153,9 +157,11 @@ export function diagnosticOperations(
 						"inspection",
 						"artifacts",
 						"artifact",
+						"timing",
 					])
 					.default("summary"),
 				issue: z.int().positive().optional(),
+				runId: z.uuid().optional(),
 				role: role.optional(),
 				offset: z.int().nonnegative().default(0),
 				limit: z.int().min(1).max(50).default(10),
@@ -179,6 +185,7 @@ export function diagnosticOperations(
 				offset,
 				limit,
 				artifactId,
+				runId,
 				maxBytes,
 			}) => {
 				const route = requireTopic(routes, repoId),
@@ -187,6 +194,48 @@ export function diagnosticOperations(
 					"Local recorded state is not a guarantee that a provider is making progress.",
 					"Raw model reasoning, prompts, terminal logs and credentials are excluded.",
 				];
+				if (view === "timing") {
+					const file = join(state, runObservationFile);
+					const info = await lstat(file).catch(
+						(error: NodeJS.ErrnoException) => {
+							if (error.code !== "ENOENT") throw error;
+						},
+					);
+					if (!info || !info.isFile() || info.isSymbolicLink())
+						return {
+							view,
+							data: [],
+							next: null,
+							limitations: [
+								...limitations,
+								"Run timing has no observed coverage for this topic.",
+							],
+						};
+					const timing = new DatabaseSync(file, { readOnly: true });
+					try {
+						timing.exec("PRAGMA busy_timeout=8");
+						return {
+							view,
+							...readRunObservations(timing, issue, runId, offset, limit),
+							limitations: [
+								...limitations,
+								"Timing includes observed activity only. Gaps and provider delays without evidence remain unclassified.",
+							],
+						};
+					} catch {
+						return {
+							view,
+							data: [],
+							next: null,
+							limitations: [
+								...limitations,
+								"Run timing is temporarily unavailable.",
+							],
+						};
+					} finally {
+						timing.close();
+					}
+				}
 				if (view === "summary") {
 					const work = journal.db
 						.prepare(
@@ -614,6 +663,11 @@ export function diagnosticOperations(
 	return operations.map((operation) => ({
 		...operation,
 		run: async (input) =>
-			boundResponse(await operation.run(input), input.maxBytes, input.offset),
+			boundResponse(
+				await operation.run(input),
+				input.maxBytes,
+				input.offset,
+				input.view === "timing" && Boolean(input.runId),
+			),
 	}));
 }
